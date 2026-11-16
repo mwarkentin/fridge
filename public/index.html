@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>The Fridge</title>
+  <meta name="description" content="The family’s art gallery.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="apple-mobile-web-app-title" content="Fridge">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-inner">
+      <a class="brand" href="#home"><span class="magnet-dot" aria-hidden="true"></span>The Fridge</a>
+      <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+      <div class="actions">
+        <button class="btn" id="open-frame" type="button">Frame</button>
+        <button class="btn primary edit-only" id="open-add" type="button">Add art</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="view" class="wrap" aria-live="polite"><p class="empty">Opening the fridge…</p></main>
+
+  <div id="detail" class="overlay" role="dialog" aria-modal="true" aria-labelledby="d-title" hidden>
+    <div class="d-top">
+      <button class="btn" id="d-close" type="button">✕ Close</button>
+      <span class="spacer"></span>
+      <span class="count" id="d-count"></span>
+      <button class="btn" id="d-prev" type="button" aria-label="Previous piece">‹</button>
+      <button class="btn" id="d-next" type="button" aria-label="Next piece">›</button>
+    </div>
+    <div class="d-art"><img id="d-img" alt=""></div>
+    <div class="d-info">
+      <div id="d-read"></div>
+      <form id="d-form" class="stack" hidden>
+        <label class="field">Who made it <select id="f-kid"></select></label>
+        <label class="field">Title <input id="f-title" maxlength="200"></label>
+        <div class="two">
+          <label class="field">Made on <input id="f-made" type="date" required></label>
+          <label class="field">We know the <select id="f-precision"><option value="day">day</option><option value="month">month</option><option value="year">year</option></select></label>
+        </div>
+        <label class="field">Medium <input id="f-medium" list="mediums" maxlength="60" placeholder="Crayon"></label>
+        <label class="field">What they said about it <textarea id="f-story" rows="3" maxlength="2000"></textarea></label>
+        <label class="field">Tags <input id="f-tags" placeholder="cat, school, winter"></label>
+        <div class="row">
+          <button class="btn primary" type="submit">Save</button>
+          <button class="btn" type="button" id="f-cancel">Cancel</button>
+          <span class="spacer"></span>
+          <button class="btn danger" type="button" id="f-delete">Remove</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <datalist id="mediums">
+    <option value="Crayon"><option value="Marker"><option value="Pencil"><option value="Coloured pencil">
+    <option value="Paint"><option value="Watercolour"><option value="Chalk pastel"><option value="Collage">
+  </datalist>
+
+  <div id="frame" class="frame" role="dialog" aria-modal="true" aria-label="Slideshow of favourites" hidden>
+    <div class="stage" id="stage"><img alt=""><img alt=""></div>
+    <p class="fr-hint">A new one every few seconds. Tap for the next.</p>
+    <div class="fr-ctl">
+      <button class="fr-btn" id="fr-full" type="button">Full screen</button>
+      <button class="fr-btn" id="fr-close" type="button">Done</button>
+    </div>
+    <div class="fr-cap"><div class="t" id="fr-t"></div><div class="m" id="fr-m"></div></div>
+  </div>
+
+  <div id="add" class="sheet-wrap" hidden>
+    <form class="sheet" id="add-form" role="dialog" aria-modal="true" aria-labelledby="add-title">
+      <div class="sheet-head"><h2 id="add-title">Add art</h2><button class="icon-btn" type="button" id="add-close" aria-label="Close">✕</button></div>
+      <label class="drop" for="a-file"><img id="a-preview" alt="" hidden><span id="a-file-label">Take a photo or choose a scan</span><input id="a-file" type="file" accept="image/*"></label>
+      <fieldset class="who" id="a-who"><legend>Who made it?</legend></fieldset>
+      <label class="field">Made on <input id="a-made" type="date"></label>
+      <label class="field">Title <input id="a-title" placeholder="Untitled" maxlength="200"></label>
+      <label class="field">What did they say about it? <textarea id="a-story" rows="2" maxlength="2000" placeholder="Write it down before it’s forgotten"></textarea></label>
+      <p class="hint">Scans already in Dropbox come in through the import script, so this is for new pieces.</p>
+      <p class="error" id="a-error" hidden></p>
+      <button class="btn primary wide" id="a-submit" type="submit">Add to the fridge</button>
+    </form>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
