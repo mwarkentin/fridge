@@ -33,11 +33,12 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 ## Setting it up
 
 1. **Cloudflare Zero Trust:** in the Cloudflare dashboard, open Zero Trust
-   and pick a team name (the free plan covers up to 50 people). Check that
-   Settings › Authentication lists **One-time PIN** as a login method.
+   and choose the Free plan (up to 50 people). That's a billing choice, so
+   it can't be made from code.
 2. **mwarkentin/infra:** follow the "fridge" section of its README: token
    permissions, the `FRIDGE_PEOPLE` secret, then merge its pull request.
-   That makes everything and fills in this repo's Actions secrets and
+   That adopts the Zero Trust organization, adds the One-time PIN login,
+   makes everything else and fills in this repo's Actions secrets and
    variables.
 3. **Deploy:** run the Deploy workflow from this repo's Actions tab (after
    that, every merge to `main` deploys). Then merge the infra change that
