@@ -10,10 +10,17 @@
 # ///
 """Bring scans into the fridge, and add the kids they belong to.
 
+    uv run scripts/fridge.py survey ~/Dropbox/Kids\\ Art
     uv run scripts/fridge.py login
     uv run scripts/fridge.py add-kid "Name" 2018-03-14
     uv run scripts/fridge.py import ~/Dropbox/Kids\\ Art --dry-run
     uv run scripts/fridge.py import ~/Dropbox/Kids\\ Art
+    uv run scripts/fridge.py import ~/Dropbox/School --kid Ada --ask
+
+survey looks through a folder first, offline: how many pages each file has,
+which are blank, which look like art and which are plain (documents, or
+pencil drawings), with a report showing every page. import turns a PDF of
+several pages into one piece per page, leaving out blank ones.
 
 It signs in as you through Cloudflare Access, with cloudflared
 (brew install cloudflared), so it can do only what you can do on the page.
@@ -27,13 +34,17 @@ remembers each file by its contents, so running it again adds only new files.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import html
 import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -133,13 +144,14 @@ def match_kid(relative: Path, kids: list[dict]) -> dict | None:
     return next(iter(hits.values())) if len(hits) == 1 else None
 
 
-def title_from(stem: str, owner: str) -> str:
+def title_from(stem: str, owner: str | None) -> str:
     """A title from the file name, without its date, the owner's name, or
     camera and scanner words. Other kids' names stay: "me and Bo"."""
     t = stem
     for rx in (DAY, MONTH, MONTH_NAME, YEAR):
         t = rx.sub(" ", t)
-    t = name_pattern(owner).sub(" ", t)
+    if owner:
+        t = name_pattern(owner).sub(" ", t)
     words = [w for w in re.sub(r"[-_.()\[\]]+", " ", t).split() if w.lower() not in NOT_TITLES]
     words = [w for w in words if not (w.isdigit() and len(w) >= 3)]  # camera counters like 1234
     if all(w.isdigit() for w in words):
@@ -176,18 +188,24 @@ def plan_for(path: Path, root: Path, kids: list[dict], forced_kid: dict | None) 
         modified = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
         plan.made, plan.precision, plan.made_from = f"{modified[:7]}-15", "month", "file date, a guess"
     plan.title = title_from(path.stem, plan.kid["name"])
-    if path.stat().st_size > MAX_BYTES:
+    # A PDF is checked page by page when it's split.
+    if path.suffix.lower() != ".pdf" and path.stat().st_size > MAX_BYTES:
         plan.problem = "too big (the limit is 85 MB)"
     return plan
 
 
 # ---- Images ----
-def open_image(path: Path) -> Image.Image:
-    """The picture, the right way up, in RGB on white. A PDF gives its first page."""
+def find_files(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in TYPES and not p.name.startswith("."))
+
+
+def open_image(path: Path, page: int = 1) -> Image.Image:
+    """The picture, the right way up, in RGB on white. For a PDF, that page
+    (counting from 1) at 200 dpi."""
     if path.suffix.lower() == ".pdf":
         pdf = pdfium.PdfDocument(str(path))
         try:
-            im = pdf[0].render(scale=200 / 72).to_pil()
+            im = pdf[page - 1].render(scale=200 / 72).to_pil()
         finally:
             pdf.close()
     else:
@@ -209,6 +227,167 @@ def jpeg(im: Image.Image, longest: int, quality: int) -> tuple[bytes, int, int]:
     buf = io.BytesIO()
     copy.save(buf, "JPEG", quality=quality, optimize=True, progressive=True)
     return buf.getvalue(), copy.width, copy.height
+
+
+# ---- Looking at pages ----
+# Scanners often put several pieces in one PDF, a page each. Each page is
+# measured on a small render: how much of it isn't bare paper ("ink"), and
+# how much of that is clearly coloured. Kids' art mostly is; documents and
+# pencil drawings aren't, so plain pages are the ones to look at. On sample
+# drawings the coloured share was 0.19 and up; on documents, even one with a
+# coloured logo, 0.02 or less.
+BLANK_INK = 0.004  # under 0.4% of the page marked
+ART_SHARE = 0.10  # at least a tenth of the marks clearly coloured
+KINDS = {"art": "looks like art", "plain": "plain: a document, or a pencil drawing?", "blank": "blank"}
+
+
+@dataclass
+class Page:
+    number: int  # from 1
+    count: int
+    size_in: tuple[float, float] | None
+    ink: float
+    coloured: float
+    thumb: Image.Image
+
+    @property
+    def kind(self) -> str:
+        if self.ink < BLANK_INK:
+            return "blank"
+        return "art" if self.coloured >= ART_SHARE else "plain"
+
+
+def measure(im: Image.Image) -> tuple[float, float]:
+    """(share of the page that isn't paper, share of those marks clearly
+    coloured). The paper is the commonest colour, so construction paper
+    counts as paper."""
+    small = im.convert("RGB")
+    small.thumbnail((200, 200))
+    px = list(small.get_flattened_data())
+    paper = Counter((r >> 4, g >> 4, b >> 4) for r, g, b in px).most_common(1)[0][0]
+    pr, pg, pb = ((c << 4) + 8 for c in paper)
+    marks = [(r, g, b) for r, g, b in px if (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2 > 60**2]
+    if not marks:
+        return 0.0, 0.0
+    coloured = sum(1 for m in marks if max(m) - min(m) >= 48)
+    return len(marks) / len(px), coloured / len(marks)
+
+
+def survey_file(path: Path) -> list[Page]:
+    """Every page of a PDF, or the one picture, measured, with a small preview."""
+    if path.suffix.lower() != ".pdf":
+        im = open_image(path)
+        im.thumbnail((320, 320))
+        return [Page(1, 1, None, *measure(im), thumb=im)]
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        pages = []
+        for i in range(len(pdf)):
+            w, h = pdf[i].get_size()
+            im = pdf[i].render(scale=min(1.0, 320 / max(w, h))).to_pil().convert("RGB")
+            pages.append(Page(i + 1, len(pdf), (w / 72, h / 72), *measure(im), thumb=im))
+        return pages
+    finally:
+        pdf.close()
+
+
+def page_hash(file_hash: str, number: int) -> str:
+    """A page's own identity, so each page of a PDF is remembered by itself."""
+    return hashlib.sha256(f"{file_hash}:page {number}".encode()).hexdigest()
+
+
+def single_page_pdf(path: Path, number: int) -> bytes:
+    """That page of a PDF as a PDF of its own: the original for its piece."""
+    src = pdfium.PdfDocument(str(path))
+    out = pdfium.PdfDocument.new()
+    try:
+        out.import_pages(src, [number - 1])
+        buf = io.BytesIO()
+        out.save(buf)
+        return buf.getvalue()
+    finally:
+        out.close()
+        src.close()
+
+
+def pieces_for(path: Path, file_hash: str, split: bool = True) -> tuple[list[tuple[str, int | None, int]], list[int]]:
+    """What one file becomes: (source hash, page or None, page count) for each
+    piece, and the blank pages left out. A PDF of several pages becomes one
+    piece per page that isn't blank; anything else is one piece."""
+    if split and path.suffix.lower() == ".pdf":
+        pages = survey_file(path)
+        if len(pages) > 1:
+            pieces = [(page_hash(file_hash, p.number), p.number, len(pages)) for p in pages if p.kind != "blank"]
+            return pieces, [p.number for p in pages if p.kind == "blank"]
+    return [(file_hash, None, 1)], []
+
+
+def when_text(found: tuple[str, str, str] | None) -> str:
+    if not found:
+        return "no date in the name"
+    made, precision, _ = found
+    return {"day": made, "month": made[:7], "year": made[:4]}[precision]
+
+
+def report_html(root: Path, rows: list, summary: str) -> str:
+    """A page to look through in a browser: every file, with a picture of every page."""
+    def data_uri(im: Image.Image) -> str:
+        small = im.copy()
+        small.thumbnail((220, 220))
+        buf = io.BytesIO()
+        small.save(buf, "JPEG", quality=70)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    sections = []
+    for rel, when, title, pages in rows:
+        size = f" · {pages[0].size_in[0]:.1f} × {pages[0].size_in[1]:.1f} in" if pages[0].size_in else ""
+        figures = "".join(
+            f'<figure class="{p.kind}"><img src="{data_uri(p.thumb)}" alt=""><figcaption>'
+            f'{f"Page {p.number}: " if len(pages) > 1 else ""}{KINDS[p.kind]}</figcaption></figure>'
+            for p in pages
+        )
+        classes = " ".join(["file", "multi" if len(pages) > 1 else "", "has-plain" if any(p.kind == "plain" for p in pages) else ""])
+        sections.append(
+            f'<section class="{classes}"><h2>{html.escape(str(rel))}</h2>'
+            f'<p>{html.escape(when)} · {html.escape(f"“{title}”") if title else "untitled"} · '
+            f'{len(pages)} page{"s" if len(pages) != 1 else ""}{size}</p><div class="pages">{figures}</div></section>'
+        )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fridge survey</title>
+<style>
+:root {{ color-scheme: light dark; --bg: #edf0ef; --card: #fbfcfc; --ink: #1b2124; --muted: #59646a; --line: #d3dad9; --art: #2f8a4a; --plain: #c96509; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg: #141819; --card: #1c2224; --ink: #e6ebec; --muted: #9ba7ac; --line: #2c3437; --art: #5cc27a; --plain: #f0954a; }} }}
+body {{ margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, sans-serif; }}
+main {{ max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; display: grid; gap: 14px; }}
+h1 {{ margin: 0; font-size: 1.6rem; }} .lede {{ margin: 0; color: var(--muted); }}
+.filters {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+.filters button {{ font: inherit; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }}
+.filters button[aria-pressed="true"] {{ background: var(--ink); color: var(--bg); }}
+.file {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }}
+.file h2 {{ margin: 0; font-size: 0.95rem; overflow-wrap: anywhere; }} .file p {{ margin: 2px 0 10px; color: var(--muted); font-size: 0.9rem; }}
+.pages {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+figure {{ margin: 0; width: 150px; }} figure img {{ width: 100%; height: auto; display: block; border: 1px solid var(--line); background: #fff; }}
+figcaption {{ font-size: 0.8rem; color: var(--muted); margin-top: 4px; }}
+figure.art figcaption {{ color: var(--art); }} figure.plain figcaption {{ color: var(--plain); font-weight: 600; }} figure.blank {{ opacity: 0.45; }}
+body.only-multi .file:not(.multi), body.only-plain .file:not(.has-plain) {{ display: none; }}
+</style></head><body><main>
+<h1>Fridge survey</h1>
+<p class="lede">{html.escape(str(root))}<br>{html.escape(summary)}</p>
+<div class="filters" role="group" aria-label="Show">
+<button type="button" data-show="" aria-pressed="true">Everything</button>
+<button type="button" data-show="only-multi" aria-pressed="false">PDFs with several pages</button>
+<button type="button" data-show="only-plain" aria-pressed="false">Files with plain pages</button>
+</div>
+{"".join(sections)}
+</main>
+<script>
+document.querySelectorAll('.filters button').forEach((b) => b.addEventListener('click', () => {{
+  document.body.className = b.dataset.show;
+  document.querySelectorAll('.filters button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+}}));
+</script></body></html>
+"""
 
 
 def sha256(path: Path) -> str:
@@ -250,6 +429,26 @@ def check(r: httpx.Response) -> dict:
     return r.json() if r.content else {}
 
 
+def open_file(path: Path) -> None:
+    exe = shutil.which("open") or shutil.which("xdg-open")
+    if exe:
+        subprocess.run([exe, str(path)], check=False)
+    else:
+        click.echo("    There's no way to open files here; look at it in Finder.")
+
+
+def ask_about(path: Path, prompt=click.prompt, opener=open_file) -> str:
+    """Ask whether to import one file: "y" or "n", or "q" to stop. "o" opens
+    it to look, then asks again. Enter means no, so nothing that isn't art
+    goes up by accident."""
+    choices = click.Choice(["y", "n", "o", "q"], case_sensitive=False)
+    while True:
+        answer = prompt("    Import it? [y]es, [n]o, [o]pen to look, [q]uit", default="n", show_default=False, show_choices=False, type=choices).lower()
+        if answer != "o":
+            return answer
+        opener(path)
+
+
 def describe(plan: Plan) -> str:
     when = {"day": plan.made, "month": plan.made[:7] if plan.made else "", "year": plan.made[:4] if plan.made else ""}[plan.precision]
     title = f"“{plan.title}”" if plan.title else "untitled"
@@ -286,13 +485,68 @@ def add_kid(url: str, name: str, born: str) -> None:
     click.echo(f"Added {name} (kid {kid['id']}).")
 
 
+@cli.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--kid", "kid_name", help="Whose art it is, so their name is left out of the titles.")
+@click.option("--report", "report_path", type=click.Path(dir_okay=False, path_type=Path), help="Where to write the report. Default: a new file in your temporary folder, never the folder being surveyed.")
+@click.option("--no-open", is_flag=True, help="Don’t open the report once it’s written.")
+def survey(folder: Path, kid_name: str | None, report_path: Path | None, no_open: bool) -> None:
+    """Look through FOLDER before importing. Offline: nothing is signed in to or uploaded.
+
+    For each file: its pages, which are blank, which look like art and which
+    are plain (a document, or a pencil drawing, so worth a look), and the date
+    and title the import would use. The report shows a picture of every page.
+    """
+    root = folder.expanduser().resolve()
+    rows, totals = [], Counter()
+    for path in find_files(root):
+        rel = path.relative_to(root)
+        try:
+            pages = survey_file(path)
+        except Exception as e:
+            totals["unreadable"] += 1
+            click.echo(f"- {rel}: couldn’t open it: {e}")
+            continue
+        kinds = Counter(p.kind for p in pages)
+        totals.update(kinds)
+        totals["files"] += 1
+        totals["pages"] += len(pages)
+        totals["multi"] += len(pages) > 1
+        totals["pieces"] += 1 if len(pages) == 1 else len(pages) - kinds["blank"]
+        when, title = when_text(date_from_path(rel)), title_from(path.stem, kid_name)
+        counts = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
+        click.echo(f"{rel}\n    {when} · {f'“{title}”' if title else 'untitled'} · {len(pages)} page{'s' if len(pages) != 1 else ''}: {counts}")
+        rows.append((rel, when, title, pages))
+
+    def n(count: int, one: str, many: str) -> str:
+        return f"{count} {one if count == 1 else many}"
+
+    summary = (
+        f"{n(totals['files'], 'file', 'files')} with {n(totals['pages'], 'page', 'pages')}; "
+        f"{n(totals['multi'], 'PDF has', 'PDFs have')} several pages. "
+        f"Pages that look like art: {totals['art']}. Plain (documents, or pencil drawings, so look at these): {totals['plain']}. "
+        f"Blank: {totals['blank']}. Importing would add {n(totals['pieces'], 'piece', 'pieces')}."
+    )
+    if totals["unreadable"]:
+        summary += f" Couldn’t open: {totals['unreadable']}."
+    click.echo(f"\n{summary}")
+    out = report_path or Path(tempfile.gettempdir()) / f"fridge-survey-{datetime.now():%Y%m%d-%H%M%S}.html"
+    out.write_text(report_html(root, rows, summary), encoding="utf-8")
+    click.echo(f"Report: {out}")
+    if not no_open:
+        open_file(out)
+
+
 @cli.command("import")
 @click.argument("folder", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--kid", "kid_name", help="Whose art it all is, when the folder names don’t say.")
 @click.option("--dry-run", is_flag=True, help="Show what would happen, and change nothing.")
+@click.option("--ask", is_flag=True, help="Ask before each piece, for folders that mix art with other papers. Ones you skip are asked about again next time.")
+@click.option("--first-page-only", "first_only", is_flag=True, help="Import each PDF as one piece, its first page, instead of a piece per page.")
 @click.pass_obj
-def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool) -> None:
-    """Import every picture and PDF under FOLDER."""
+def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bool, first_only: bool) -> None:
+    """Import every picture and PDF under FOLDER. A PDF of several pages
+    becomes one piece per page, leaving out blank pages."""
     root = folder.expanduser().resolve()
     with connect(url) as client:
         kids = check(client.get("/api/gallery"))["kids"]
@@ -305,48 +559,76 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool) -> None
                 raise click.ClickException(f"No kid called {kid_name}. The fridge has: {', '.join(k['name'] for k in kids)}")
         done = set(check(client.get("/api/imported"))["hashes"])
 
-        files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in TYPES and not p.name.startswith("."))
         counts = {"added": 0, "already": 0, "skipped": 0}
-        for path in files:
+        stopped = False
+        for path in find_files(root):
             plan = plan_for(path, root, kids, forced)
             if plan.problem:
                 counts["skipped"] += 1
                 click.echo(f"- {plan.relative}: {plan.problem}")
                 continue
             digest = sha256(path)
-            if digest in done:
-                counts["already"] += 1
-                continue
-            click.echo(f"+ {plan.relative}\n    {describe(plan)}")
-            if dry_run:
-                counts["added"] += 1
-                continue
             try:
-                im = open_image(path)
+                pieces, blanks = pieces_for(path, digest, split=not first_only)
             except Exception as e:
                 counts["skipped"] += 1
-                click.echo(f"    couldn’t open it: {e}")
+                click.echo(f"- {plan.relative}: couldn’t open it: {e}")
                 continue
-            display, width, height = jpeg(im, 2000, 85)
-            thumb, _, _ = jpeg(im, 480, 80)
-            meta = {
-                "kid_id": plan.kid["id"],
-                "made": plan.made,
-                "made_precision": plan.precision,
-                "title": plan.title,
-                "width": width,
-                "height": height,
-                "source_hash": digest,
-                "source_name": str(plan.relative),
-            }
-            files_out = {
-                "original": (path.name, path.read_bytes(), TYPES[path.suffix.lower()]),
-                "display": ("display.jpg", display, "image/jpeg"),
-                "thumb": ("thumb.jpg", thumb, "image/jpeg"),
-            }
-            check(client.post("/api/pieces", data={"meta": json.dumps(meta)}, files=files_out))
-            done.add(digest)
-            counts["added"] += 1
+            if blanks:
+                click.echo(f"  {plan.relative}: leaving out blank page{'s' if len(blanks) > 1 else ''} {', '.join(map(str, blanks))}")
+            for piece_hash, page, page_count in pieces:
+                if piece_hash in done:
+                    counts["already"] += 1
+                    continue
+                where = f"{plan.relative}, page {page} of {page_count}" if page else str(plan.relative)
+                click.echo(f"+ {where}\n    {describe(plan)}")
+                if dry_run:
+                    counts["added"] += 1
+                    continue
+                if ask:
+                    answer = ask_about(path)
+                    if answer == "q":
+                        stopped = True
+                        break
+                    if answer == "n":
+                        counts["skipped"] += 1
+                        continue
+                try:
+                    if page:
+                        original = (f"{path.stem} p{page}.pdf", single_page_pdf(path, page), "application/pdf")
+                    else:
+                        original = (path.name, path.read_bytes(), TYPES[path.suffix.lower()])
+                    if len(original[1]) > MAX_BYTES:
+                        counts["skipped"] += 1
+                        click.echo("    too big (the limit is 85 MB)")
+                        continue
+                    im = open_image(path, page or 1)
+                except Exception as e:
+                    counts["skipped"] += 1
+                    click.echo(f"    couldn’t open it: {e}")
+                    continue
+                display, width, height = jpeg(im, 2000, 85)
+                thumb, _, _ = jpeg(im, 480, 80)
+                meta = {
+                    "kid_id": plan.kid["id"],
+                    "made": plan.made,
+                    "made_precision": plan.precision,
+                    "title": plan.title,
+                    "width": width,
+                    "height": height,
+                    "source_hash": piece_hash,
+                    "source_name": f"{plan.relative}#page={page}" if page else str(plan.relative),
+                }
+                files_out = {
+                    "original": original,
+                    "display": ("display.jpg", display, "image/jpeg"),
+                    "thumb": ("thumb.jpg", thumb, "image/jpeg"),
+                }
+                check(client.post("/api/pieces", data={"meta": json.dumps(meta)}, files=files_out))
+                done.add(piece_hash)
+                counts["added"] += 1
+            if stopped:
+                break
 
     verb = "Would add" if dry_run else "Added"
     click.echo(f"\n{verb} {counts['added']}. Already on the fridge: {counts['already']}. Skipped: {counts['skipped']}.")
