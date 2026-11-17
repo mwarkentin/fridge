@@ -125,11 +125,20 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 
 6. **On each iPad:** open the fridge in Safari, sign in with the kid's
    address and type in the code that arrives in your email. If the kids use
-   it from the Home Screen, add it there first and sign in from the icon:
+   it from the Home Screen, add it there first (Share, then **Add to Home
+   Screen**) and sign in from the icon: the fridge has a web app manifest,
+   so the icon opens it as its own app, without Safari's address bar, and
    on iPadOS a Home Screen web app keeps its own cookies apart from Safari.
-   If signing in there keeps returning to the sign-in page, use the fridge
-   in Safari instead. If Screen Time limits websites, allow the fridge's address and your
-   `<team>.cloudflareaccess.com` sign-in page.
+   Signing in in Safari doesn't sign the icon in, or the other way round.
+   The sign-in page is on another address (`<team>.cloudflareaccess.com`),
+   so the app may show it with a bar naming that address at the top;
+   finish signing in there and it comes back to the fridge. If signing in
+   there keeps returning to the sign-in page, use the fridge in Safari
+   instead. If Screen Time limits websites, allow the fridge's address and
+   your `<team>.cloudflareaccess.com` sign-in page.
+
+   Android phones and desktop Chrome can install it too (**Install app** or
+   **Add to Home screen** in Chrome's menu), after signing in.
 
 ## Working on it
 

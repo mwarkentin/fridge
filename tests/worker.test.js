@@ -90,6 +90,31 @@ test('sends security headers', async () => {
   assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
 });
 
+test('serves the web app manifest only to signed-in people', async () => {
+  assert.equal((await call('/manifest.webmanifest', { as: null })).status, 403);
+  const res = await call('/manifest.webmanifest', { as: VIEWER });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('Content-Type'), /^application\/manifest\+json/);
+  assert.match(res.headers.get('Content-Security-Policy'), /^default-src 'self';/);
+  const manifest = await res.json();
+  assert.equal(manifest.short_name, 'Fridge');
+  assert.equal(manifest.start_url, '/');
+  assert.equal(manifest.display, 'standalone');
+  for (const icon of manifest.icons) {
+    const img = await call(icon.src, { as: VIEWER });
+    assert.equal(img.status, 200, icon.src);
+    assert.equal(img.headers.get('Content-Type'), icon.type, icon.src);
+  }
+  assert.ok(manifest.icons.some((i) => i.purpose === 'maskable'));
+});
+
+test('serves every icon and the manifest the page links to', async () => {
+  const html = readFileSync('public/index.html', 'utf8');
+  const links = [...html.matchAll(/<link rel="(?:icon|apple-touch-icon|manifest)" href="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(links.length, 3);
+  for (const href of links) assert.equal((await call(href, { as: VIEWER })).status, 200, href);
+});
+
 test('a parent adds a kid and a piece, and everyone can see it', async () => {
   const kid = await call('/api/kids', { method: 'POST', json: { name: 'Ada', born: '2019-04-02' } });
   assert.equal(kid.status, 201);
