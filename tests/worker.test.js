@@ -90,6 +90,24 @@ test('sends security headers', async () => {
   assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
 });
 
+test('serves the icons to anyone, and nothing else without a sign-in', async () => {
+  // iOS fetches Home Screen icons without the sign-in cookie.
+  for (const path of ['/icons/apple-touch-icon.png', '/icons/icon-512.png', '/icons/favicon.svg']) {
+    const res = await call(path, { as: null });
+    assert.equal(res.status, 200, path);
+    assert.match(res.headers.get('Content-Type'), /^image\//, path);
+    assert.match(res.headers.get('Content-Security-Policy'), /^default-src 'self';/, path);
+  }
+  assert.equal((await call('/icons/apple-touch-icon.png', { as: null, method: 'HEAD' })).status, 200);
+  assert.equal((await call('/icons/nothing-here.png', { as: null })).status, 404);
+  for (const path of ['/', '/index.html', '/app.js', '/manifest.webmanifest', '/icons/', '/icons/../index.html', '/icons/%2e%2e/index.html', '/icons/x/../../app.js', '/img/1/thumb', '/api/gallery']) {
+    assert.equal((await call(path, { as: null })).status, 403, path);
+  }
+  for (const method of ['POST', 'PUT', 'DELETE']) {
+    assert.equal((await call('/icons/apple-touch-icon.png', { as: null, method })).status, 403, method);
+  }
+});
+
 test('serves the web app manifest only to signed-in people', async () => {
   assert.equal((await call('/manifest.webmanifest', { as: null })).status, 403);
   const res = await call('/manifest.webmanifest', { as: VIEWER });

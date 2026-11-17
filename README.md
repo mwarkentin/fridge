@@ -19,6 +19,9 @@ it.
   to a parent and stay signed in for a month. The Worker checks Access's
   token on every request too, and has no workers.dev address, so there's no
   way around the sign-in. Parents can change things; everyone else can look.
+  The one thing anyone can fetch is the app icons in `public/icons/`, since
+  iOS fetches Home Screen icons without the sign-in. They're in this repo
+  for anyone to see anyway.
 - **The import script** (`scripts/fridge.py`) reads a folder on your
   computer, like the synced Dropbox folder, works out whose each piece is
   and when it was made from the folder and file names, and uploads it. It
