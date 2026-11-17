@@ -58,12 +58,13 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    pencil drawings). Each piece has a box to tick: pages that look like art
    start ticked, plain and blank ones don't, and clicking a picture opens
    the original. Press **Save my picks**, then import with the file it
-   saves; the survey prints the exact command:
+   saves (named after the folder's last three names). The survey prints the
+   exact command:
 
    ```sh
    uv run scripts/fridge.py survey ~/Dropbox/Kids\ Art --kid Ada
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-dropbox-kids-art.json --dry-run
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-dropbox-kids-art.json
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-….json --dry-run
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-….json
    ```
 
    Picks name pieces by their contents, so renaming or moving a file

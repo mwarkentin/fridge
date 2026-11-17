@@ -336,9 +336,11 @@ PICKS_VERSION = 1
 
 
 def picks_name(root: Path) -> str:
-    """The name the report saves picks under: the folder and its parent, so
-    two kids' Artwork folders don't share one."""
-    return "fridge-picks-" + re.sub(r"[^a-z0-9]+", "-", f"{root.parent.name} {root.name}".lower()).strip("-") + ".json"
+    """The name the report saves picks under: the folder's last three names,
+    so two kids' Artwork folders, or two kids' School/<same school> folders,
+    don't share one."""
+    tail = " ".join(part for part in root.parts[-3:] if part != root.anchor)
+    return "fridge-picks-" + re.sub(r"[^a-z0-9]+", "-", tail.lower()).strip("-") + ".json"
 
 
 def load_picks(path: Path, root: Path) -> dict[str, set[str]]:

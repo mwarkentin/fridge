@@ -253,8 +253,10 @@ def test_picks_files(tmp_path):
 
 
 def test_picks_file_names_tell_two_kids_folders_apart():
-    assert fridge.picks_name(Path("/x/Ada/Artwork")) == "fridge-picks-ada-artwork.json"
-    assert fridge.picks_name(Path("/x/Bo/School/Big Hill PS")) == "fridge-picks-school-big-hill-ps.json"
+    assert fridge.picks_name(Path("/x/Ada/Artwork")) == "fridge-picks-x-ada-artwork.json"
+    assert fridge.picks_name(Path("/x/Ada/School/Big Hill PS")) == "fridge-picks-ada-school-big-hill-ps.json"
+    assert fridge.picks_name(Path("/x/Bo/School/Big Hill PS")) == "fridge-picks-bo-school-big-hill-ps.json"
+    assert fridge.picks_name(Path("/Art")) == "fridge-picks-art.json"
 
 
 def test_script_pins_match_pyproject():
