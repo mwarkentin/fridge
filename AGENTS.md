@@ -25,7 +25,8 @@ history on `main` is permanent.
 
 ## Layout
 
-- `src/worker.js`: the Worker. Checks the sign-in, then serves the API
+- `src/worker.js`: the Worker. Serves the app icons to anyone, checks the
+  sign-in for everything else, then serves the API
   (`/api/...`), the images (`/img/<id>/thumb|display|original`, from the
   `ART` bucket) and the page (`public/`, through the `ASSETS` binding).
 - `src/auth.js`: verifies Cloudflare Access's JWT on every request. Parents
@@ -58,7 +59,11 @@ since Access doesn't guard those addresses.
 ## Rules
 
 - Every request is checked in `auth.js` before anything else. Don't add a
-  route that skips it.
+  route that skips it. The one exception is the app icons
+  (`/icons/<name>.png|svg`, `GET` and `HEAD` only): iOS fetches Home Screen
+  icons without the sign-in cookie, and they're public in this repo anyway.
+  Infra's Access settings bypass that path to match. Nothing else goes in
+  `public/icons/`.
 - Changes (`POST`, `PATCH`, `DELETE`) need `X-Requested-With: fridge`, so
   another site can't send them with a family member's sign-in.
 - Escape everything that came from the database before putting it in HTML

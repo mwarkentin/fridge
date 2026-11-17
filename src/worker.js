@@ -36,7 +36,18 @@ export default {
   },
 };
 
+// The one thing anyone may fetch without signing in: the app icons. iOS
+// fetches Home Screen icons from a system process that doesn't have the
+// sign-in cookie, so behind Access it gets the sign-in page and shows a
+// letter instead. These files are public in the GitHub repo anyway, and
+// infra's Access settings bypass this path too. Only plain file names in
+// public/icons/, only to look at.
+const PUBLIC_ICON = /^\/icons\/[a-z0-9-]+\.(?:png|svg)$/;
+
 async function handle(request, env) {
+  const { pathname } = new URL(request.url);
+  if (PUBLIC_ICON.test(pathname) && (request.method === 'GET' || request.method === 'HEAD')) return env.ASSETS.fetch(request);
+
   let who;
   try {
     who = await identify(request, env);
