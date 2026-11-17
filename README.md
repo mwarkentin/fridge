@@ -71,6 +71,18 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    doesn't lose its pick. Anything added to the folder after the survey is
    skipped (or asked about, with `--ask`); survey again to pick it.
 
+   The fridge remembers both kinds of decision. What's imported is on the
+   fridge, and what you leave unticked (or answer "no" to with `--ask`) is
+   remembered as skipped, from any computer. So a later survey of the same
+   folder shows only what's new, with pieces already on the fridge and ones
+   skipped before under **Everything**, and a later import, picks or not,
+   leaves skipped pieces out. To import a skipped piece after all, tick it
+   in a survey's report (**Skipped before** lists them). `survey --offline`
+   doesn't ask the fridge, and shows everything as new.
+
+   Adding new art later is the same loop: scan it into its folder, survey
+   (you'll see just the new pieces), tick, save, import.
+
    A PDF of several pages, as a scanner makes from a stack of pieces,
    becomes one piece per page, leaving out blank pages. `--first-page-only`
    imports each PDF as one piece instead, its first page.

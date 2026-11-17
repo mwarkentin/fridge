@@ -116,7 +116,30 @@ test('a parent adds a kid and a piece, and everyone can see it', async () => {
 
   const again = await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2024-05-15', source_hash: 'a'.repeat(64) }) });
   assert.deepEqual(await again.json(), { id, duplicate: true }, 'importing the same file again is skipped');
-  assert.deepEqual(await (await call('/api/imported')).json(), { hashes: ['a'.repeat(64)] });
+  assert.deepEqual(await (await call('/api/imported')).json(), { hashes: ['a'.repeat(64)], skipped: [] });
+});
+
+test('remembers pieces a parent chose not to import', async () => {
+  const h = (c) => c.repeat(64);
+  assert.deepEqual(await (await call('/api/skipped', { method: 'POST', json: { add: [h('b'), h('c'), h('b')] } })).json(), { added: 2, removed: 0 });
+  let known = await (await call('/api/imported')).json();
+  assert.deepEqual(known.skipped.sort(), [h('b'), h('c')]);
+  assert.ok(Array.isArray(known.hashes));
+
+  await call('/api/skipped', { method: 'POST', json: { remove: [h('c')] } });
+  known = await (await call('/api/imported')).json();
+  assert.deepEqual(known.skipped, [h('b')]);
+
+  // Importing a skipped piece after all forgets the skip.
+  const { id: kidId } = await (await call('/api/kids', { method: 'POST', json: { name: 'Di', born: '2018-05-05' } })).json();
+  assert.equal((await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2025-01-03', source_hash: h('b') }) })).status, 201);
+  known = await (await call('/api/imported')).json();
+  assert.deepEqual(known.skipped, []);
+  assert.ok(known.hashes.includes(h('b')));
+
+  assert.equal((await call('/api/skipped', { method: 'POST', json: { add: ['not a hash'] } })).status, 400);
+  assert.equal((await call('/api/skipped', { method: 'POST', json: { add: h('d') } })).status, 400);
+  assert.equal((await call('/api/skipped', { as: VIEWER, method: 'POST', json: { add: [h('d')] } })).status, 403);
 });
 
 test('viewers can’t change anything', async () => {

@@ -205,7 +205,8 @@ def test_survey_reports_without_signing_in(tmp_path):
     assert result.exit_code == 0, result.output
     assert "2024-05-29 · “Rocket” · 3 pages: 1 art, 1 blank, 1 plain" in result.output
     assert "2024 · untitled · 1 page: 1 art" in result.output
-    assert "Importing would add 3 pieces." in result.output
+    assert "Importing would add up to 3 pieces." in result.output
+    assert "Couldn’t ask the fridge what it already has" in result.output
     assert "2 files with 4 pages; 1 PDF has several pages." in result.output
     page = report.read_text()
     assert page.count("data:image/jpeg;base64,") == 4
@@ -221,6 +222,42 @@ def test_survey_reports_without_signing_in(tmp_path):
     assert boxes[fridge.page_hash(file_hash, 3)] == ""
     assert boxes[fridge.sha256(folder / "2024" / "IMG_1234.png")] == " checked"
     assert f'href="{pdf.as_uri()}#page=3"' in page
+
+
+def test_survey_offline_doesnt_ask_the_fridge(tmp_path):
+    art_page().save(tmp_path / "sun.png")
+    result = CliRunner().invoke(fridge.cli, ["--url", "http://localhost:1", "survey", str(tmp_path), "--offline", "--report", str(tmp_path / "r.html"), "--no-open"])
+    assert result.exit_code == 0, result.output
+    assert "Couldn’t ask" not in result.output
+
+
+def test_status_of():
+    known = ({"a"}, {"b"})
+    assert [fridge.status_of(h, known) for h in "abc"] == ["on", "skipped", "new"]
+    assert fridge.status_of("a", None) == "new"
+
+
+def test_report_marks_what_the_fridge_knows(tmp_path):
+    pdf = three_page_pdf(tmp_path / "scan.pdf")
+    png = tmp_path / "sun.png"
+    art_page().save(png)
+    pdf_hash, png_hash = fridge.sha256(pdf), fridge.sha256(png)
+    rows = [
+        (Path("scan.pdf"), "2024", "", fridge.survey_file(pdf), pdf_hash, pdf),
+        (Path("sun.png"), "2024", "", fridge.survey_file(png), png_hash, png),
+    ]
+    known = ({fridge.page_hash(pdf_hash, 1)}, {png_hash})
+    page = fridge.report_html(tmp_path, rows, "summary", known)
+    boxes = dict(re.findall(r'<input type="checkbox" data-id="([0-9a-f]{64})"( checked)?>', page))
+    assert fridge.page_hash(pdf_hash, 1) not in boxes, "on the fridge: no box"
+    assert page.count("On the fridge</span>") == 1
+    assert boxes[png_hash] == "", "skipped before: unticked"
+    assert "Skipped before · " in page
+    assert boxes[fridge.page_hash(pdf_hash, 3)] == "", "new but plain: unticked"
+    assert 'class="blank st-blank"' in page, "a multi-page PDF's blank page isn't new"
+    assert '<body class="view-new">' in page and 'data-view="skipped"' in page
+    offline = fridge.report_html(tmp_path, rows, "summary")
+    assert '<body class="view-all">' in offline and 'data-view="new"' not in offline
 
 
 def test_piece_ids_match_what_import_uses(tmp_path):
