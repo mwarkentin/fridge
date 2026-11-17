@@ -97,7 +97,9 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    doesn't ask the fridge, and shows everything as new.
 
    Adding new art later is the same loop: scan it into its folder, survey
-   (you'll see just the new pieces), tick, save, import.
+   (you'll see just the new pieces), tick, save, import. Delete the picks
+   file once it's imported: the fridge doesn't need it, and the browser
+   would save the next one under another name, such as `… (1).json`.
 
    A PDF of several pages, as a scanner makes from a stack of pieces,
    becomes one piece per page, leaving out blank pages. `--first-page-only`
