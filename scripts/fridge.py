@@ -10,9 +10,12 @@
 # ///
 """Bring scans into the fridge, and add the kids they belong to.
 
-    uv run scripts/fridge.py survey ~/Dropbox/Kids\\ Art
     uv run scripts/fridge.py login
     uv run scripts/fridge.py add-kid "Name" 2018-03-14
+    uv run scripts/fridge.py folders add ~/Dropbox/Kids\\ Art/Ada --kid Ada
+    uv run scripts/fridge.py survey
+    uv run scripts/fridge.py import --picks ~/Downloads/fridge-picks-saved-folders.json
+    uv run scripts/fridge.py survey ~/Dropbox/Kids\\ Art
     uv run scripts/fridge.py import ~/Dropbox/Kids\\ Art --dry-run
     uv run scripts/fridge.py import ~/Dropbox/Kids\\ Art
     uv run scripts/fridge.py import ~/Dropbox/School --kid Ada --ask
@@ -45,6 +48,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -332,7 +336,8 @@ def pieces_for(path: Path, file_hash: str, split: bool = True, keep: set[str] = 
 
 
 # ---- Picks: what to import, ticked in the survey's report ----
-PICKS_VERSION = 1
+PICKS_VERSION = 2  # 1 had one "folder"; 2 lists "folders"
+SAVED_PICKS = "fridge-picks-saved-folders.json"
 
 
 def picks_name(root: Path) -> str:
@@ -343,20 +348,63 @@ def picks_name(root: Path) -> str:
     return "fridge-picks-" + re.sub(r"[^a-z0-9]+", "-", tail.lower()).strip("-") + ".json"
 
 
-def load_picks(path: Path, root: Path) -> dict[str, set[str]]:
+def load_picks(path: Path) -> dict:
     """The pieces ticked (include) and unticked (exclude) in a survey's report,
-    by source hash, so renaming or moving a file doesn't lose its pick."""
+    by source hash, so renaming or moving a file doesn't lose its pick, and
+    the folders that survey looked at."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("version") != PICKS_VERSION:
-            raise ValueError
-        picks = {"include": set(data["include"]), "exclude": set(data["exclude"])}
-        folder = Path(data["folder"])
+        folders = [data["folder"]] if data.get("version") == 1 else data["folders"] if data.get("version") == 2 else None
+        return {"include": set(data["include"]), "exclude": set(data["exclude"]), "folders": [Path(f) for f in folders]}
     except Exception:
         raise click.ClickException(f"{path.name} isn’t a picks file saved from the survey’s report.")
-    if not (root == folder or folder in root.parents or root in folder.parents):
-        raise click.ClickException(f"Those picks are for {folder}, not {root}. Survey this folder, and save picks from its report.")
-    return picks
+
+
+def picks_cover(picks: dict, root: Path) -> bool:
+    """Whether the survey those picks came from looked at this folder (or a
+    folder inside it, or one around it)."""
+    return any(root == f or f in root.parents or root in f.parents for f in picks["folders"])
+
+
+# ---- Saved folders: what survey and import use when no folder is named ----
+# Kept on this computer only, outside the repo: the paths name the kids.
+def folders_file() -> Path:
+    return Path(os.environ.get("FRIDGE_FOLDERS") or Path(click.get_app_dir("fridge")) / "folders.toml")
+
+
+def load_folders() -> list[tuple[Path, str | None]]:
+    f = folders_file()
+    if not f.exists():
+        return []
+    try:
+        data = tomllib.loads(f.read_text(encoding="utf-8"))
+        return [(Path(e["path"]), e.get("kid")) for e in data.get("folder", [])]
+    except Exception as e:
+        raise click.ClickException(f"Couldn’t read the saved folders in {f}: {e}")
+
+
+def save_folders(entries: list[tuple[Path, str | None]]) -> None:
+    f = folders_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# The folders fridge.py surveys and imports when you don't name one.", "# Change them with: uv run scripts/fridge.py folders add|remove, or by hand.", ""]
+    for path, kid in entries:
+        # JSON strings are valid TOML basic strings.
+        lines += ["[[folder]]", f"path = {json.dumps(str(path))}"] + ([f"kid = {json.dumps(kid)}"] if kid else []) + [""]
+    f.write_text("\n".join(lines), encoding="utf-8")
+
+
+def targets_for(folder: Path | None, kid_name: str | None) -> list[tuple[Path, str | None]]:
+    """The folders to work on, each with its kid: the one named (its kid from
+    --kid, or from the saved folders), or else every saved folder."""
+    saved = load_folders()
+    if folder:
+        root = folder.expanduser().resolve()
+        return [(root, kid_name or next((k for p, k in saved if p == root), None))]
+    if kid_name:
+        raise click.ClickException("--kid goes with a folder. Saved folders each have their own kid.")
+    if not saved:
+        raise click.ClickException("Name a folder, or save some first: uv run scripts/fridge.py folders add PATH --kid NAME")
+    return saved
 
 
 def when_text(found: tuple[str, str, str] | None) -> str:
@@ -366,7 +414,7 @@ def when_text(found: tuple[str, str, str] | None) -> str:
     return {"day": made, "month": made[:7], "year": made[:4]}[precision]
 
 
-def report_html(root: Path, rows: list, summary: str, known: tuple[set[str], set[str]] | None = None, note: str = "") -> str:
+def report_html(roots: list[Path], rows: list, summary: str, known: tuple[set[str], set[str]] | None = None, note: str = "", picks_file: str | None = None) -> str:
     """A page to look through in a browser: every file, with a picture of every
     page and a box to tick each piece to import. New pages that look like art
     start ticked. "Save my picks" downloads them for import --picks. With
@@ -380,7 +428,11 @@ def report_html(root: Path, rows: list, summary: str, known: tuple[set[str], set
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
     sections = []
-    for rel, when, title, pages, digest, path in rows:
+    current = None
+    for rel, when, title, pages, digest, path, root in rows:
+        if len(roots) > 1 and root != current:
+            current = root
+            sections.append(f'<h2 class="folder">{html.escape(str(root))}</h2>')
         size = f" · {pages[0].size_in[0]:.1f} × {pages[0].size_in[1]:.1f} in" if pages[0].size_in else ""
         statuses = [status_of(piece_id(digest, p), known) for p in pages]
         # A blank page of a multi-page PDF isn't imported, so it isn't new:
@@ -435,6 +487,7 @@ body.view-new figure:not(.st-new), body.view-skipped figure:not(.st-skipped) {{ 
 body.view-new .file:not(.has-new), body.view-skipped .file:not(.has-skipped) {{ display: none; }}
 .filters label {{ display: flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--muted); }}
 figure.st-on img {{ opacity: 0.5; }} .on-fridge {{ color: var(--art); cursor: default; }}
+h2.folder {{ margin: 12px 0 0; font-size: 1.05rem; overflow-wrap: anywhere; }}
 .nothing-new {{ display: none; margin: 0; padding: 14px; color: var(--muted); }} body.view-new .nothing-new {{ display: block; }}
 .picks {{ position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }}
 .picks button {{ font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 0; background: var(--ink); color: var(--bg); cursor: pointer; }}
@@ -446,7 +499,7 @@ figure.st-on img {{ opacity: 0.5; }} .on-fridge {{ color: var(--art); cursor: de
 figure:has(input:not(:checked)) img {{ opacity: 0.4; }}
 </style></head><body class="{"view-new" if known is not None else "view-all"}"><main>
 <h1>Fridge survey</h1>
-<p class="lede">{html.escape(str(root))}<br>{html.escape(summary)}{f"<br>{html.escape(note)}" if note else ""}</p>
+<p class="lede">{"<br>".join(html.escape(str(r)) for r in roots)}<br>{html.escape(summary)}{f"<br>{html.escape(note)}" if note else ""}</p>
 <div class="picks"><span id="count"></span><button type="button" id="save">Save my picks</button>
 <span class="note" id="saved">Ticked pieces get imported, and unticked ones are remembered as skipped. Plain pages start unticked: tick the pencil drawings you want. Click a picture to open the original.{" Showing what’s new: pieces already on the fridge, and ones skipped before, are under Everything. Tick a skipped piece to import it after all." if known is not None else ""}</span></div>
 <div class="filters" role="group" aria-label="Show">
@@ -458,9 +511,9 @@ figure:has(input:not(:checked)) img {{ opacity: 0.4; }}
 {"".join(sections)}
 </main>
 <script>
-const ROOT = {json.dumps(str(root)).replace("</", "<\\/")};
-const NAME = {json.dumps(picks_name(root)).replace("</", "<\\/")};
-const KEY = 'fridge-picks:' + ROOT;
+const FOLDERS = {json.dumps([str(r) for r in roots]).replace("</", "<\\/")};
+const NAME = {json.dumps(picks_file or picks_name(roots[0])).replace("</", "<\\/")};
+const KEY = 'fridge-picks:' + FOLDERS.join('|');
 const boxes = [...document.querySelectorAll('input[data-id]')];
 let kept = {{}};
 try {{ kept = JSON.parse(localStorage.getItem(KEY) || '{{}}'); }} catch {{}}
@@ -485,7 +538,7 @@ document.addEventListener('click', (e) => {{
 }});
 document.getElementById('save').addEventListener('click', () => {{
   const {{ ids, on }} = remember();
-  const picks = {{ version: {PICKS_VERSION}, folder: ROOT, include: [...on], exclude: [...ids].filter((id) => !on.has(id)) }};
+  const picks = {{ version: {PICKS_VERSION}, folders: FOLDERS, include: [...on], exclude: [...ids].filter((id) => !on.has(id)) }};
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(picks, null, 1)], {{ type: 'application/json' }}));
   a.download = NAME;
@@ -623,15 +676,58 @@ def add_kid(url: str, name: str, born: str) -> None:
     click.echo(f"Added {name} (kid {kid['id']}).")
 
 
-@cli.command()
+@cli.group()
+def folders() -> None:
+    """The folders survey and import use when you don't name one, each with
+    its kid. Kept on this computer only, never in the repo."""
+
+
+@folders.command("add")
 @click.argument("folder", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--kid", "kid_name", required=True, help="Whose art the folder holds.")
+def folders_add(folder: Path, kid_name: str) -> None:
+    """Save FOLDER, with whose art it is."""
+    root = folder.expanduser().resolve()
+    saved = [(p, k) for p, k in load_folders() if p != root] + [(root, kid_name)]
+    save_folders(saved)
+    click.echo(f"Saved {root} ({kid_name}). Folders saved: {len(saved)}, in {folders_file()}.")
+
+
+@folders.command("list")
+def folders_list() -> None:
+    """Show the saved folders."""
+    saved = load_folders()
+    if not saved:
+        click.echo("No folders saved yet. Add one: uv run scripts/fridge.py folders add PATH --kid NAME")
+        return
+    for path, kid in saved:
+        click.echo(f"{kid or '(no kid)'} · {path}{'' if path.exists() else '  (not found)'}")
+    click.echo(f"\nSaved in {folders_file()}")
+
+
+@folders.command("remove")
+@click.argument("folder", type=click.Path(path_type=Path))
+def folders_remove(folder: Path) -> None:
+    """Stop using FOLDER when none is named. Nothing in it is touched."""
+    root = folder.expanduser().resolve()
+    saved = load_folders()
+    kept = [(p, k) for p, k in saved if p != root]
+    if len(kept) == len(saved):
+        raise click.ClickException(f"{root} isn’t a saved folder. See them with: uv run scripts/fridge.py folders list")
+    save_folders(kept)
+    click.echo(f"Removed {root}. Folders saved: {len(kept)}.")
+
+
+@cli.command()
+@click.argument("folder", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--kid", "kid_name", help="Whose art it is, so their name is left out of the titles.")
 @click.option("--report", "report_path", type=click.Path(dir_okay=False, path_type=Path), help="Where to write the report. Default: a new file in your temporary folder, never the folder being surveyed.")
 @click.option("--no-open", is_flag=True, help="Don’t open the report once it’s written.")
 @click.option("--offline", is_flag=True, help="Don’t ask the fridge what it already has; show every piece as new.")
 @click.pass_obj
-def survey(url: str, folder: Path, kid_name: str | None, report_path: Path | None, no_open: bool, offline: bool) -> None:
-    """Look through FOLDER before importing. Nothing is uploaded.
+def survey(url: str, folder: Path | None, kid_name: str | None, report_path: Path | None, no_open: bool, offline: bool) -> None:
+    """Look through FOLDER, or every saved folder, before importing. Nothing
+    is uploaded.
 
     For each file: its pages, which are blank, which look like art and which
     are plain (a document, or a pencil drawing, so worth a look), and the date
@@ -639,7 +735,7 @@ def survey(url: str, folder: Path, kid_name: str | None, report_path: Path | Non
     pieces are on it already and which were skipped before, and the report
     shows only new ones at first. The report shows a picture of every page.
     """
-    root = folder.expanduser().resolve()
+    targets = targets_for(folder, kid_name)
     known, note = None, ""
     if not offline:
         try:
@@ -650,30 +746,36 @@ def survey(url: str, folder: Path, kid_name: str | None, report_path: Path | Non
             note = f"Couldn’t ask the fridge what it already has ({why}), so every piece shows as new."
             click.echo(note + "\n")
     rows, totals = [], Counter()
-    for path in find_files(root):
-        rel = path.relative_to(root)
-        try:
-            pages = survey_file(path)
-            digest = sha256(path)
-        except Exception as e:
-            totals["unreadable"] += 1
-            click.echo(f"- {rel}: couldn’t open it: {e}")
+    for root, kid_name in targets:
+        if len(targets) > 1:
+            click.echo(f"== {root}{f' ({kid_name})' if kid_name else ''}")
+        if not root.exists():
+            click.echo("- not found, so left out\n")
             continue
-        kinds = Counter(p.kind for p in pages)
-        totals.update(kinds)
-        totals["files"] += 1
-        totals["pages"] += len(pages)
-        totals["multi"] += len(pages) > 1
-        totals["pieces"] += 1 if len(pages) == 1 else len(pages) - kinds["blank"]
-        statuses = Counter(status_of(piece_id(digest, p), known) for p in pages if len(pages) == 1 or p.kind != "blank")
-        totals.update({f"st-{k}": v for k, v in statuses.items()})
-        when, title = when_text(date_from_path(rel)), title_from(path.stem, kid_name)
-        counts = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
-        known_counts = ""
-        if known is not None and (statuses["on"] or statuses["skipped"]):
-            known_counts = " (" + ", ".join(f"{n} {label}" for label, n in (("new", statuses["new"]), ("on the fridge", statuses["on"]), ("skipped before", statuses["skipped"])) if n) + ")"
-        click.echo(f"{rel}\n    {when} · {f'“{title}”' if title else 'untitled'} · {len(pages)} page{'s' if len(pages) != 1 else ''}: {counts}{known_counts}")
-        rows.append((rel, when, title, pages, digest, path))
+        for path in find_files(root):
+            rel = path.relative_to(root)
+            try:
+                pages = survey_file(path)
+                digest = sha256(path)
+            except Exception as e:
+                totals["unreadable"] += 1
+                click.echo(f"- {rel}: couldn’t open it: {e}")
+                continue
+            kinds = Counter(p.kind for p in pages)
+            totals.update(kinds)
+            totals["files"] += 1
+            totals["pages"] += len(pages)
+            totals["multi"] += len(pages) > 1
+            totals["pieces"] += 1 if len(pages) == 1 else len(pages) - kinds["blank"]
+            statuses = Counter(status_of(piece_id(digest, p), known) for p in pages if len(pages) == 1 or p.kind != "blank")
+            totals.update({f"st-{k}": v for k, v in statuses.items()})
+            when, title = when_text(date_from_path(rel)), title_from(path.stem, kid_name)
+            counts = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
+            known_counts = ""
+            if known is not None and (statuses["on"] or statuses["skipped"]):
+                known_counts = " (" + ", ".join(f"{n} {label}" for label, n in (("new", statuses["new"]), ("on the fridge", statuses["on"]), ("skipped before", statuses["skipped"])) if n) + ")"
+            click.echo(f"{rel}\n    {when} · {f'“{title}”' if title else 'untitled'} · {len(pages)} page{'s' if len(pages) != 1 else ''}: {counts}{known_counts}")
+            rows.append((rel, when, title, pages, digest, path, root))
 
     def n(count: int, one: str, many: str) -> str:
         return f"{count} {one if count == 1 else many}"
@@ -692,47 +794,64 @@ def survey(url: str, folder: Path, kid_name: str | None, report_path: Path | Non
         summary += f" Couldn’t open: {totals['unreadable']}."
     click.echo(f"\n{summary}")
     out = report_path or Path(tempfile.gettempdir()) / f"fridge-survey-{datetime.now():%Y%m%d-%H%M%S}.html"
-    out.write_text(report_html(root, rows, summary, known, note), encoding="utf-8")
+    roots = [r for r, _ in targets if r.exists()]  # the folders looked at, which the picks will cover
+    picks_file = picks_name(roots[0]) if folder else SAVED_PICKS
+    out.write_text(report_html(roots, rows, summary, known, note, picks_file), encoding="utf-8")
     click.echo(f"Report: {out}")
-    kid = f" --kid {shlex.quote(kid_name)}" if kid_name else ""
-    click.echo(
-        "\nIn the report, tick what to import (pages that look like art start ticked) and press “Save my picks”. Then:\n"
-        f"  uv run scripts/fridge.py import {shlex.quote(str(root))}{kid} --picks ~/Downloads/{picks_name(root)}"
-    )
+    if folder:
+        kid = f" --kid {shlex.quote(targets[0][1])}" if targets[0][1] else ""
+        command = f"uv run scripts/fridge.py import {shlex.quote(str(roots[0]))}{kid} --picks ~/Downloads/{picks_file}"
+    else:
+        command = f"uv run scripts/fridge.py import --picks ~/Downloads/{picks_file}"
+    click.echo(f"\nIn the report, tick what to import (pages that look like art start ticked) and press “Save my picks”. Then:\n  {command}")
     if not no_open:
         open_file(out)
 
 
 @cli.command("import")
-@click.argument("folder", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("folder", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--kid", "kid_name", help="Whose art it all is, when the folder names don’t say.")
 @click.option("--dry-run", is_flag=True, help="Show what would happen, and change nothing.")
 @click.option("--ask", is_flag=True, help="Ask before each piece, for folders that mix art with other papers. Ones you say no to are remembered as skipped.")
 @click.option("--first-page-only", "first_only", is_flag=True, help="Import each PDF as one piece, its first page, instead of a piece per page.")
 @click.option("--picks", "picks_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="The picks file saved from the survey’s report: import only what’s ticked there. Pieces added since the survey are skipped, or asked about with --ask.")
 @click.pass_obj
-def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bool, first_only: bool, picks_path: Path | None) -> None:
-    """Import every picture and PDF under FOLDER. A PDF of several pages
-    becomes one piece per page, leaving out blank pages."""
-    root = folder.expanduser().resolve()
-    picks = load_picks(picks_path.expanduser(), root) if picks_path else None
+def import_(url: str, folder: Path | None, kid_name: str | None, dry_run: bool, ask: bool, first_only: bool, picks_path: Path | None) -> None:
+    """Import every picture and PDF under FOLDER, or under every saved folder.
+    A PDF of several pages becomes one piece per page, leaving out blank pages."""
+    targets = targets_for(folder, kid_name)
+    picks = load_picks(picks_path.expanduser()) if picks_path else None
+    if picks and not any(picks_cover(picks, root) for root, _ in targets):
+        where = ", ".join(str(f) for f in picks["folders"])
+        raise click.ClickException(f"Those picks are for {where}. Survey again, and save picks from the new report.")
     if picks and first_only:
         raise click.ClickException("Picks are made page by page, so they can’t be used with --first-page-only.")
     with connect(url) as client:
         kids = check(client.get("/api/gallery"))["kids"]
         if not kids:
             raise click.ClickException("Add the kids first: uv run scripts/fridge.py add-kid NAME YYYY-MM-DD")
-        forced = None
-        if kid_name:
-            forced = next((k for k in kids if k["name"].lower() == kid_name.lower()), None)
-            if not forced:
-                raise click.ClickException(f"No kid called {kid_name}. The fridge has: {', '.join(k['name'] for k in kids)}")
+        forced_for = {}
+        for _, name in targets:
+            if name:
+                forced_for[name] = next((k for k in kids if k["name"].lower() == name.lower()), None)
+                if not forced_for[name]:
+                    raise click.ClickException(f"No kid called {name}. The fridge has: {', '.join(k['name'] for k in kids)}")
         done, skipped_before = fetch_known(client)
 
         counts = {"added": 0, "already": 0, "skipped": 0, "unpicked": 0, "skipped_before": 0}
         to_skip: set[str] = set()  # left out this time, to remember on the fridge
         try:
-            import_files(client, root, kids, forced, picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts)
+            for root, name in targets:
+                if len(targets) > 1:
+                    click.echo(f"== {root}{f' ({name})' if name else ''}")
+                if not root.exists():
+                    click.echo("- not found, so left out")
+                    continue
+                if picks and not picks_cover(picks, root):
+                    click.echo("- not in the survey those picks came from, so left out. Survey again to include it.")
+                    continue
+                if import_files(client, root, kids, forced_for.get(name), picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts):
+                    break
         finally:
             if to_skip and not dry_run:
                 record_skipped(client, to_skip)
@@ -746,8 +865,9 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bo
         click.echo("Fix any wrong names or dates in the files or folders, or on the page after importing, then run it again without --dry-run.")
 
 
-def import_files(client, root, kids, forced, picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts) -> None:
-    """The import's loop over files and their pieces (see import_)."""
+def import_files(client, root, kids, forced, picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts) -> bool:
+    """The import's loop over one folder's files and their pieces (see
+    import_). True if the person chose to stop."""
     stopped = False
     for path in find_files(root):
         plan = plan_for(path, root, kids, forced)
@@ -831,6 +951,7 @@ def import_files(client, root, kids, forced, picks, first_only, ask, dry_run, do
             counts["added"] += 1
         if stopped:
             break
+    return stopped
 
 
 if __name__ == "__main__":

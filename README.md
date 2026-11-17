@@ -67,6 +67,22 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-….json
    ```
 
+   To skip typing the folders each time, save them once, each with its kid.
+   They're kept on your computer only (`fridge.py folders list` says
+   where), never in this repo. Then `survey` and `import` with no folder
+   work through all of them, with one report (a heading per folder) and one
+   picks file:
+
+   ```sh
+   uv run scripts/fridge.py folders add ~/Dropbox/Kids\ Art/Ada --kid Ada
+   uv run scripts/fridge.py folders add ~/Dropbox/School/Bo --kid Bo
+   uv run scripts/fridge.py survey
+   uv run scripts/fridge.py import --picks ~/Downloads/fridge-picks-saved-folders.json
+   ```
+
+   `folders list` shows them and `folders remove PATH` drops one. Naming a
+   folder still works as above, and a saved folder brings its kid.
+
    Picks name pieces by their contents, so renaming or moving a file
    doesn't lose its pick. Anything added to the folder after the survey is
    skipped (or asked about, with `--ask`); survey again to pick it.

@@ -16,6 +16,14 @@ import fridge
 KIDS = [{"id": 1, "name": "Ada", "born": "2019-04-02"}, {"id": 2, "name": "Bo", "born": "2021-07-02"}]
 
 
+@pytest.fixture(autouse=True)
+def saved_folders(tmp_path, monkeypatch):
+    """Keep every test away from the real saved folders on this computer."""
+    path = tmp_path / "config" / "folders.toml"
+    monkeypatch.setenv("FRIDGE_FOLDERS", str(path))
+    return path
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [
@@ -243,11 +251,11 @@ def test_report_marks_what_the_fridge_knows(tmp_path):
     art_page().save(png)
     pdf_hash, png_hash = fridge.sha256(pdf), fridge.sha256(png)
     rows = [
-        (Path("scan.pdf"), "2024", "", fridge.survey_file(pdf), pdf_hash, pdf),
-        (Path("sun.png"), "2024", "", fridge.survey_file(png), png_hash, png),
+        (Path("scan.pdf"), "2024", "", fridge.survey_file(pdf), pdf_hash, pdf, tmp_path),
+        (Path("sun.png"), "2024", "", fridge.survey_file(png), png_hash, png, tmp_path),
     ]
     known = ({fridge.page_hash(pdf_hash, 1)}, {png_hash})
-    page = fridge.report_html(tmp_path, rows, "summary", known)
+    page = fridge.report_html([tmp_path], rows, "summary", known)
     boxes = dict(re.findall(r'<input type="checkbox" data-id="([0-9a-f]{64})"( checked)?>', page))
     assert fridge.page_hash(pdf_hash, 1) not in boxes, "on the fridge: no box"
     assert page.count("On the fridge</span>") == 1
@@ -256,7 +264,7 @@ def test_report_marks_what_the_fridge_knows(tmp_path):
     assert boxes[fridge.page_hash(pdf_hash, 3)] == "", "new but plain: unticked"
     assert 'class="blank st-blank"' in page, "a multi-page PDF's blank page isn't new"
     assert '<body class="view-new">' in page and 'data-view="skipped"' in page
-    offline = fridge.report_html(tmp_path, rows, "summary")
+    offline = fridge.report_html([tmp_path], rows, "summary")
     assert '<body class="view-all">' in offline and 'data-view="new"' not in offline
 
 
@@ -279,14 +287,71 @@ def test_picks_files(tmp_path):
     root = tmp_path / "Artwork"
     (root / "2024").mkdir(parents=True)
     picks = tmp_path / "picks.json"
-    picks.write_text(json.dumps({"version": 1, "folder": str(root), "include": ["a"], "exclude": ["b"]}))
-    assert fridge.load_picks(picks, root) == {"include": {"a"}, "exclude": {"b"}}
-    assert fridge.load_picks(picks, root / "2024")["include"] == {"a"}, "a subfolder of the surveyed folder"
-    with pytest.raises(click.ClickException, match="not "):
-        fridge.load_picks(picks, tmp_path / "Elsewhere")
-    picks.write_text(json.dumps({"version": 2, "folder": str(root), "include": [], "exclude": []}))
+    other = tmp_path / "School"
+    picks.write_text(json.dumps({"version": 2, "folders": [str(root), str(other)], "include": ["a"], "exclude": ["b"]}))
+    loaded = fridge.load_picks(picks)
+    assert loaded == {"include": {"a"}, "exclude": {"b"}, "folders": [root, other]}
+    assert fridge.picks_cover(loaded, root) and fridge.picks_cover(loaded, other)
+    assert fridge.picks_cover(loaded, root / "2024"), "a subfolder of a surveyed folder"
+    assert fridge.picks_cover(loaded, tmp_path), "a folder around one"
+    assert not fridge.picks_cover(loaded, tmp_path / "Elsewhere")
+    picks.write_text(json.dumps({"version": 1, "folder": str(root), "include": ["a"], "exclude": []}))
+    assert fridge.load_picks(picks)["folders"] == [root], "picks saved before folders could be saved still work"
+    picks.write_text(json.dumps({"version": 3, "folders": [str(root)], "include": [], "exclude": []}))
     with pytest.raises(click.ClickException, match="isn’t a picks file"):
-        fridge.load_picks(picks, root)
+        fridge.load_picks(picks)
+
+
+def test_saved_folders(tmp_path, saved_folders):
+    art, school = tmp_path / "Ada" / "Art", tmp_path / "Bo" / "School \"quoted\""
+    art.mkdir(parents=True)
+    school.mkdir(parents=True)
+    run = lambda *args: CliRunner().invoke(fridge.cli, list(args))
+    assert "No folders saved yet" in run("folders", "list").output
+    assert run("folders", "add", str(art), "--kid", "Ada").exit_code == 0
+    result = run("folders", "add", str(school), "--kid", "Bo")
+    assert result.exit_code == 0 and "Folders saved: 2" in result.output
+    assert run("folders", "add", str(art), "--kid", "Ada").output.endswith(f"Folders saved: 2, in {saved_folders}.\n"), "adding again replaces"
+    assert fridge.load_folders() == [(school, "Bo"), (art, "Ada")]
+    assert tomllib.loads(saved_folders.read_text())["folder"][0]["path"] == str(school)
+    listed = run("folders", "list").output
+    assert f"Bo · {school}\n" in listed and f"Ada · {art}\n" in listed
+    assert run("folders", "add", str(art)).exit_code != 0, "a saved folder needs its kid"
+    assert run("folders", "remove", str(tmp_path / "nope")).exit_code != 0
+    assert run("folders", "remove", str(school)).exit_code == 0
+    assert fridge.load_folders() == [(art, "Ada")]
+
+
+def test_what_survey_and_import_work_on(tmp_path):
+    with pytest.raises(click.ClickException, match="Name a folder, or save some first"):
+        fridge.targets_for(None, None)
+    art = tmp_path / "Art"
+    fridge.save_folders([(art, "Ada"), (tmp_path / "Gone", "Bo")])
+    assert fridge.targets_for(None, None) == [(art, "Ada"), (tmp_path / "Gone", "Bo")]
+    assert fridge.targets_for(art, None) == [(art.resolve(), "Ada")], "a saved folder brings its kid"
+    assert fridge.targets_for(art, "Bo") == [(art.resolve(), "Bo")], "--kid wins"
+    assert fridge.targets_for(tmp_path / "Other", None) == [((tmp_path / "Other").resolve(), None)]
+    with pytest.raises(click.ClickException, match="--kid goes with a folder"):
+        fridge.targets_for(None, "Ada")
+
+
+def test_survey_covers_every_saved_folder_in_one_report(tmp_path):
+    ada, bo = tmp_path / "Ada" / "Artwork", tmp_path / "Bo" / "Artwork"
+    for folder in (ada, bo):
+        folder.mkdir(parents=True)
+        art_page().save(folder / "sun.png")
+    fridge.save_folders([(ada, "Ada"), (bo, "Bo"), (tmp_path / "Gone", "Bo")])
+    report = tmp_path / "report.html"
+    result = CliRunner().invoke(fridge.cli, ["survey", "--offline", "--report", str(report), "--no-open"])
+    assert result.exit_code == 0, result.output
+    assert f"== {ada} (Ada)" in result.output and f"== {bo} (Bo)" in result.output
+    assert f"== {tmp_path / 'Gone'} (Bo)\n- not found, so left out" in result.output
+    assert "2 files with 2 pages" in result.output
+    assert "uv run scripts/fridge.py import --picks ~/Downloads/fridge-picks-saved-folders.json" in result.output
+    page = report.read_text()
+    assert page.count('<h2 class="folder">') == 2, "a heading per folder"
+    assert json.dumps([str(ada), str(bo)]) in page, "the picks name the folders looked at"
+    assert '"fridge-picks-saved-folders.json"' in page
 
 
 def test_picks_file_names_tell_two_kids_folders_apart():
