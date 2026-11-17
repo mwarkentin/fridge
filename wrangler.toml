@@ -1,0 +1,39 @@
+# The gallery's Worker: the page, its API and the scans. It deploys from
+# .github/workflows/deploy.yml. Everything around it (the bucket, the
+# database, the Cloudflare Access sign-in, the custom domain and the deploy
+# token) is made by mwarkentin/infra, in fridge.tf.
+name = "fridge"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+# Reachable only through its custom domain, which Cloudflare Access guards.
+# A workers.dev address or preview URL would skip the sign-in.
+workers_dev = false
+preview_urls = false
+# No routes here: the custom domain belongs to infra (worker_domains.tf), and
+# declaring routes would make wrangler its owner.
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+# Every request goes through the Worker's sign-in check first, the page included.
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fridge"
+# Infra's D1_DATABASE_ID replaces this when the deploy workflow runs. The ID
+# isn't secret, but keeping it out of the file means the infra apply that
+# makes the database is all a deploy needs.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ART"
+bucket_name = "fridge-art"
+
+[vars]
+# The deploy fills these in from the repo's Actions variables, which infra
+# sets. Left empty, the Worker turns everyone away.
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""

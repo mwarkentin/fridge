@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party actions are pinned to commits; Dependabot proposes updates.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Worker tests
+        run: npm test
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Import script tests
+        run: uv run --locked pytest
+
+  # The repo is public, and the family isn't. These catch the two easiest
+  # slips: a real scan committed, and a kid's name in a file, commit message
+  # or pull request.
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: No pictures outside public/icons
+        run: |
+          found=$(git ls-files | grep -iE '\.(jpe?g|png|gif|webp|heic|heif|tiff?|bmp|pdf)$' | grep -v '^public/icons/' || true)
+          if [ -n "$found" ]; then
+            echo "::error::Pictures belong in the fridge's bucket, not in the repo. Remove: $found"
+            exit 1
+          fi
+
+      # KID_NAMES (one per line, set by mwarkentin/infra) never reaches a
+      # pull request from a fork, so this only runs for branches here.
+      - name: No kids' names
+        env:
+          KID_NAMES: ${{ secrets.KID_NAMES }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_TEXT: ${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}
+        run: |
+          if [ -z "$KID_NAMES" ]; then
+            echo "::notice::KID_NAMES isn't set, so names weren't checked."
+            exit 0
+          fi
+          names=$(mktemp)
+          printf '%s\n' "$KID_NAMES" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' > "$names"
+          # Masked, so the log shows *** wherever a name would appear.
+          while read -r name; do echo "::add-mask::$name"; done < "$names"
+          status=0
+          if git grep -I -n -i -w -F -f "$names" -- . ':!package-lock.json' ':!uv.lock'; then
+            echo "::error::A kid's name (shown as ***) is in the lines above."
+            status=1
+          fi
+          if git ls-files | grep -i -w -F -f "$names"; then
+            echo "::error::A kid's name (shown as ***) is in the file names above."
+            status=1
+          fi
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            for c in $(git rev-list "$BASE..$HEAD"); do
+              if git log -1 --format=%B "$c" | grep -q -i -w -F -f "$names"; then
+                echo "::error::The message of commit $c names a kid. Reword it before merging."
+                status=1
+              fi
+            done
+          fi
+          if printf '%s' "$PR_TEXT" | grep -q -i -w -F -f "$names"; then
+            echo "::error::The pull request's title or description names a kid."
+            status=1
+          fi
+          exit $status

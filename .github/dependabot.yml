@@ -1,0 +1,23 @@
+# Weekly updates, each version at least two weeks old before it's proposed.
+# A uv update to pyproject.toml also needs the same pin in the header of
+# scripts/fridge.py; a test fails until it's there.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
