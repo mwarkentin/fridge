@@ -133,6 +133,26 @@ test('serves every icon and the manifest the page links to', async () => {
   for (const href of links) assert.equal((await call(href, { as: VIEWER })).status, 200, href);
 });
 
+test('serves every font the stylesheet names, each with its licence, and no others', async () => {
+  const css = readFileSync('public/app.css', 'utf8');
+  const fonts = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].map((m) => m[1]);
+  assert.ok(fonts.length > 0);
+  const files = readdirSync('public/fonts');
+  for (const font of fonts) {
+    assert.match(font, /\.woff2$/, font);
+    const res = await call(`/fonts/${font}`, { as: VIEWER });
+    assert.equal(res.status, 200, font);
+    assert.match(res.headers.get('Content-Type'), /^font\/woff2/, font);
+    const name = font.replace(/\.woff2$/, '');
+    assert.ok(files.includes(`OFL-${name}.txt`) || files.includes(`LICENSE-${name}.txt`), `${font} needs its licence beside it`);
+  }
+  // Nothing left over from fonts the page stopped using.
+  for (const file of files) {
+    const name = file.replace(/^(OFL|LICENSE)-|\.(txt|woff2?)$/g, '');
+    assert.ok(fonts.includes(`${name}.woff2`), `public/fonts/${file} isn't used by app.css`);
+  }
+});
+
 test('a parent adds a kid and a piece, and everyone can see it', async () => {
   const kid = await call('/api/kids', { method: 'POST', json: { name: 'Ada', born: '2019-04-02' } });
   assert.equal(kid.status, 201);
