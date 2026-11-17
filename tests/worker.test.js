@@ -108,6 +108,13 @@ test('serves the web app manifest only to signed-in people', async () => {
   assert.ok(manifest.icons.some((i) => i.purpose === 'maskable'));
 });
 
+test('serves every icon and the manifest the page links to', async () => {
+  const html = readFileSync('public/index.html', 'utf8');
+  const links = [...html.matchAll(/<link rel="(?:icon|apple-touch-icon|manifest)" href="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(links.length, 3);
+  for (const href of links) assert.equal((await call(href, { as: VIEWER })).status, 200, href);
+});
+
 test('a parent adds a kid and a piece, and everyone can see it', async () => {
   const kid = await call('/api/kids', { method: 'POST', json: { name: 'Ada', born: '2019-04-02' } });
   assert.equal(kid.status, 201);
