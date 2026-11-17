@@ -80,10 +80,16 @@ async function api(request, env, who, url) {
     await update(env, 'kids', Number(m[1]), kidFields(await body(request), true));
     return json({ ok: true });
   }
+  // What the importer and the survey already know: pieces on the fridge
+  // (`hashes`), and pieces a parent chose not to import (`skipped`).
   if (method === 'GET' && path === '/api/imported') {
-    const rows = (await env.DB.prepare('SELECT source_hash FROM pieces WHERE source_hash IS NOT NULL').all()).results;
-    return json({ hashes: rows.map((r) => r.source_hash) });
+    const [imported, skipped] = await env.DB.batch([
+      env.DB.prepare('SELECT source_hash FROM pieces WHERE source_hash IS NOT NULL'),
+      env.DB.prepare('SELECT source_hash FROM skipped'),
+    ]);
+    return json({ hashes: imported.results.map((r) => r.source_hash), skipped: skipped.results.map((r) => r.source_hash) });
   }
+  if (method === 'POST' && path === '/api/skipped') return json(await recordSkipped(env, who, await body(request)));
   if (method === 'POST' && path === '/api/pieces') return await addPiece(env, who, request);
   if ((m = path.match(/^\/api\/pieces\/(\d+)$/))) {
     const id = Number(m[1]);
@@ -257,7 +263,29 @@ async function addPiece(env, who, request) {
     await env.DB.prepare('DELETE FROM pieces WHERE id = ?').bind(row.id).run();
     throw e;
   }
+  // Imported after all: it's no longer a skipped piece.
+  if (hash) await env.DB.prepare('DELETE FROM skipped WHERE source_hash = ?').bind(hash).run();
   return json({ id: row.id }, 201);
+}
+
+// { add: [hash...], remove: [hash...] }: remember pieces a parent chose not
+// to import, or forget that choice.
+const HASH = /^[0-9a-f]{64}$/;
+async function recordSkipped(env, who, b) {
+  const lists = {};
+  for (const key of ['add', 'remove']) {
+    const list = b[key] ?? [];
+    if (!Array.isArray(list) || list.length > 5000 || !list.every((h) => typeof h === 'string' && HASH.test(h))) {
+      bad(`${key} must be a list of at most 5000 SHA-256 hashes in hex.`);
+    }
+    lists[key] = [...new Set(list)];
+  }
+  const statements = [
+    ...lists.add.map((h) => env.DB.prepare('INSERT OR IGNORE INTO skipped (source_hash, skipped_by) VALUES (?, ?)').bind(h, who.email)),
+    ...lists.remove.map((h) => env.DB.prepare('DELETE FROM skipped WHERE source_hash = ?').bind(h)),
+  ];
+  for (let i = 0; i < statements.length; i += 100) await env.DB.batch(statements.slice(i, i + 100));
+  return { added: lists.add.length, removed: lists.remove.length };
 }
 
 async function deletePiece(env, id) {

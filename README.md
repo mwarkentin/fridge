@@ -67,9 +67,39 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-….json
    ```
 
+   To skip typing the folders each time, save them once, each with its kid.
+   They're kept on your computer only (`fridge.py folders list` says
+   where), never in this repo. Then `survey` and `import` with no folder
+   work through all of them, with one report (a heading per folder) and one
+   picks file:
+
+   ```sh
+   uv run scripts/fridge.py folders add ~/Dropbox/Kids\ Art/Ada --kid Ada
+   uv run scripts/fridge.py folders add ~/Dropbox/School/Bo --kid Bo
+   uv run scripts/fridge.py survey
+   uv run scripts/fridge.py import --picks ~/Downloads/fridge-picks-saved-folders.json
+   ```
+
+   `folders list` shows them and `folders remove PATH` drops one. Naming a
+   folder still works as above, and a saved folder brings its kid.
+
    Picks name pieces by their contents, so renaming or moving a file
    doesn't lose its pick. Anything added to the folder after the survey is
    skipped (or asked about, with `--ask`); survey again to pick it.
+
+   The fridge remembers both kinds of decision. What's imported is on the
+   fridge, and what you leave unticked (or answer "no" to with `--ask`) is
+   remembered as skipped, from any computer. So a later survey of the same
+   folder shows only what's new, with pieces already on the fridge and ones
+   skipped before under **Everything**, and a later import, picks or not,
+   leaves skipped pieces out. To import a skipped piece after all, tick it
+   in a survey's report (**Skipped before** lists them). `survey --offline`
+   doesn't ask the fridge, and shows everything as new.
+
+   Adding new art later is the same loop: scan it into its folder, survey
+   (you'll see just the new pieces), tick, save, import. Delete the picks
+   file once it's imported: the fridge doesn't need it, and the browser
+   would save the next one under another name, such as `… (1).json`.
 
    A PDF of several pages, as a scanner makes from a stack of pieces,
    becomes one piece per page, leaving out blank pages. `--first-page-only`
