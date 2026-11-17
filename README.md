@@ -55,13 +55,20 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 5. **Import the scans.** Survey a folder first. It works offline, uploads
    nothing, and opens a report with a picture of every page, saying which
    pages are blank, which look like art and which are plain (documents, or
-   pencil drawings). Then look at a dry run, and import:
+   pencil drawings). Each piece has a box to tick: pages that look like art
+   start ticked, plain and blank ones don't, and clicking a picture opens
+   the original. Press **Save my picks**, then import with the file it
+   saves; the survey prints the exact command:
 
    ```sh
    uv run scripts/fridge.py survey ~/Dropbox/Kids\ Art --kid Ada
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --dry-run
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-dropbox-kids-art.json --dry-run
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --picks ~/Downloads/fridge-picks-dropbox-kids-art.json
    ```
+
+   Picks name pieces by their contents, so renaming or moving a file
+   doesn't lose its pick. Anything added to the folder after the survey is
+   skipped (or asked about, with `--ask`); survey again to pick it.
 
    A PDF of several pages, as a scanner makes from a stack of pieces,
    becomes one piece per page, leaving out blank pages. `--first-page-only`

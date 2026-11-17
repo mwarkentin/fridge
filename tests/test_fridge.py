@@ -1,10 +1,12 @@
 """The import script's guesses about whose a file is and when it was made,
 and the copies it makes. Kid names here are made up."""
 
+import json
 import re
 import tomllib
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 from PIL import Image, ImageDraw
@@ -208,6 +210,51 @@ def test_survey_reports_without_signing_in(tmp_path):
     page = report.read_text()
     assert page.count("data:image/jpeg;base64,") == 4
     assert "PDFs with several pages" in page
+    assert "--kid Ada --picks ~/Downloads/fridge-picks-" in result.output
+
+    # A box per piece, with the ids import uses; art starts ticked, plain and blank don't.
+    pdf = folder / "2024" / "2024-05-29 ada rocket.pdf"
+    file_hash = fridge.sha256(pdf)
+    boxes = dict(re.findall(r'<input type="checkbox" data-id="([0-9a-f]{64})"( checked)?>', page))
+    assert boxes[fridge.page_hash(file_hash, 1)] == " checked"
+    assert boxes[fridge.page_hash(file_hash, 2)] == ""
+    assert boxes[fridge.page_hash(file_hash, 3)] == ""
+    assert boxes[fridge.sha256(folder / "2024" / "IMG_1234.png")] == " checked"
+    assert f'href="{pdf.as_uri()}#page=3"' in page
+
+
+def test_piece_ids_match_what_import_uses(tmp_path):
+    pdf = three_page_pdf(tmp_path / "scan.pdf")
+    pieces, _ = fridge.pieces_for(pdf, "f" * 64)
+    assert [fridge.piece_id("f" * 64, p) for p in fridge.survey_file(pdf) if p.kind != "blank"] == [h for h, _, _ in pieces]
+    png = tmp_path / "one.png"
+    art_page().save(png)
+    assert fridge.piece_id("a" * 64, fridge.survey_file(png)[0]) == "a" * 64
+
+
+def test_a_picked_blank_page_is_kept(tmp_path):
+    pdf = three_page_pdf(tmp_path / "scan.pdf")
+    pieces, blanks = fridge.pieces_for(pdf, "f" * 64, keep={fridge.page_hash("f" * 64, 2)})
+    assert [page for _, page, _ in pieces] == [1, 2, 3] and blanks == []
+
+
+def test_picks_files(tmp_path):
+    root = tmp_path / "Artwork"
+    (root / "2024").mkdir(parents=True)
+    picks = tmp_path / "picks.json"
+    picks.write_text(json.dumps({"version": 1, "folder": str(root), "include": ["a"], "exclude": ["b"]}))
+    assert fridge.load_picks(picks, root) == {"include": {"a"}, "exclude": {"b"}}
+    assert fridge.load_picks(picks, root / "2024")["include"] == {"a"}, "a subfolder of the surveyed folder"
+    with pytest.raises(click.ClickException, match="not "):
+        fridge.load_picks(picks, tmp_path / "Elsewhere")
+    picks.write_text(json.dumps({"version": 2, "folder": str(root), "include": [], "exclude": []}))
+    with pytest.raises(click.ClickException, match="isn’t a picks file"):
+        fridge.load_picks(picks, root)
+
+
+def test_picks_file_names_tell_two_kids_folders_apart():
+    assert fridge.picks_name(Path("/x/Ada/Artwork")) == "fridge-picks-ada-artwork.json"
+    assert fridge.picks_name(Path("/x/Bo/School/Big Hill PS")) == "fridge-picks-school-big-hill-ps.json"
 
 
 def test_script_pins_match_pyproject():

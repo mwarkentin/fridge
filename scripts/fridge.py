@@ -41,6 +41,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -310,16 +311,50 @@ def single_page_pdf(path: Path, number: int) -> bytes:
         src.close()
 
 
-def pieces_for(path: Path, file_hash: str, split: bool = True) -> tuple[list[tuple[str, int | None, int]], list[int]]:
+def piece_id(file_hash: str, page: Page) -> str:
+    """The source hash import gives that page's piece: the page's own for a
+    PDF of several pages, the file's otherwise (as pieces_for does)."""
+    return page_hash(file_hash, page.number) if page.count > 1 else file_hash
+
+
+def pieces_for(path: Path, file_hash: str, split: bool = True, keep: set[str] = frozenset()) -> tuple[list[tuple[str, int | None, int]], list[int]]:
     """What one file becomes: (source hash, page or None, page count) for each
     piece, and the blank pages left out. A PDF of several pages becomes one
-    piece per page that isn't blank; anything else is one piece."""
+    piece per page that isn't blank, or is in `keep` (picked in the survey);
+    anything else is one piece."""
     if split and path.suffix.lower() == ".pdf":
         pages = survey_file(path)
         if len(pages) > 1:
-            pieces = [(page_hash(file_hash, p.number), p.number, len(pages)) for p in pages if p.kind != "blank"]
-            return pieces, [p.number for p in pages if p.kind == "blank"]
+            kept = [p for p in pages if p.kind != "blank" or piece_id(file_hash, p) in keep]
+            pieces = [(piece_id(file_hash, p), p.number, len(pages)) for p in kept]
+            return pieces, [p.number for p in pages if p not in kept]
     return [(file_hash, None, 1)], []
+
+
+# ---- Picks: what to import, ticked in the survey's report ----
+PICKS_VERSION = 1
+
+
+def picks_name(root: Path) -> str:
+    """The name the report saves picks under: the folder and its parent, so
+    two kids' Artwork folders don't share one."""
+    return "fridge-picks-" + re.sub(r"[^a-z0-9]+", "-", f"{root.parent.name} {root.name}".lower()).strip("-") + ".json"
+
+
+def load_picks(path: Path, root: Path) -> dict[str, set[str]]:
+    """The pieces ticked (include) and unticked (exclude) in a survey's report,
+    by source hash, so renaming or moving a file doesn't lose its pick."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("version") != PICKS_VERSION:
+            raise ValueError
+        picks = {"include": set(data["include"]), "exclude": set(data["exclude"])}
+        folder = Path(data["folder"])
+    except Exception:
+        raise click.ClickException(f"{path.name} isn’t a picks file saved from the survey’s report.")
+    if not (root == folder or folder in root.parents or root in folder.parents):
+        raise click.ClickException(f"Those picks are for {folder}, not {root}. Survey this folder, and save picks from its report.")
+    return picks
 
 
 def when_text(found: tuple[str, str, str] | None) -> str:
@@ -330,7 +365,9 @@ def when_text(found: tuple[str, str, str] | None) -> str:
 
 
 def report_html(root: Path, rows: list, summary: str) -> str:
-    """A page to look through in a browser: every file, with a picture of every page."""
+    """A page to look through in a browser: every file, with a picture of every
+    page and a box to tick each piece to import. Pages that look like art
+    start ticked. "Save my picks" downloads them for import --picks."""
     def data_uri(im: Image.Image) -> str:
         small = im.copy()
         small.thumbnail((220, 220))
@@ -339,16 +376,19 @@ def report_html(root: Path, rows: list, summary: str) -> str:
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
     sections = []
-    for rel, when, title, pages in rows:
+    for rel, when, title, pages, digest, path in rows:
         size = f" · {pages[0].size_in[0]:.1f} × {pages[0].size_in[1]:.1f} in" if pages[0].size_in else ""
         figures = "".join(
-            f'<figure class="{p.kind}"><img src="{data_uri(p.thumb)}" alt=""><figcaption>'
-            f'{f"Page {p.number}: " if len(pages) > 1 else ""}{KINDS[p.kind]}</figcaption></figure>'
+            f'<figure class="{p.kind}"><a href="{html.escape(path.as_uri() + (f"#page={p.number}" if path.suffix.lower() == ".pdf" else ""))}" '
+            f'target="_blank" rel="noopener" title="Open the original"><img src="{data_uri(p.thumb)}" alt=""></a>'
+            f'<label class="pick"><input type="checkbox" data-id="{piece_id(digest, p)}"{" checked" if p.kind == "art" else ""}> Import</label>'
+            f'<figcaption>{f"Page {p.number}: " if len(pages) > 1 else ""}{KINDS[p.kind]}</figcaption></figure>'
             for p in pages
         )
         classes = " ".join(["file", "multi" if len(pages) > 1 else "", "has-plain" if any(p.kind == "plain" for p in pages) else ""])
         sections.append(
-            f'<section class="{classes}"><h2>{html.escape(str(rel))}</h2>'
+            f'<section class="{classes}"><div class="head"><h2>{html.escape(str(rel))}</h2>'
+            f'<span class="bulk"><button type="button" data-all>All</button><button type="button" data-none>None</button></span></div>'
             f'<p>{html.escape(when)} · {html.escape(f"“{title}”") if title else "untitled"} · '
             f'{len(pages)} page{"s" if len(pages) != 1 else ""}{size}</p><div class="pages">{figures}</div></section>'
         )
@@ -371,9 +411,19 @@ figure {{ margin: 0; width: 150px; }} figure img {{ width: 100%; height: auto; d
 figcaption {{ font-size: 0.8rem; color: var(--muted); margin-top: 4px; }}
 figure.art figcaption {{ color: var(--art); }} figure.plain figcaption {{ color: var(--plain); font-weight: 600; }} figure.blank {{ opacity: 0.45; }}
 body.only-multi .file:not(.multi), body.only-plain .file:not(.has-plain) {{ display: none; }}
+.picks {{ position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }}
+.picks button {{ font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 0; background: var(--ink); color: var(--bg); cursor: pointer; }}
+.picks .note {{ color: var(--muted); font-size: 0.9rem; }}
+.head {{ display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; align-items: baseline; }}
+.bulk {{ display: flex; gap: 6px; }} .bulk button {{ font: inherit; font-size: 0.8rem; padding: 2px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }}
+.pick {{ display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }}
+.pick input {{ width: 18px; height: 18px; margin: 0; }}
+figure:has(input:not(:checked)) img {{ opacity: 0.4; }}
 </style></head><body><main>
 <h1>Fridge survey</h1>
 <p class="lede">{html.escape(str(root))}<br>{html.escape(summary)}</p>
+<div class="picks"><span id="count"></span><button type="button" id="save">Save my picks</button>
+<span class="note" id="saved">Ticked pieces get imported. Plain pages start unticked: tick the pencil drawings you want. Click a picture to open the original.</span></div>
 <div class="filters" role="group" aria-label="Show">
 <button type="button" data-show="" aria-pressed="true">Everything</button>
 <button type="button" data-show="only-multi" aria-pressed="false">PDFs with several pages</button>
@@ -382,6 +432,42 @@ body.only-multi .file:not(.multi), body.only-plain .file:not(.has-plain) {{ disp
 {"".join(sections)}
 </main>
 <script>
+const ROOT = {json.dumps(str(root)).replace("</", "<\\/")};
+const NAME = {json.dumps(picks_name(root)).replace("</", "<\\/")};
+const KEY = 'fridge-picks:' + ROOT;
+const boxes = [...document.querySelectorAll('input[data-id]')];
+let kept = {{}};
+try {{ kept = JSON.parse(localStorage.getItem(KEY) || '{{}}'); }} catch {{}}
+for (const b of boxes) if (b.dataset.id in kept) b.checked = kept[b.dataset.id];
+function set(id, on) {{ for (const b of boxes) if (b.dataset.id === id) b.checked = on; }}
+function remember() {{
+  const now = {{}};
+  for (const b of boxes) now[b.dataset.id] = b.checked;
+  try {{ localStorage.setItem(KEY, JSON.stringify(now)); }} catch {{}}
+  const ids = new Set(boxes.map((b) => b.dataset.id));
+  const on = new Set(boxes.filter((b) => b.checked).map((b) => b.dataset.id));
+  document.getElementById('count').textContent = `${{on.size}} of ${{ids.size}} pieces ticked`;
+  return {{ ids, on }};
+}}
+document.addEventListener('change', (e) => {{ if (e.target.matches('input[data-id]')) {{ set(e.target.dataset.id, e.target.checked); remember(); }} }});
+document.addEventListener('click', (e) => {{
+  const bulk = e.target.closest('[data-all], [data-none]');
+  if (!bulk) return;
+  bulk.closest('.file').querySelectorAll('input[data-id]').forEach((b) => set(b.dataset.id, bulk.hasAttribute('data-all')));
+  remember();
+}});
+document.getElementById('save').addEventListener('click', () => {{
+  const {{ ids, on }} = remember();
+  const picks = {{ version: {PICKS_VERSION}, folder: ROOT, include: [...on], exclude: [...ids].filter((id) => !on.has(id)) }};
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(picks, null, 1)], {{ type: 'application/json' }}));
+  a.download = NAME;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  document.getElementById('saved').textContent = `Saved ${{NAME}} to your downloads. Import with --picks and that file.`;
+}});
+remember();
 document.querySelectorAll('.filters button').forEach((b) => b.addEventListener('click', () => {{
   document.body.className = b.dataset.show;
   document.querySelectorAll('.filters button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -503,6 +589,7 @@ def survey(folder: Path, kid_name: str | None, report_path: Path | None, no_open
         rel = path.relative_to(root)
         try:
             pages = survey_file(path)
+            digest = sha256(path)
         except Exception as e:
             totals["unreadable"] += 1
             click.echo(f"- {rel}: couldn’t open it: {e}")
@@ -516,7 +603,7 @@ def survey(folder: Path, kid_name: str | None, report_path: Path | None, no_open
         when, title = when_text(date_from_path(rel)), title_from(path.stem, kid_name)
         counts = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
         click.echo(f"{rel}\n    {when} · {f'“{title}”' if title else 'untitled'} · {len(pages)} page{'s' if len(pages) != 1 else ''}: {counts}")
-        rows.append((rel, when, title, pages))
+        rows.append((rel, when, title, pages, digest, path))
 
     def n(count: int, one: str, many: str) -> str:
         return f"{count} {one if count == 1 else many}"
@@ -533,6 +620,11 @@ def survey(folder: Path, kid_name: str | None, report_path: Path | None, no_open
     out = report_path or Path(tempfile.gettempdir()) / f"fridge-survey-{datetime.now():%Y%m%d-%H%M%S}.html"
     out.write_text(report_html(root, rows, summary), encoding="utf-8")
     click.echo(f"Report: {out}")
+    kid = f" --kid {shlex.quote(kid_name)}" if kid_name else ""
+    click.echo(
+        "\nIn the report, tick what to import (pages that look like art start ticked) and press “Save my picks”. Then:\n"
+        f"  uv run scripts/fridge.py import {shlex.quote(str(root))}{kid} --picks ~/Downloads/{picks_name(root)}"
+    )
     if not no_open:
         open_file(out)
 
@@ -543,11 +635,15 @@ def survey(folder: Path, kid_name: str | None, report_path: Path | None, no_open
 @click.option("--dry-run", is_flag=True, help="Show what would happen, and change nothing.")
 @click.option("--ask", is_flag=True, help="Ask before each piece, for folders that mix art with other papers. Ones you skip are asked about again next time.")
 @click.option("--first-page-only", "first_only", is_flag=True, help="Import each PDF as one piece, its first page, instead of a piece per page.")
+@click.option("--picks", "picks_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="The picks file saved from the survey’s report: import only what’s ticked there. Pieces added since the survey are skipped, or asked about with --ask.")
 @click.pass_obj
-def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bool, first_only: bool) -> None:
+def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bool, first_only: bool, picks_path: Path | None) -> None:
     """Import every picture and PDF under FOLDER. A PDF of several pages
     becomes one piece per page, leaving out blank pages."""
     root = folder.expanduser().resolve()
+    picks = load_picks(picks_path.expanduser(), root) if picks_path else None
+    if picks and first_only:
+        raise click.ClickException("Picks are made page by page, so they can’t be used with --first-page-only.")
     with connect(url) as client:
         kids = check(client.get("/api/gallery"))["kids"]
         if not kids:
@@ -559,7 +655,7 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bo
                 raise click.ClickException(f"No kid called {kid_name}. The fridge has: {', '.join(k['name'] for k in kids)}")
         done = set(check(client.get("/api/imported"))["hashes"])
 
-        counts = {"added": 0, "already": 0, "skipped": 0}
+        counts = {"added": 0, "already": 0, "skipped": 0, "unpicked": 0}
         stopped = False
         for path in find_files(root):
             plan = plan_for(path, root, kids, forced)
@@ -569,7 +665,7 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bo
                 continue
             digest = sha256(path)
             try:
-                pieces, blanks = pieces_for(path, digest, split=not first_only)
+                pieces, blanks = pieces_for(path, digest, split=not first_only, keep=picks["include"] if picks else frozenset())
             except Exception as e:
                 counts["skipped"] += 1
                 click.echo(f"- {plan.relative}: couldn’t open it: {e}")
@@ -581,11 +677,19 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bo
                     counts["already"] += 1
                     continue
                 where = f"{plan.relative}, page {page} of {page_count}" if page else str(plan.relative)
+                picked = None if picks is None else "in" if piece_hash in picks["include"] else "out" if piece_hash in picks["exclude"] else "new"
+                if picked == "out":
+                    counts["unpicked"] += 1
+                    continue
+                if picked == "new" and not ask:
+                    counts["skipped"] += 1
+                    click.echo(f"- {where}: not in your picks (new since the survey?). Survey again, or add --ask.")
+                    continue
                 click.echo(f"+ {where}\n    {describe(plan)}")
                 if dry_run:
                     counts["added"] += 1
                     continue
-                if ask:
+                if ask and picked != "in":
                     answer = ask_about(path)
                     if answer == "q":
                         stopped = True
@@ -631,7 +735,8 @@ def import_(url: str, folder: Path, kid_name: str | None, dry_run: bool, ask: bo
                 break
 
     verb = "Would add" if dry_run else "Added"
-    click.echo(f"\n{verb} {counts['added']}. Already on the fridge: {counts['already']}. Skipped: {counts['skipped']}.")
+    left_out = f" Left out by your picks: {counts['unpicked']}." if picks else ""
+    click.echo(f"\n{verb} {counts['added']}. Already on the fridge: {counts['already']}. Skipped: {counts['skipped']}.{left_out}")
     if dry_run and counts["added"]:
         click.echo("Fix any wrong names or dates in the files or folders, or on the page after importing, then run it again without --dry-run.")
 
