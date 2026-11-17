@@ -9,6 +9,10 @@
   <meta name="apple-mobile-web-app-title" content="Fridge">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <!-- use-credentials: the browser fetches a manifest without cookies otherwise, and Access would answer with its sign-in page. -->
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <meta name="theme-color" content="#edf0ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141819" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/app.css">
   <script type="module" src="/app.js"></script>
 </head>
