@@ -84,6 +84,9 @@ DAY = re.compile(r"(?<!\d)((?:19|20)\d{2})[-_. ]?(0[1-9]|1[0-2])[-_. ]?(0[1-9]|[
 MONTH = re.compile(r"(?<!\d)((?:19|20)\d{2})[-_. ](0[1-9]|1[0-2])(?!\d)")
 MONTH_NAME = re.compile(r"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[-_ ,]*((?:19|20)\d{2})(?!\d)")
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+# A filing label: in "2024-05-29 Ada School Art Bundle rocket", what comes
+# before it (kid, nickname, school) is filing, and the title follows it.
+LABEL = re.compile(r"(?i)(?<![a-z])(?:art[-_ ]+)?bundle(?![a-z])")
 
 
 # ---- Working out what each file is ----
@@ -149,15 +152,28 @@ def match_kid(relative: Path, kids: list[dict]) -> dict | None:
     return next(iter(hits.values())) if len(hits) == 1 else None
 
 
+def short_for(word: str, name: str) -> bool:
+    """Whether word is a short form of name, as Theo is of Theodora. Four
+    letters at least, so "The" and "And" stay in titles."""
+    word = re.sub(r"['’]s$", "", word.lower())
+    return len(word) >= 4 and name.lower().startswith(word)
+
+
 def title_from(stem: str, owner: str | None) -> str:
-    """A title from the file name, without its date, the owner's name, or
-    camera and scanner words. Other kids' names stay: "me and Bo"."""
+    """A title from the file name, without its date, the owner's name (or a
+    short form of it), camera and scanner words, or anything before a filing
+    label such as "Art Bundle". Other kids' names stay: "me and Bo"."""
     t = stem
     for rx in (DAY, MONTH, MONTH_NAME, YEAR):
         t = rx.sub(" ", t)
+    labels = list(LABEL.finditer(t))
+    if labels:
+        t = t[labels[-1].end():]
     if owner:
         t = name_pattern(owner).sub(" ", t)
     words = [w for w in re.sub(r"[-_.()\[\]]+", " ", t).split() if w.lower() not in NOT_TITLES]
+    if owner:
+        words = [w for w in words if not short_for(w, owner)]
     words = [w for w in words if not (w.isdigit() and len(w) >= 3)]  # camera counters like 1234
     if all(w.isdigit() for w in words):
         return ""  # "Scan 3"

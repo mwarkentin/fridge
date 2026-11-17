@@ -110,8 +110,13 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    kid's. When it was made comes from a date in the file or folder name:
    `2024-05-29`, `20240529`, `2024-05`, `May 2024` or `2024`. With none, it
    guesses the month from the photo's data or the file's date, which is
-   usually when it was scanned, and the dry run says so. Fix anything wrong
-   on the page afterwards with **Edit details**.
+   usually when it was scanned, and the dry run says so. The title is the
+   rest of the file name, without the kid's name (or a short form of it of
+   four letters or more, like Theo for Theodora) and scanner words. In a
+   name with a filing label, like `2024-05-29 Ada Big-Hill Art Bundle
+   rocket.pdf`, only what follows "Art Bundle" (or "Bundle") is the title.
+   Titles are set when a piece is imported, so check them in the dry run.
+   Fix anything wrong on the page afterwards with **Edit details**.
 
    For a folder that mixes art with other papers (a school folder with
    report cards, say), add `--ask`: it shows each file and asks whether to

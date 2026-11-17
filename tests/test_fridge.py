@@ -71,6 +71,14 @@ def test_whose_it_is(path, kid):
         ("Bo's dragon (May 2025)", "Bo", "Dragon"),
         ("me-age-8", "Ada", "Me age 8"),
         ("me-and-ada", "Bo", "Me and ada"),
+        ("2026-03-01 Ada Art Bundle rocket ship", "Ada", "Rocket ship"),
+        ("2025-11-05 Ada Big-Hill Art Bundle watercolour owl", "Ada", "Watercolour owl"),
+        ("2026-03-10 Ada Art Bundle", "Ada", ""),
+        ("Bo bundle castle", "Bo", "Castle"),
+        ("2025-11-05 Theo Art Bundle kite", "Theodora", "Kite"),
+        ("Theo's castle", "Theodora", "Castle"),
+        ("the big tree", "Theodora", "The big tree"),
+        ("me and bo", "Andrew", "Me and bo"),
     ],
 )
 def test_titles(stem, owner, title):
