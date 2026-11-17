@@ -52,12 +52,20 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    uv run scripts/fridge.py add-kid "Name" 2018-03-14
    ```
 
-5. **Import the scans.** Look first, then import:
+5. **Import the scans.** Survey a folder first. It works offline, uploads
+   nothing, and opens a report with a picture of every page, saying which
+   pages are blank, which look like art and which are plain (documents, or
+   pencil drawings). Then look at a dry run, and import:
 
    ```sh
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --dry-run
-   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art
+   uv run scripts/fridge.py survey ~/Dropbox/Kids\ Art --kid Ada
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada --dry-run
+   uv run scripts/fridge.py import ~/Dropbox/Kids\ Art --kid Ada
    ```
+
+   A PDF of several pages, as a scanner makes from a stack of pieces,
+   becomes one piece per page, leaving out blank pages. `--first-page-only`
+   imports each PDF as one piece instead, its first page.
 
    Whose a piece is comes from a folder (or failing that, file) name
    matching a kid's name; `--kid NAME` covers a folder that's all one
@@ -66,6 +74,11 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    guesses the month from the photo's data or the file's date, which is
    usually when it was scanned, and the dry run says so. Fix anything wrong
    on the page afterwards with **Edit details**.
+
+   For a folder that mixes art with other papers (a school folder with
+   report cards, say), add `--ask`: it shows each file and asks whether to
+   import it, with `o` to open it and look first. Enter means no, so nothing
+   goes up by accident.
 
 6. **On each iPad:** open the fridge in Safari, sign in with the kid's
    address and type in the code that arrives in your email. If the kids use
