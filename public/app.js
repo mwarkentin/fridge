@@ -109,6 +109,48 @@ let filter = 'all';
 let listCtx = [];
 let current = null;
 let opener = null;
+let tagQuery = '';
+
+// ---- Tags ----
+// A tag's own address: #tag/<name>. Kids' slugs are kid-<id>, so it can't
+// collide with one.
+const TAG_ROUTE = 'tag/';
+const tagHref = (t) => `#${TAG_ROUTE}${esc(encodeURIComponent(t))}`;
+const sameTag = (t) => String(t).normalize('NFC').trim().toLowerCase();
+// For the filter box: ignore case and accents, so "ete" finds "été".
+const fold = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+// Each tag keeps its own crayon for its border, the same everywhere.
+const TAG_CRAYONS = ['blue', 'orange', 'green', 'pink', 'purple', 'red'];
+function tagCrayon(t) {
+  let h = 0;
+  for (const ch of t) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return TAG_CRAYONS[h % TAG_CRAYONS.length];
+}
+// Every tag in use, with how many pieces have it: most used first.
+function tagCounts() {
+  const counts = new Map();
+  for (const p of PIECES) for (const t of new Set(p.tags)) counts.set(t, (counts.get(t) || 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+// A tag as a sticker you can tap. The link is 44px tall; the sticker inside looks smaller.
+const tagLink = (t, n) =>
+  `<a class="tag" href="${tagHref(t)}" style="--tc:var(--cr-${tagCrayon(t)})" data-fold="${esc(fold(t))}"${n ? ` aria-label="${esc(t)}, ${plural(n, 'piece')}"` : ''}><span class="tag-s">${icon('tag')}<span class="tag-n">${esc(t)}</span>${n ? `<b class="tag-c" aria-hidden="true">${n}</b>` : ''}</span></a>`;
+function tagCloud(tags, { box = true } = {}) {
+  const filterable = box && tags.length > 12;
+  return `${filterable ? `<label class="field tag-find">${icon('look')}<span class="sr">Find a tag</span><input type="search" id="tag-find" placeholder="Find a tag" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="search" value="${esc(tagQuery)}"></label>` : ''}<ul class="tag-cloud">${tags.map(([t, n]) => `<li>${tagLink(t, n)}</li>`).join('')}</ul><p class="empty-line tag-none" hidden>${doodle('heart')}No tags match that.</p>`;
+}
+// Narrow the stickers to the ones matching the filter box, without redrawing the page.
+function applyTagQuery() {
+  const q = fold(tagQuery.trim());
+  let shown = 0;
+  document.querySelectorAll('#view .tag-cloud li').forEach((li) => {
+    const hit = !q || li.firstElementChild.dataset.fold.includes(q);
+    li.hidden = !hit;
+    if (hit) shown++;
+  });
+  const none = $('#view .tag-none');
+  if (none) none.hidden = shown > 0;
+}
 
 function pieceButton(p, variant = 'thumb') {
   const kid = kidOf(p);
@@ -174,6 +216,7 @@ function viewHome() {
     const n = ty - +p.made.slice(0, 4);
     return `${plural(n, 'year')} ago`;
   };
+  const tags = tagCounts();
   const newest = [...PIECES].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : b.id - a.id)).slice(0, 6);
   return `
     <section class="hero">
@@ -193,6 +236,7 @@ function viewHome() {
     </section>
     ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year${squiggle()}</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
     <section data-scope><div class="sec-head"><h2>Just added${squiggle()}</h2><a href="#timeline">See everything${icon('right')}</a></div>${wall(newest)}</section>
+    ${tags.length ? `<section class="tag-sec" aria-labelledby="tags-h"><div class="sec-head"><h2 id="tags-h">Tags${squiggle()}</h2><span class="count">${plural(tags.length, 'tag')}, tap one to see them all</span></div>${tagCloud(tags)}</section>` : ''}
     <p class="footnote"><svg class="doodle" aria-hidden="true"><use href="#i-heart"/></svg>Only family can see the fridge. <a href="/cdn-cgi/access/logout">${icon('door')}Sign out</a></p>`;
 }
 
@@ -245,17 +289,51 @@ function viewTimeline() {
     <div class="groups" data-scope>${[...years].map(([y, list]) => `<section class="year"><div class="sec-head"><h2>${magnetWord(y, Number(y))}</h2><span class="count">${plural(list.length, 'piece')}</span></div>${wall(list)}</section>`).join('')}</div>`;
 }
 
+function viewTag(name) {
+  const tagged = PIECES.filter((p) => p.tags.some((t) => sameTag(t) === name)).sort(byMadeDesc);
+  const kids = KIDS.filter((k) => tagged.some((p) => p.kid_id === k.id));
+  if (filter !== 'all' && !kids.some((k) => String(k.id) === filter)) filter = 'all';
+  const shown = tagged.filter((p) => filter === 'all' || String(p.kid_id) === filter);
+  const head = `<section class="page-head tag-head" style="--tc:var(--cr-${tagCrayon(name)})"><p class="eyebrow">${icon('tag')}Tagged</p><h1 tabindex="-1"><span class="tag-big">${esc(name)}</span></h1>`;
+  if (!tagged.length) {
+    const others = tagCounts();
+    return `${head}</section>
+      <section class="empty-state tag-empty">${EMPTY_ART}<h2>Nothing’s tagged “${esc(name)}” right now</h2><p>${others.length ? 'Maybe it was changed or taken off. Try one of these:' : 'Nothing on the fridge has a tag yet.'}</p></section>
+      ${others.length ? `<section class="tag-sec">${tagCloud(others)}</section>` : ''}
+      <p><a class="btn" href="#home">${icon('home')}Back to the fridge</a></p>`;
+  }
+  return `${head}<p>${plural(tagged.length, 'piece')}${kids.length > 1 ? ` by ${kids.length} artists` : ` by ${esc(kids[0].name)}`}, ${yearsSpan(tagged)}</p></section>
+    ${kids.length > 1 ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { pic: 'pictures' })}${kids.map((k) => chip(String(k.id), k.name, { kid: k })).join('')}</div>` : ''}
+    <section data-scope>${wall(shown)}</section>`;
+}
+
+// The tag named in a #tag/<name> address, or null.
+function tagFromHash(h) {
+  if (!h.startsWith(TAG_ROUTE)) return null;
+  const raw = h.slice(TAG_ROUTE.length);
+  try {
+    return sameTag(decodeURIComponent(raw));
+  } catch {
+    return sameTag(raw);
+  }
+}
+
 function render() {
   squiggles = 0;
   const h = location.hash.slice(1) || 'home';
-  const kid = KIDS.find((k) => k.slug === h);
-  const r = kid ? h : h === 'timeline' ? 'timeline' : 'home';
-  if (r !== route) {
+  const tag = tagFromHash(h);
+  const kid = tag === null && KIDS.find((k) => k.slug === h);
+  const r = tag !== null ? TAG_ROUTE + tag : kid ? h : h === 'timeline' ? 'timeline' : 'home';
+  const moved = r !== route;
+  if (moved) {
     if (route !== null) window.scrollTo(0, 0);
     route = r;
     filter = 'all';
   }
-  view.innerHTML = kid ? viewKid(kid) : r === 'timeline' ? viewTimeline() : viewHome();
+  view.innerHTML = tag !== null ? viewTag(tag) : kid ? viewKid(kid) : r === 'timeline' ? viewTimeline() : viewHome();
+  applyTagQuery();
+  // Arriving at a tag, start reading (and tabbing) from its name.
+  if (moved && tag !== null && detail.hidden) $('#view h1')?.focus({ preventScroll: true });
   document.querySelectorAll('#tabs a').forEach((a) => (a.dataset.route === r ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   // On a phone the tabs scroll sideways: keep the current one in sight.
   const tab = $('#tabs [aria-current]');
@@ -298,10 +376,10 @@ function openDetail(id, list) {
   lock(true);
   $('#d-close').focus();
 }
-function closeDetail() {
+function closeDetail({ refocus = true } = {}) {
   detail.hidden = true;
   lock(false);
-  opener?.focus?.();
+  if (refocus) opener?.focus?.();
 }
 function showPiece(id) {
   const p = (current = PIECES.find((x) => x.id === id));
@@ -319,7 +397,7 @@ function showPiece(id) {
       <li>${icon('calendar')}Made ${madeLong(p)}</li>
       ${p.favourite ? `<li class="view-only">${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
     </ul>
-    ${p.tags.length ? `<ul class="tags">${p.tags.map((t) => `<li>${icon('tag')}${esc(t)}</li>`).join('')}</ul>` : ''}
+    ${p.tags.length ? `<ul class="tags" aria-label="Tags">${p.tags.map((t) => `<li><a class="tag" href="${tagHref(t)}"><span class="tag-s">${icon('tag')}${esc(t)}</span></a></li>`).join('')}</ul>` : ''}
     <div class="row">
       <button class="btn edit-only" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
       <button class="btn edit-only" type="button" id="d-edit">${icon('pencil')}Edit details</button>
@@ -351,6 +429,13 @@ $('#d-prev').onclick = () => step(-1);
 $('#d-next').onclick = () => step(1);
 $('#d-read').addEventListener('click', async (e) => {
   const p = current;
+  // A tag goes to its own page: the link changes the address, and the piece closes.
+  const tagA = e.target.closest('a.tag');
+  if (tagA) {
+    closeDetail({ refocus: false });
+    if (tagA.getAttribute('href') === location.hash) $('#view h1')?.focus({ preventScroll: true });
+    return;
+  }
   if (e.target.closest('#d-fav')) {
     if (await savePiece(p, { favourite: !p.favourite }, p.favourite ? 'Taken off the favourites' : 'Added to favourites')) $('#d-fav').focus();
   } else if (e.target.closest('#d-edit')) {
@@ -613,7 +698,16 @@ document.addEventListener('keydown', (e) => {
     else if (!typing && e.key === 'ArrowRight') step(1);
   }
 });
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => {
+  // Back or forward while a piece is open: close it and show where we went.
+  if (!detail.hidden) closeDetail({ refocus: false });
+  render();
+});
+view.addEventListener('input', (e) => {
+  if (e.target.id !== 'tag-find') return;
+  tagQuery = e.target.value;
+  applyTagQuery();
+});
 
 load().catch((e) => {
   view.innerHTML = `<section class="empty-state">${EMPTY_ART}<h1>The fridge didn’t open</h1><p>${esc(e.message)}</p><p><button class="btn" type="button" id="retry">${icon('right')}Try again</button></p></section>`;
