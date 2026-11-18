@@ -62,11 +62,44 @@ const titleOf = (p) => p.title || 'Untitled';
 const img = (p, variant) => `/img/${p.id}/${variant}`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-// Each piece hangs at its own slight angle, the same every time.
+// ---- Little pictures: icons, doodles and magnets, from the sprite in index.html ----
+const icon = (name, cls = '') => `<svg class="i${cls ? ` ${cls}` : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const doodle = (name, cls = '') => `<svg class="doodle${cls ? ` ${cls}` : ''}" aria-hidden="true"><use href="#d-${name}"/></svg>`;
+const said = (story) => `<blockquote class="said">“${esc(story)}”</blockquote>`;
+const kidStyle = (kid) => `--kid:${kid.colour};--kid-soft:${kid.soft}`;
+// A kid's round magnet, with the first letter of their name.
+const avatar = (kid) => `<i class="av" aria-hidden="true" style="${kidStyle(kid)}">${esc((Array.from(kid.name.trim())[0] || '?').toLocaleUpperCase())}</i>`;
+// A word spelled out in plastic letter magnets. Screen readers get the plain word.
+function magnetWord(text, start = 0) {
+  let n = 0;
+  const letters = Array.from(String(text)).map((ch) => (/\s/.test(ch) ? '<span class="gap"></span>' : `<b class="mg-${(start + n++) % 6}">${esc(ch)}</b>`));
+  return `<span class="sr">${esc(text)}</span><span class="magnets" aria-hidden="true">${letters.join('')}</span>`;
+}
+// A crayon squiggle under a heading, a different colour each time.
+const SQUIGGLES = ['orange', 'blue', 'green', 'pink', 'purple', 'red'];
+let squiggles = 0;
+const squiggle = () => `<svg class="squig" viewBox="0 0 120 14" preserveAspectRatio="none" aria-hidden="true" style="--c:var(--cr-${SQUIGGLES[squiggles++ % SQUIGGLES.length]})"><use href="#d-squiggle"/></svg>`;
+const EMPTY_ART = `<svg class="empty-art" viewBox="0 0 240 224" aria-hidden="true">
+  <path class="ink door" d="M66 14c34-3 74-3 108 0 7 .6 10 4 10 11l1 166c0 7-3 10-10 10.6-36 2.4-73 2.4-109 0-7-.6-10-4-10-10.6l1-166c0-7 3-10.4 9-11z"/>
+  <path class="ink" d="M57 70c42 2.4 84 2.4 127 0M170 32v24M170 88v44M82 203v9M158 203v9"/>
+  <path class="tape-fill" d="M99 85.5l27-2.2.8 9.5-27 2.2z"/>
+  <path class="ink dash" d="M84 93l58-4.2 4.4 70-58 4.2z"/>
+  <use href="#m-heart" x="84" y="28" width="30" height="27"/>
+  <circle class="fill-blue" cx="138" cy="44" r="9"/><circle cx="135" cy="41" r="3" fill="#fff" fill-opacity=".6"/>
+  <circle class="fill-yellow" cx="152" cy="176" r="8"/><circle cx="149.5" cy="173.5" r="2.6" fill="#fff" fill-opacity=".6"/>
+  <text class="mg-text" x="98" y="192">A</text><text class="mg-text b" x="118" y="190">B</text>
+  <g transform="rotate(-22 206 200)"><rect class="fill-red" x="184" y="194" width="38" height="11" rx="2"/><path class="fill-red" d="M222 194l11 5.5-11 5.5z"/><path d="M192 194v11M214 194v11" stroke="#fff" stroke-opacity=".5" stroke-width="2"/></g>
+  <use class="st st-yellow" href="#d-sparkle" x="16" y="36" width="24" height="24"/>
+  <use class="st st-pink" href="#d-star" x="198" y="20" width="26" height="26"/>
+  <use class="st st-blue" href="#d-heart" x="14" y="148" width="28" height="28"/>
+</svg>`;
+
+// Each piece hangs at its own slight angle, by tape or a magnet, the same every time.
+const MAGNETS = ['blue', 'green', 'yellow', 'purple', 'orange'];
 function tilt(id) {
   let a = id * 2654435761;
   const r = () => ((a = (a ^ (a >>> 15)) * 2246822519 + 1013904223) >>> 0) / 4294967296;
-  return { tilt: ((r() - 0.5) * 3.2).toFixed(2), tape: ((r() - 0.5) * 10).toFixed(1) };
+  return { tilt: ((r() - 0.5) * 4.4).toFixed(2), tape: ((r() - 0.5) * 6).toFixed(1), tx: Math.round((r() - 0.5) * 24), magnet: r() < 0.3 ? MAGNETS[Math.floor(r() * MAGNETS.length)] : null };
 }
 
 // ---- Views ----
@@ -80,15 +113,24 @@ let opener = null;
 function pieceButton(p, variant = 'thumb') {
   const kid = kidOf(p);
   const t = tilt(p.id);
-  return `<button class="piece" type="button" data-id="${p.id}" style="--tilt:${t.tilt}deg;--tape:${t.tape}deg;--ar:${p.width}/${p.height}" aria-label="${esc(titleOf(p))} by ${esc(kid?.name)}">${p.favourite ? '<span class="magnet" aria-hidden="true"></span>' : '<span class="tape" aria-hidden="true"></span>'}<img src="${img(p, variant)}" alt="" loading="lazy" width="${p.width}" height="${p.height}"></button>`;
+  // Favourites hang by a red heart; the rest by masking tape or a plain magnet.
+  const hanger = p.favourite
+    ? '<svg class="heart" aria-hidden="true"><use href="#m-heart"/></svg>'
+    : t.magnet
+      ? `<span class="magnet" aria-hidden="true" style="--m:var(--cr-${t.magnet});--tx:${Math.round(t.tx / 2)}px"></span>`
+      : `<span class="tape" aria-hidden="true" style="--tx:${t.tx}px"></span>`;
+  return `<button class="piece" type="button" data-id="${p.id}" style="--tilt:${t.tilt}deg;--tape:${t.tape}deg;--ar:${p.width}/${p.height}" aria-label="${esc(titleOf(p))} by ${esc(kid?.name)}${p.favourite ? ', a favourite' : ''}">${hanger}<img src="${img(p, variant)}" alt="" loading="lazy" width="${p.width}" height="${p.height}"></button>`;
 }
 function tile(p, opts = {}) {
   const kid = kidOf(p);
   const meta = opts.own ? `${ageLabel(kid.born, p.made)} · ${madeShort(p)}` : `${kid.name} · ${ageLabel(kid.born, p.made)}`;
-  return `<figure>${pieceButton(p)}<figcaption><span class="t">${esc(titleOf(p))}</span><span class="m"><i class="dot" style="--kid:${kid.colour}"></i>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></figcaption></figure>`;
+  const fav = p.favourite ? icon('heart', 'filled fav-mark') : '';
+  return `<figure>${pieceButton(p)}<figcaption><span class="t${p.title ? '' : ' untitled'}">${esc(titleOf(p))}${fav}</span><span class="m">${opts.own ? '' : avatar(kid)}<span>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></span></figcaption></figure>`;
 }
 const wall = (list, opts) => `<div class="wall">${list.map((p) => tile(p, opts)).join('')}</div>`;
-const chip = (value, label, colour) => `<button class="chip" type="button" data-filter="${esc(value)}" aria-pressed="${filter === value}">${colour ? `<i class="dot" style="--kid:${colour}"></i>` : ''}${esc(label)}</button>`;
+// A filter button, with a kid's magnet or an icon beside the word.
+const chip = (value, label, { kid, pic, style, cls = '' } = {}) =>
+  `<button class="chip${kid ? ' has-av' : ''}${cls ? ` ${cls}` : ''}" type="button" data-filter="${esc(value)}" aria-pressed="${filter === value}"${kid || style ? ` style="${kid ? kidStyle(kid) : style}"` : ''}>${kid ? avatar(kid) : pic ? icon(pic) : ''}${esc(label)}</button>`;
 function yearsSpan(list) {
   const ys = list.map((p) => +p.made.slice(0, 4));
   const a = Math.min(...ys);
@@ -99,10 +141,12 @@ function yearsSpan(list) {
 function emptyFridge() {
   if (!KIDS.length) {
     return CAN_EDIT
-      ? `<section class="empty-state"><h1>The fridge is empty</h1><p>Add each kid first, from a computer with this repo checked out:</p><p><code>uv run scripts/fridge.py add-kid "Name" 2018-03-14</code></p><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
-      : '<section class="empty-state"><h1>The fridge is empty</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>';
+      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Add each kid first, from a computer with this repo checked out:</p><code class="cmd">uv run scripts/fridge.py add-kid "Name" 2018-03-14</code><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
+      : `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
   }
-  return `<section class="empty-state"><h1>Nothing on the fridge yet</h1><p>${CAN_EDIT ? 'Add a piece with <b>Add art</b>, or bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>.' : 'Check back soon.'}</p></section>`;
+  return CAN_EDIT
+    ? `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Hang the first piece up here, or bring in the scans from Dropbox with:</p><code class="cmd">uv run scripts/fridge.py import</code><p><button class="btn primary" type="button" data-add>${icon('plus')}Add art</button></p></section>`
+    : `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
 }
 
 function onThisDay() {
@@ -133,23 +177,23 @@ function viewHome() {
   const newest = [...PIECES].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : b.id - a.id)).slice(0, 6);
   return `
     <section class="hero">
-      <div class="hero-art">${pieceButton(f, 'display')}</div>
-      <div class="hero-copy">
-        <p class="eyebrow">On the fridge today</p>
+      <div class="hero-art">${doodle('star', 'd1')}${doodle('sparkle', 'd2')}${doodle('zigzag', 'd3')}${pieceButton(f, 'display')}</div>
+      <div class="hero-copy" style="${kidStyle(kid)}">
+        <p class="eyebrow">${icon('star')}On the fridge today</p>
         <h1>${esc(titleOf(f))}</h1>
-        <p class="label-line"><i class="dot" style="--kid:${kid.colour}"></i>${esc(kid.name)}, ${ageLabel(kid.born, f.made)} · ${madeLong(f)}</p>
-        ${f.medium ? `<p class="sub">${esc(f.medium)}</p>` : ''}
-        ${f.story ? `<blockquote class="quote">“${esc(f.story)}”</blockquote>` : ''}
-        <div class="row"><button class="btn primary" type="button" data-open="${f.id}">Look closer</button><button class="btn" type="button" data-frame>Play favourites</button></div>
+        <p class="label-line">${avatar(kid)}${esc(kid.name)}, ${ageLabel(kid.born, f.made)} · ${madeLong(f)}</p>
+        ${f.story ? said(f.story) : ''}
+        ${f.medium ? `<p class="sub">${icon('crayon')}${esc(f.medium)}</p>` : ''}
+        <div class="row"><button class="btn primary" type="button" data-open="${f.id}">${icon('look')}Look closer</button><button class="btn" type="button" data-frame>${icon('play')}Play favourites</button></div>
       </div>
     </section>
     <section>
-      <div class="sec-head"><h2>The artists</h2></div>
+      <div class="sec-head"><h2>The artists${squiggle()}</h2></div>
       <div class="kids">${KIDS.map(kidCard).join('')}</div>
     </section>
-    ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
-    <section data-scope><div class="sec-head"><h2>Just added</h2><a href="#timeline">See everything</a></div>${wall(newest)}</section>
-    <p class="footnote">Only family can see the fridge. <a href="/cdn-cgi/access/logout">Sign out</a></p>`;
+    ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year${squiggle()}</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
+    <section data-scope><div class="sec-head"><h2>Just added${squiggle()}</h2><a href="#timeline">See everything${icon('right')}</a></div>${wall(newest)}</section>
+    <p class="footnote"><svg class="doodle" aria-hidden="true"><use href="#i-heart"/></svg>Only family can see the fridge. <a href="/cdn-cgi/access/logout">${icon('door')}Sign out</a></p>`;
 }
 
 function kidCard(kid) {
@@ -157,9 +201,9 @@ function kidCard(kid) {
   const thumbs = mine.slice(0, 3).map((p) => `<img src="${img(p, 'thumb')}" alt="" loading="lazy">`);
   while (thumbs.length < 3) thumbs.push('<span></span>');
   const since = mine.length ? ` since ${mine[mine.length - 1].made.slice(0, 4)}` : '';
-  return `<a class="kid-card" href="#${kid.slug}" style="--kid:${kid.colour}">
+  return `<a class="kid-card" href="#${kid.slug}" style="${kidStyle(kid)}">
+    <div class="kid-top">${avatar(kid)}<div><h3>${esc(kid.name)}</h3><ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('pictures')}${plural(mine.length, 'piece')}${since}</li></ul></div></div>
     <div class="kid-thumbs">${thumbs.join('')}</div>
-    <div class="kid-meta"><h3><i class="dot"></i>${esc(kid.name)}</h3><p>${ageNow(kid)} years old · ${plural(mine.length, 'piece')}${since}</p></div>
   </a>`;
 }
 
@@ -174,14 +218,15 @@ function viewKid(kid) {
     groups.get(a).push(p);
   }
   const body = groups.size
-    ? [...groups].map(([age, list]) => `<section><div class="sec-head"><h2>Age ${age}</h2><span class="count">${yearsSpan(list)} · ${plural(list.length, 'piece')}</span></div>${wall(list, { own: true })}</section>`).join('')
-    : `<p class="empty">${mine.length ? 'Nothing matches that.' : `Nothing of ${esc(kid.name)}’s is on the fridge yet.`}</p>`;
+    ? [...groups].map(([age, list]) => `<section><div class="sec-head"><h2>Age <span class="num mg-${age % 6}">${age}</span></h2><span class="count">${yearsSpan(list)} · ${plural(list.length, 'piece')}</span></div>${wall(list, { own: true })}</section>`).join('')
+    : `<p class="empty-line">${doodle('heart')}${mine.length ? 'Nothing matches that.' : `Nothing of ${esc(kid.name)}’s is on the fridge yet.`}</p>`;
+  const favs = mine.filter((p) => p.favourite).length;
   return `
-    <section class="kid-head" style="--kid:${kid.colour}">
-      <h1>${esc(kid.name)}</h1>
-      <p>${ageNow(kid)} years old · born ${fmt(kid.born, { year: 'numeric', month: 'long' })} · ${plural(mine.length, 'piece')}, ${mine.filter((p) => p.favourite).length} favourites</p>
+    <section class="kid-head" style="${kidStyle(kid)}">
+      <h1>${magnetWord(kid.name, KIDS.indexOf(kid))}</h1>
+      <ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('calendar')}Born ${fmt(kid.born, { year: 'numeric', month: 'long' })}</li><li>${icon('pictures')}${plural(mine.length, 'piece')}</li>${favs ? `<li class="fav">${icon('heart', 'filled')}${plural(favs, 'favourite')}</li>` : ''}</ul>
     </section>
-    ${mine.length ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'All')}${chip('fav', 'Favourites')}${mediums.map((m) => chip(m, m)).join('')}</div>` : ''}
+    ${mine.length ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'All', { pic: 'pictures' })}${chip('fav', 'Favourites', { pic: 'heart', cls: 'fav', style: '--kid:var(--tab-home)' })}${mediums.map((m) => chip(m, m, { pic: 'crayon' })).join('')}</div>` : ''}
     <div class="groups" data-scope>${body}</div>`;
 }
 
@@ -195,12 +240,13 @@ function viewTimeline() {
     years.get(y).push(p);
   }
   return `
-    <section class="page-head"><h1>Timeline</h1><p>${plural(PIECES.length, 'piece')}, ${yearsSpan(PIECES)}</p></section>
-    <div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone')}${KIDS.map((k) => chip(String(k.id), k.name, k.colour)).join('')}</div>
-    <div class="groups" data-scope>${[...years].map(([y, list]) => `<section><div class="sec-head"><h2>${y}</h2><span class="count">${plural(list.length, 'piece')}</span></div>${wall(list)}</section>`).join('')}</div>`;
+    <section class="page-head"><h1>${magnetWord('Timeline', 4)}</h1><p>${plural(PIECES.length, 'piece')}, ${yearsSpan(PIECES)}</p></section>
+    <div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { pic: 'pictures' })}${KIDS.map((k) => chip(String(k.id), k.name, { kid: k })).join('')}</div>
+    <div class="groups" data-scope>${[...years].map(([y, list]) => `<section class="year"><div class="sec-head"><h2>${magnetWord(y, Number(y))}</h2><span class="count">${plural(list.length, 'piece')}</span></div>${wall(list)}</section>`).join('')}</div>`;
 }
 
 function render() {
+  squiggles = 0;
   const h = location.hash.slice(1) || 'home';
   const kid = KIDS.find((k) => k.slug === h);
   const r = kid ? h : h === 'timeline' ? 'timeline' : 'home';
@@ -211,16 +257,20 @@ function render() {
   }
   view.innerHTML = kid ? viewKid(kid) : r === 'timeline' ? viewTimeline() : viewHome();
   document.querySelectorAll('#tabs a').forEach((a) => (a.dataset.route === r ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  // On a phone the tabs scroll sideways: keep the current one in sight.
+  const tab = $('#tabs [aria-current]');
+  const tabs = $('#tabs');
+  if (tab && tabs.scrollWidth > tabs.clientWidth) tabs.scrollLeft = Math.max(0, tab.offsetLeft - tabs.offsetLeft - (tabs.clientWidth - tab.offsetWidth) / 2);
 }
 
 function buildChrome() {
   document.body.classList.toggle('can-edit', CAN_EDIT);
-  $('#tabs').innerHTML = [['home', 'Home'], ['timeline', 'Timeline'], ...KIDS.map((k) => [k.slug, k.name, k.colour])]
-    .map(([id, label, c]) => `<a href="#${id}" data-route="${id}">${c ? `<i class="dot" style="--kid:${c}"></i>` : ''}${esc(label)}</a>`)
-    .join('');
+  // Every tab has a round magnet: a kid's initial, or an icon for those who can't read yet.
+  const section = (id, label, pic) => `<a href="#${id}" data-route="${id}" style="--kid:var(--tab-${id})"><i class="av" aria-hidden="true">${icon(pic)}</i>${label}</a>`;
+  $('#tabs').innerHTML = section('home', 'Home', 'home') + section('timeline', 'Timeline', 'calendar') + KIDS.map((k) => `<a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a>`).join('');
   const kidOptions = KIDS.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
   $('#f-kid').innerHTML = kidOptions;
-  $('#a-who').innerHTML = `<legend>Who made it?</legend>${KIDS.map((k, i) => `<label><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><i class="dot" style="--kid:${k.colour}"></i>${esc(k.name)}</label>`).join('')}`;
+  $('#a-who').innerHTML = `<legend>Who made it?</legend>${KIDS.map((k, i) => `<label class="who-opt" style="${kidStyle(k)}"><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><span class="who-card">${avatar(k)}${esc(k.name)}</span></label>`).join('')}`;
   $('#open-add').hidden = !KIDS.length;
   $('#open-frame').hidden = !PIECES.length;
 }
@@ -228,7 +278,7 @@ function buildChrome() {
 async function load() {
   const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
   CAN_EDIT = session.canEdit;
-  KIDS = data.kids.map((k, i) => ({ ...k, colour: `var(--kid-${i % 6})`, slug: `kid-${k.id}` }));
+  KIDS = data.kids.map((k, i) => ({ ...k, colour: `var(--kid-${i % 6})`, soft: `var(--kid-${i % 6}-soft)`, slug: `kid-${k.id}` }));
   PIECES = data.pieces;
   buildChrome();
   render();
@@ -260,17 +310,20 @@ function showPiece(id) {
   $('#d-img').src = img(p, 'display');
   $('#d-img').alt = `${titleOf(p)}, by ${kid.name}`;
   $('#d-count').textContent = `${listCtx.indexOf(id) + 1} of ${listCtx.length}`;
-  $('#d-read').innerHTML = `<div class="stack">
-    <p class="d-artist"><i class="dot" style="--kid:${kid.colour}"></i>${esc(kid.name)}, ${ageLabel(kid.born, p.made)}</p>
+  $('#d-read').innerHTML = `<div class="stack" style="${kidStyle(kid)}">
+    <p class="d-artist">${avatar(kid)}${esc(kid.name)}, ${ageLabel(kid.born, p.made)}</p>
     <h2 class="d-title" id="d-title">${esc(titleOf(p))}<span>, ${p.made.slice(0, 4)}</span></h2>
-    ${p.medium ? `<p class="d-medium">${esc(p.medium)}</p>` : ''}
-    ${p.story ? `<blockquote class="quote">“${esc(p.story)}”</blockquote>` : ''}
-    <p class="d-medium">Made ${madeLong(p)}</p>
-    ${p.tags.length ? `<ul class="tags">${p.tags.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+    ${p.story ? said(p.story) : ''}
+    <ul class="d-facts">
+      ${p.medium ? `<li>${icon('crayon')}${esc(p.medium)}</li>` : ''}
+      <li>${icon('calendar')}Made ${madeLong(p)}</li>
+      ${p.favourite ? `<li class="view-only">${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
+    </ul>
+    ${p.tags.length ? `<ul class="tags">${p.tags.map((t) => `<li>${icon('tag')}${esc(t)}</li>`).join('')}</ul>` : ''}
     <div class="row">
-      <button class="btn edit-only" type="button" id="d-fav" aria-pressed="${p.favourite}">${p.favourite ? '♥' : '♡'} Favourite</button>
-      <button class="btn edit-only" type="button" id="d-edit">Edit details</button>
-      <a class="btn" href="${img(p, 'original')}" download>Save full scan</a>
+      <button class="btn edit-only" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
+      <button class="btn edit-only" type="button" id="d-edit">${icon('pencil')}Edit details</button>
+      <a class="btn" href="${img(p, 'original')}" download>${icon('download')}Save full scan</a>
     </div>
     ${p.source_name ? `<p class="d-source">From ${esc(p.source_name)}</p>` : ''}</div>`;
   $('#d-read').hidden = false;
@@ -310,7 +363,8 @@ $('#d-read').addEventListener('click', async (e) => {
     $('#f-tags').value = p.tags.join(', ');
     $('#d-read').hidden = true;
     form.hidden = false;
-    $('#f-title').focus();
+    $('.d-info').scrollTop = 0;
+    $('#f-title').focus({ preventScroll: true });
   }
 });
 form.addEventListener('submit', async (e) => {
@@ -422,6 +476,7 @@ function openAdd() {
   addForm.reset();
   $('#a-made').value = todayISO;
   $('#a-preview').hidden = true;
+  $('#a-icon').removeAttribute('hidden');
   $('#a-file-label').textContent = 'Take a photo or choose a scan';
   $('#a-error').hidden = true;
   add.hidden = false;
@@ -465,6 +520,7 @@ $('#a-file').addEventListener('change', () => {
   if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src);
   preview.src = URL.createObjectURL(f);
   preview.hidden = false;
+  $('#a-icon').setAttribute('hidden', '');
   $('#a-file-label').textContent = f.name;
   $('#a-error').hidden = true;
 });
@@ -515,11 +571,15 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 3200);
 }
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('#view .piece, #view [data-open], #view [data-filter], #view [data-frame]');
+  const b = e.target.closest('#view .piece, #view [data-open], #view [data-filter], #view [data-frame], #view [data-add]');
   if (!b) return;
   if (b.matches('[data-filter]')) {
     filter = b.dataset.filter;
     render();
+    return;
+  }
+  if (b.matches('[data-add]')) {
+    openAdd();
     return;
   }
   if (b.matches('[data-frame]')) {
@@ -556,6 +616,6 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', render);
 
 load().catch((e) => {
-  view.innerHTML = `<section class="empty-state"><h1>The fridge didn’t open</h1><p>${esc(e.message)}</p><p><button class="btn" type="button" id="retry">Try again</button></p></section>`;
+  view.innerHTML = `<section class="empty-state">${EMPTY_ART}<h1>The fridge didn’t open</h1><p>${esc(e.message)}</p><p><button class="btn" type="button" id="retry">${icon('right')}Try again</button></p></section>`;
   $('#retry').onclick = () => location.reload();
 });
