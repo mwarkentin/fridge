@@ -39,11 +39,16 @@ history on `main` is permanent.
   step and nothing loaded from other sites (the Worker's Content Security
   Policy allows only this origin). The fonts are in `public/fonts/` with
   their licences.
+- `preview/`: a public preview of the page for pull requests. `worker.js`
+  makes up the kids, the art and its drawings, and refuses every change;
+  `wrangler.toml` gives it no bindings. `.github/workflows/preview.yml`
+  deploys one per pull request and deletes it when the pull request closes.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
   computer. It signs in with `cloudflared` as that parent.
 - `tests/`: `worker.test.js` runs the Worker against local D1 and R2
   (wrangler's `getPlatformProxy`) with Access tokens it signs itself;
-  `test_fridge.py` tests the import script.
+  `preview.test.js` checks the preview; `test_fridge.py` tests the import
+  script.
 
 ## Stay in this repo's lane
 
@@ -54,7 +59,8 @@ secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`,
 `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `ACCESS_AUD`,
 `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
-since Access doesn't guard those addresses.
+since Access doesn't guard those addresses. The previews are public on
+workers.dev only because they're a separate Worker with nothing real on it.
 
 ## Rules
 
@@ -68,6 +74,11 @@ since Access doesn't guard those addresses.
   another site can't send them with a family member's sign-in.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`).
+- The preview Worker never gets a binding, a sign-in or anything real:
+  everything on it is made up in `preview/worker.js`. Its workflow holds the
+  deploy token, so it runs from main (`pull_request_target`) and copies a
+  branch's `public/` and `preview/worker.js` as plain files. Never make it
+  run a branch's code (`npm`, scripts, a build, the branch's config).
 - Pin everything: exact versions in `package.json`, `pyproject.toml` and
   the script's header (a test checks the last two match), and commit SHAs
   for actions. Dependabot proposes updates.

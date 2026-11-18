@@ -163,6 +163,23 @@ uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/picture
 
 `DEV_EMAIL` counts only on localhost and is never deployed.
 
+## Previews
+
+Each pull request from a branch in this repo gets a public preview at
+`fridge-preview-pr-<number>.<subdomain>.workers.dev`, linked from a comment
+on the pull request. It's the branch's page with a made-up family: Ada and
+Bo, and drawings that `preview/worker.js` makes up. It has no database,
+bucket or sign-in, so there's nothing private on it, and it refuses every
+change. It's updated on every push and deleted when the pull request
+closes. To make one for a pull request opened before previews existed, run
+the Preview workflow from the Actions tab with its number.
+
+To run the preview locally, no `.dev.vars` needed:
+
+```sh
+npm run preview               # http://localhost:8787
+```
+
 If a kid's name is also an everyday word that turns up in code (Max, say),
 the privacy check in CI will flag ordinary lines, and it will need a list of
 lines to allow.
