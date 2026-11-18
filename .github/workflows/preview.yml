@@ -39,6 +39,10 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
+    defaults:
+      run:
+        # With pipefail, so a failed deploy piped into tee fails the step.
+        shell: bash
     steps:
       - name: Look up the pull request
         id: pr
@@ -97,8 +101,16 @@ jobs:
           if [ -f branch/preview/worker.js ]; then cp branch/preview/worker.js "$site/preview/"; else cp preview/worker.js "$site/preview/"; fi
           cp preview/wrangler.toml "$site/preview/"
           npx wrangler deploy --config "$site/preview/wrangler.toml" --name "fridge-preview-pr-$PR" | tee "$RUNNER_TEMP/deploy.log"
-          url=$(grep -oE "https://fridge-preview-pr-$PR\.[a-z0-9-]+\.workers\.dev" "$RUNNER_TEMP/deploy.log" | head -n1)
+          url=$(grep -m1 -oE "https://fridge-preview-pr-$PR\.[a-z0-9-]+\.workers\.dev" "$RUNNER_TEMP/deploy.log" || true)
           echo "url=$url" >> "$GITHUB_OUTPUT"
+          # A new workers.dev address can take a minute to answer. Wait for it,
+          # so the link works by the time the comment goes up.
+          [ -n "$url" ] || exit 0
+          for _ in $(seq 24); do
+            page=$(curl -fsS --max-time 10 "$url/" 2>/dev/null) && [[ "$page" == *'Preview with a made-up family'* ]] && exit 0
+            sleep 5
+          done
+          echo "::warning::$url isn't answering yet. It can take a few more minutes."
 
       - name: Delete the preview
         if: steps.pr.outputs.mode == 'delete'
@@ -118,9 +130,11 @@ jobs:
           else
             body=$(printf '%s\nThe preview was deleted when this pull request closed.' "$marker")
           fi
-          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)
+          # sed, not head, reads to the end, so gh can't fail writing to a closed pipe.
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | sed -n 1p)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
-          else
+          elif [ "$MODE" = deploy ]; then
             gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
           fi
+          # A pull request that never had a preview gets no comment when it closes.
