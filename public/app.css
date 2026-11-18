@@ -243,7 +243,7 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .chip[aria-pressed="true"] .i { color: inherit; }
 .chip[aria-pressed="true"] .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
 /* A count in the magnet: numbers line up, and Everyone's magnet is ink-coloured. */
-.av-count { font-family: var(--body); font-weight: 900; font-size: 14px; font-variant-numeric: tabular-nums; }
+.av-count { width: auto; min-width: var(--av); padding: 0 7px; border-radius: 999px; font-family: var(--body); font-weight: 900; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip:not([style]) .av-count { --kid: var(--ink); color: var(--bg); }
 .chip:not([style])[aria-pressed="true"] .av-count { background: var(--bg); color: var(--ink); }
 .groups { display: flex; flex-direction: column; gap: 48px; }
