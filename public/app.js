@@ -171,8 +171,9 @@ function tile(p, opts = {}) {
 }
 const wall = (list, opts) => `<div class="wall">${list.map((p) => tile(p, opts)).join('')}</div>`;
 // A filter button, with a kid's magnet or an icon beside the word.
-const chip = (value, label, { kid, pic, style, cls = '' } = {}) =>
-  `<button class="chip${kid ? ' has-av' : ''}${cls ? ` ${cls}` : ''}" type="button" data-filter="${esc(value)}" aria-pressed="${filter === value}"${kid || style ? ` style="${kid ? kidStyle(kid) : style}"` : ''}>${kid ? avatar(kid) : pic ? icon(pic) : ''}${esc(label)}</button>`;
+// With `count`, the round magnet shows how many pieces instead of a letter or icon.
+const chip = (value, label, { kid, pic, style, cls = '', count } = {}) =>
+  `<button class="chip${kid || count != null ? ' has-av' : ''}${cls ? ` ${cls}` : ''}" type="button" data-filter="${esc(value)}" aria-pressed="${filter === value}"${count != null ? ` aria-label="${esc(label)}, ${plural(count, 'piece')}"` : ''}${kid || style ? ` style="${kid ? kidStyle(kid) : style}"` : ''}>${count != null ? `<i class="av av-count" aria-hidden="true"${kid ? ` style="${kidStyle(kid)}"` : ''}>${count}</i>` : kid ? avatar(kid) : pic ? icon(pic) : ''}${esc(label)}</button>`;
 function yearsSpan(list) {
   const ys = list.map((p) => +p.made.slice(0, 4));
   const a = Math.min(...ys);
@@ -303,7 +304,7 @@ function viewTag(name) {
       <p><a class="btn" href="#home">${icon('home')}Back to the fridge</a></p>`;
   }
   return `${head}<p>${plural(tagged.length, 'piece')}${kids.length > 1 ? ` by ${kids.length} artists` : ` by ${esc(kids[0].name)}`}, ${yearsSpan(tagged)}</p></section>
-    ${kids.length > 1 ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { pic: 'pictures' })}${kids.map((k) => chip(String(k.id), k.name, { kid: k })).join('')}</div>` : ''}
+    ${kids.length > 1 ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { count: tagged.length })}${kids.map((k) => chip(String(k.id), k.name, { kid: k, count: tagged.filter((p) => p.kid_id === k.id).length })).join('')}</div>` : ''}
     <section data-scope>${wall(shown)}</section>`;
 }
 
@@ -325,6 +326,7 @@ function render() {
   const kid = tag === null && KIDS.find((k) => k.slug === h);
   const r = tag !== null ? TAG_ROUTE + tag : kid ? h : h === 'timeline' ? 'timeline' : 'home';
   const moved = r !== route;
+  const firstLoad = route === null;
   if (moved) {
     if (route !== null) window.scrollTo(0, 0);
     route = r;
@@ -333,7 +335,7 @@ function render() {
   view.innerHTML = tag !== null ? viewTag(tag) : kid ? viewKid(kid) : r === 'timeline' ? viewTimeline() : viewHome();
   applyTagQuery();
   // Arriving at a tag, start reading (and tabbing) from its name.
-  if (moved && tag !== null && detail.hidden) $('#view h1')?.focus({ preventScroll: true });
+  if (moved && !firstLoad && tag !== null && detail.hidden) $('#view h1')?.focus({ preventScroll: true });
   document.querySelectorAll('#tabs a').forEach((a) => (a.dataset.route === r ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   // On a phone the tabs scroll sideways: keep the current one in sight.
   const tab = $('#tabs [aria-current]');

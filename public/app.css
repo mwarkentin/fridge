@@ -242,6 +242,10 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .chip:not([style])[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 .chip[aria-pressed="true"] .i { color: inherit; }
 .chip[aria-pressed="true"] .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
+/* A count in the magnet: numbers line up, and Everyone's magnet is ink-coloured. */
+.av-count { font-family: var(--body); font-weight: 900; font-size: 14px; font-variant-numeric: tabular-nums; }
+.chip:not([style]) .av-count { --kid: var(--ink); color: var(--bg); }
+.chip:not([style])[aria-pressed="true"] .av-count { background: var(--bg); color: var(--ink); }
 .groups { display: flex; flex-direction: column; gap: 48px; }
 .year h2 { font-size: 2.3rem; padding-bottom: 4px; }
 /* ---- Tags: the list on Home, and a tag's own page ---- */
@@ -251,6 +255,8 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .tag-find .i { position: absolute; left: 12px; top: 50%; width: 21px; height: 21px; margin-top: -10.5px; color: var(--muted); pointer-events: none; }
 .tag-find input { padding-left: 42px; min-height: 46px; -webkit-appearance: none; appearance: none; }
 .tag-head h1 { font: 400 clamp(2.6rem, 11vw, 4.4rem)/1.05 var(--hand); }
+/* Focus lands on the heading for screen readers; it isn't a control, so no ring. */
+.tag-head h1:focus { outline: none; }
 .tag-big { display: inline-block; max-width: 100%; padding: 2px 22px 8px; border: 3px dashed var(--tc); border-radius: 14px; background: var(--surface); transform: rotate(-1.5deg); overflow-wrap: anywhere; }
 .tag-head .eyebrow .i { color: var(--tc); }
 .tag-empty { padding-top: 0; }
