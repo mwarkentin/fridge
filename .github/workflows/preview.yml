@@ -1,0 +1,126 @@
+name: Preview
+
+# A temporary public copy of a pull request's page with a made-up family, at
+# fridge-preview-pr-<number> on workers.dev (preview/worker.js). It has no
+# database, bucket or sign-in, so there's nothing private on it. It's updated
+# on every push and deleted when the pull request closes.
+#
+# This holds the deploy token, so it always runs main's copy of this file
+# (pull_request_target), never a branch's. It takes the branch's public/ and
+# preview/worker.js as plain files and runs none of the branch's code:
+# wrangler, its config and the dependencies all come from main, and the
+# Worker is uploaded as it is, without a build.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    # mwarkentin/infra sets the account and the token; until it has, there's
+    # nowhere to deploy.
+    if: vars.CLOUDFLARE_ACCOUNT_ID != ''
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+    steps:
+      - name: Look up the pull request
+        id: pr
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::$PR isn't a pull request number."; exit 1; }
+          info=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.head.repo.full_name, .head.sha, .state, .user.login] | @tsv')
+          read -r repo sha state author <<< "$info"
+          if [ "$repo" != "$GITHUB_REPOSITORY" ] || [ "$author" = "dependabot[bot]" ]; then
+            echo "::notice::Previews are only for branches in this repo, not forks or Dependabot."
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+          elif [ "$state" = closed ]; then
+            echo "mode=delete" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=deploy" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # main, for the trusted wrangler, its config and the dependencies.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.pr.outputs.mode != 'skip'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.pr.outputs.mode != 'skip'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.pr.outputs.mode != 'skip'
+        run: npm ci
+
+      # The branch, only for its page and preview Worker, read as files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.pr.outputs.mode == 'deploy'
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          path: branch
+          persist-credentials: false
+          sparse-checkout: |
+            public
+            preview/worker.js
+          sparse-checkout-cone-mode: false
+
+      - name: Deploy the preview
+        id: deploy
+        if: steps.pr.outputs.mode == 'deploy'
+        run: |
+          # Plain files only: a symbolic link could point at something on this runner.
+          if [ -n "$(find branch/public branch/preview -type l 2>/dev/null)" ]; then
+            echo "::error::The branch's public/ or preview/ has a symbolic link in it. Previews only take plain files."
+            exit 1
+          fi
+          site="$RUNNER_TEMP/site"
+          mkdir -p "$site/preview"
+          cp -R branch/public "$site/public"
+          # A branch from before previews has no preview Worker: use main's.
+          if [ -f branch/preview/worker.js ]; then cp branch/preview/worker.js "$site/preview/"; else cp preview/worker.js "$site/preview/"; fi
+          cp preview/wrangler.toml "$site/preview/"
+          npx wrangler deploy --config "$site/preview/wrangler.toml" --name "fridge-preview-pr-$PR" | tee "$RUNNER_TEMP/deploy.log"
+          url=$(grep -oE "https://fridge-preview-pr-$PR\.[a-z0-9-]+\.workers\.dev" "$RUNNER_TEMP/deploy.log" | head -n1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Delete the preview
+        if: steps.pr.outputs.mode == 'delete'
+        # The preview config, so the only name this could ever fall back to is fridge-preview.
+        run: npx wrangler delete --config preview/wrangler.toml --name "fridge-preview-pr-$PR" --force || echo "::notice::There was no preview to delete."
+
+      - name: Link it from the pull request
+        if: steps.pr.outputs.mode != 'skip'
+        env:
+          MODE: ${{ steps.pr.outputs.mode }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          marker='<!-- fridge-preview -->'
+          if [ "$MODE" = deploy ]; then
+            body=$(printf '%s\n**Preview:** %s\n\nThe page as of %s, with a made-up family and drawings. It is public, so there is nothing real on it, and changes are not saved. It is deleted when this pull request closes.' "$marker" "${URL:-see the Preview workflow log}" "${SHA:0:7}")
+          else
+            body=$(printf '%s\nThe preview was deleted when this pull request closed.' "$marker")
+          fi
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
