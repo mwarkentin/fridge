@@ -242,8 +242,29 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .chip:not([style])[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 .chip[aria-pressed="true"] .i { color: inherit; }
 .chip[aria-pressed="true"] .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
+/* A count in the magnet: numbers line up, and Everyone's magnet is ink-coloured. */
+.av-count { width: auto; min-width: var(--av); padding: 0 7px; border-radius: 999px; font-family: var(--body); font-weight: 900; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip:not([style]) .av-count { --kid: var(--ink); color: var(--bg); }
+.chip:not([style])[aria-pressed="true"] .av-count { background: var(--bg); color: var(--ink); }
 .groups { display: flex; flex-direction: column; gap: 48px; }
 .year h2 { font-size: 2.3rem; padding-bottom: 4px; }
+/* ---- Tags: the list on Home, and a tag's own page ---- */
+.tag-sec { display: grid; gap: 10px; }
+.tag-sec .sec-head { margin-bottom: 0; }
+.tag-find { position: relative; display: block; max-width: 22rem; }
+.tag-find .i { position: absolute; left: 12px; top: 50%; width: 21px; height: 21px; margin-top: -10.5px; color: var(--muted); pointer-events: none; }
+.tag-find input { padding-left: 42px; min-height: 46px; -webkit-appearance: none; appearance: none; }
+.tag-head h1 { font: 400 clamp(2.6rem, 11vw, 4.4rem)/1.05 var(--hand); }
+/* Focus lands on the heading for screen readers; it isn't a control, so no ring. */
+.tag-head h1:focus { outline: none; }
+.tag-big { display: inline-block; max-width: 100%; padding: 2px 22px 8px; border: 3px dashed var(--tc); border-radius: 14px; background: var(--surface); transform: rotate(-1.5deg); overflow-wrap: anywhere; }
+.tag-head .eyebrow .i { color: var(--tc); }
+.tag-empty { padding-top: 0; }
+.tag-empty + .tag-sec { justify-items: center; }
+.tag-empty + .tag-sec .tag-find { width: 100%; }
+.tag-empty + .tag-sec .tag-cloud { justify-content: center; max-width: 52rem; }
+.tag-empty ~ p { display: flex; justify-content: center; margin: 0; }
+.tag-empty h2 { margin: 0; font: 700 clamp(1.6rem, 6vw, 2.1rem)/1.15 var(--display); overflow-wrap: anywhere; }
 .empty-line { display: flex; align-items: center; gap: 12px; color: var(--muted); font-weight: 700; margin: 0; }
 .empty-line .doodle { width: 40px; height: 40px; color: var(--cr-orange); flex: none; }
 
@@ -295,10 +316,25 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .d-facts { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; color: var(--muted); font-weight: 700; }
 .d-facts li { display: flex; align-items: center; gap: 9px; }
 .d-facts .i { width: 20px; height: 20px; }
-.tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
-.tags li { display: flex; align-items: center; gap: 5px; font-size: 14px; font-weight: 800; padding: 4px 11px 4px 9px; border-radius: 8px; background: var(--kid-soft); color: var(--ink); border: 2px dashed var(--kid); transform: rotate(-1.5deg); }
-.tags li:nth-child(even) { transform: rotate(1.5deg); }
-.tags .i { width: 15px; height: 15px; color: var(--kid); }
+/* Tags are stickers you can tap: the link is a 44px target, the sticker inside it smaller. */
+.tags, .tag-cloud { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0 8px; }
+.tags { margin-block: -6px; }
+.tag { display: inline-flex; align-items: center; min-height: 44px; color: var(--ink); text-decoration: none; border-radius: 10px; -webkit-tap-highlight-color: transparent; }
+.tag:focus-visible { outline: none; }
+.tag:focus-visible .tag-s { outline: 3px solid var(--cr-blue); outline-offset: 3px; }
+.tag-s { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 15px; font-weight: 800; line-height: 1.25; padding: 4px 11px 4px 9px; border-radius: 8px; background: var(--surface); border: 2px dashed var(--tc, var(--muted)); transform: rotate(-1.5deg); overflow-wrap: anywhere; }
+li:nth-child(even) > .tag .tag-s { transform: rotate(1.5deg); }
+li:nth-child(3n) > .tag .tag-s { transform: rotate(-0.5deg); }
+.tag-s .i { width: 15px; height: 15px; color: var(--tc, var(--muted)); }
+.tags .tag-s { background: var(--kid-soft); border-color: var(--kid); }
+.tags .tag-s .i { color: var(--kid); }
+.tag-c { min-width: 22px; padding: 0 6px; margin-left: 2px; border-radius: 999px; background: var(--bg-soft); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--tc, var(--muted)); font-size: 13px; text-align: center; font-variant-numeric: tabular-nums; }
+@media (hover: hover) { .tag:hover .tag-s { border-style: solid; } }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .tag-s { transition: transform 0.2s cubic-bezier(0.3, 0.7, 0.4, 1.5); }
+  .tag:hover .tag-s { transform: rotate(0deg) translateY(-2px) scale(1.04); }
+}
+@media (prefers-reduced-motion: no-preference) { .tag:active .tag-s { transform: rotate(0deg) scale(0.96); } }
 .d-source { margin: 0; padding-top: 14px; border-top: 2px dashed var(--line-2); font: 12.5px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .form-title { margin: 0; font: 600 1.6rem/1.1 var(--display); }
 @media (max-width: 760px) {

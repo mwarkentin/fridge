@@ -2,7 +2,8 @@
 
 A private gallery for the kids' art: every scan hung on one page, sorted by
 kid and age, with what they said about each piece, a timeline, "this time of
-year", and a slideshow for an old iPad on the counter. Only family can see
+year", tags to browse by (tap one to see every piece with it, from every
+kid), and a slideshow for an old iPad on the counter. Only family can see
 it.
 
 ## How it works

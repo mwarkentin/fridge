@@ -64,18 +64,18 @@ const KIDS = [
 ];
 // [id, kid, drawing, width, height, [years, days] ago, precision, title, what they said, medium, tags, favourite]
 const PIECES = [
-  [1, 1, 'family', 1400, 1000, [1, -9], 'day', 'Our family at the park', 'That’s me, that’s Bo, and that’s Grandma with her big hat.', 'Crayon', ['family'], true],
-  [2, 1, 'house', 1000, 1300, [2, 3], 'month', 'My house', 'The door is purple because purple is the best.', 'Marker', ['home'], true],
-  [3, 1, 'rainbow', 1400, 1000, [0, 168], 'day', 'Rainbow after the rain', '', 'Crayon', ['weather'], false],
-  [4, 1, 'rocket', 1000, 1400, [0, 248], 'day', 'Rocket to the moon', 'It goes faster than a car. Way faster.', 'Coloured pencil', ['space'], true],
-  [5, 1, 'cat', 1100, 1100, [3, 7], 'month', 'Mittens', '', 'Crayon', ['cat'], false],
-  [6, 1, 'tree', 1000, 1350, [3, 200], 'year', 'Apple tree', '', 'Paint', [], false],
+  [1, 1, 'family', 1400, 1000, [1, -9], 'day', 'Our family at the park', 'That’s me, that’s Bo, and that’s Grandma with her big hat.', 'Crayon', ['family', 'outside'], true],
+  [2, 1, 'house', 1000, 1300, [2, 3], 'month', 'My house', 'The door is purple because purple is the best.', 'Marker', ['home', 'family'], true],
+  [3, 1, 'rainbow', 1400, 1000, [0, 168], 'day', 'Rainbow after the rain', '', 'Crayon', ['weather', 'outside'], false],
+  [4, 1, 'rocket', 1000, 1400, [0, 248], 'day', 'Rocket to the moon', 'It goes faster than a car. Way faster.', 'Coloured pencil', ['space', 'night sky'], true],
+  [5, 1, 'cat', 1100, 1100, [3, 7], 'month', 'Mittens', '', 'Crayon', ['cat', 'animals'], false],
+  [6, 1, 'tree', 1000, 1350, [3, 200], 'year', 'Apple tree', '', 'Paint', ['outside'], false],
   [7, 2, 'scribble', 1300, 1000, [0, 27], 'day', '', '', 'Crayon', [], false],
-  [8, 2, 'sun', 1000, 1000, [0, 97], 'day', 'Sunny sun', 'Hot! Hot! Hot!', 'Paint', ['summer'], true],
-  [9, 2, 'sea', 1350, 1000, [0, 135], 'day', 'Fishies', 'The orange one is the daddy.', 'Marker', ['sea'], false],
-  [10, 2, 'flowers', 1400, 1000, [2, -2], 'month', 'Flowers for Mum', '', 'Crayon', ['flowers'], true],
-  [11, 2, 'night', 1000, 1350, [0, 303], 'day', 'Night time', 'The moon is watching our house.', 'Chalk pastel', ['night'], false],
-  [12, 2, 'dino', 1400, 950, [1, 16], 'day', 'A very big dinosaur with spiky bits on its back', 'He is called Crunchy and he eats trees.', 'Marker', ['dinosaur'], true],
+  [8, 2, 'sun', 1000, 1000, [0, 97], 'day', 'Sunny sun', 'Hot! Hot! Hot!', 'Paint', ['summer', 'été', 'outside'], true],
+  [9, 2, 'sea', 1350, 1000, [0, 135], 'day', 'Fishies', 'The orange one is the daddy.', 'Marker', ['sea', 'animals', 'été'], false],
+  [10, 2, 'flowers', 1400, 1000, [2, -2], 'month', 'Flowers for Mum', '', 'Crayon', ['flowers', 'family', 'outside'], true],
+  [11, 2, 'night', 1000, 1350, [0, 303], 'day', 'Night time', 'The moon is watching our house.', 'Chalk pastel', ['night sky', 'home'], false],
+  [12, 2, 'dino', 1400, 950, [1, 16], 'day', 'A very big dinosaur with spiky bits on its back', 'He is called Crunchy and he eats trees.', 'Marker', ['dinosaur', 'animals'], true],
 ].map(([id, kid_id, kind, width, height, ago, made_precision, title, story, medium, tags, favourite]) => ({ id, kid_id, kind, width, height, ago, made_precision, title, story, medium, tags, favourite }));
 
 const iso = (d) => d.toISOString().slice(0, 10);
