@@ -47,9 +47,39 @@ export async function verifyAccessJwt(token, { domain, aud }, now = Date.now() /
   return claims;
 }
 
-// { email, canEdit } for a signed-in person, or null. Parents (PARENT_EMAILS,
-// a Worker secret infra hands to the deploy) can change things; everyone else
-// Access lets in can look.
+// The families, from FAMILIES: a Worker secret infra hands to the deploy,
+// JSON like [{ "id": "pine", "name": "The Pines", "parents": ["a@example.com"] }],
+// in the order the page shows them. Missing or empty means no families, and
+// then every parent can change everything. A FAMILIES that can't be read
+// throws, so nobody gets in until it's fixed, rather than every parent
+// getting every family's rights.
+export function readFamilies(env) {
+  const raw = (env.FAMILIES || '').trim();
+  if (!raw) return [];
+  let list;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    throw new Error('FAMILIES isn’t valid JSON.');
+  }
+  if (!Array.isArray(list)) throw new Error('FAMILIES must be a JSON list.');
+  const seen = new Set();
+  return list.map((f, i) => {
+    const id = typeof f?.id === 'string' ? f.id.trim() : '';
+    if (!id || id.length > 60) throw new Error(`FAMILIES entry ${i + 1} needs an id of 1 to 60 characters.`);
+    if (seen.has(id)) throw new Error(`FAMILIES has the id ${JSON.stringify(id)} twice.`);
+    seen.add(id);
+    if (typeof f.name !== 'string' || !f.name.trim()) throw new Error(`FAMILIES entry ${i + 1} needs a name.`);
+    if (!Array.isArray(f.parents) || !f.parents.every((e) => typeof e === 'string')) throw new Error(`FAMILIES entry ${i + 1} needs parents, a list of emails.`);
+    return { id, name: f.name.trim(), parents: f.parents.map((e) => e.trim().toLowerCase()).filter(Boolean) };
+  });
+}
+
+// { email, canEdit, families } for a signed-in person, or null. Parents
+// (PARENT_EMAILS, a Worker secret infra hands to the deploy) can change
+// things; everyone else Access lets in can look. `families` are the ids of
+// the families (FAMILIES) a parent is in: they can change only those
+// families' kids, and kids in no family.
 export async function identify(request, env) {
   const host = new URL(request.url).hostname;
   // Local development only: wrangler dev has no Access in front of it.
@@ -67,5 +97,14 @@ export async function identify(request, env) {
 function person(email, env) {
   const me = email.trim().toLowerCase();
   const parents = (env.PARENT_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
-  return { email: me, canEdit: parents.includes(me) };
+  const canEdit = parents.includes(me);
+  // Read for everyone, so a broken FAMILIES turns everyone away. Being named
+  // in a family makes nobody a parent: PARENT_EMAILS says who is.
+  const all = readFamilies(env);
+  const families = canEdit ? all.filter((f) => f.parents.includes(me)).map((f) => f.id) : [];
+  return { email: me, canEdit, families };
 }
+
+// The rule, mirrored in the page: a parent can change a kid, and that kid's
+// pieces, when the kid is in one of their families or in none.
+export const canChangeKid = (who, kid) => who.canEdit && (kid.family === null || who.families.includes(kid.family));

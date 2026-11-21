@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { identify } from './auth.js';
+import { canChangeKid, identify, readFamilies } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -81,14 +81,21 @@ async function api(request, env, who, url) {
   if (method !== 'GET' && method !== 'HEAD' && request.headers.get('X-Requested-With') !== 'fridge') {
     throw new HttpError(403, 'Changes have to come from the fridge’s own page or importer.');
   }
-  if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit });
+  if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit, families: who.families });
   if (method === 'GET' && path === '/api/gallery') return json(await gallery(env));
 
   if (!who.canEdit) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
   let m;
-  if (method === 'POST' && path === '/api/kids') return json(await addKid(env, await body(request)), 201);
+  if (method === 'POST' && path === '/api/kids') return json(await addKid(env, who, await body(request)), 201);
   if (method === 'PATCH' && (m = path.match(/^\/api\/kids\/(\d+)$/))) {
-    await update(env, 'kids', Number(m[1]), kidFields(await body(request), true));
+    const id = Number(m[1]);
+    const b = await body(request);
+    const fields = kidFields(b, true);
+    if ('family' in b) fields.family = familyFor(env, who, b.family);
+    const kid = await findKid(env, id);
+    if (!kid) throw new HttpError(404, 'That isn’t on the fridge.');
+    mayChange(who, kid);
+    await update(env, 'kids', id, fields);
     return json({ ok: true });
   }
   // What the importer and the survey already know: pieces on the fridge
@@ -106,11 +113,15 @@ async function api(request, env, who, url) {
     const id = Number(m[1]);
     if (method === 'PATCH') {
       const fields = pieceFields(await body(request), true);
-      if ('kid_id' in fields) await kidExists(env, fields.kid_id);
+      const from = await pieceKid(env, id);
+      mayChange(who, from);
+      // Moving it to another kid needs rights over both.
+      if ('kid_id' in fields && fields.kid_id !== from.id) mayChange(who, await kidById(env, fields.kid_id));
       await update(env, 'pieces', id, fields);
       return json({ ok: true });
     }
     if (method === 'DELETE') {
+      mayChange(who, await pieceKid(env, id));
       await deletePiece(env, id);
       return new Response(null, { status: 204 });
     }
@@ -119,14 +130,15 @@ async function api(request, env, who, url) {
 }
 
 async function gallery(env) {
-  const kids = (await env.DB.prepare('SELECT id, name, born FROM kids ORDER BY born, id').all()).results;
+  const families = readFamilies(env);
+  const kids = (await env.DB.prepare('SELECT id, name, born, family FROM kids ORDER BY born, id').all()).results.map((k) => ({ ...k, family: familyOf(families, k) }));
   const rows = (
     await env.DB.prepare(
       'SELECT id, kid_id, made, made_precision, title, story, medium, tags, favourite, width, height, source_name, created_at FROM pieces ORDER BY made DESC, id DESC',
     ).all()
   ).results;
   const pieces = rows.map(({ tags, favourite, ...p }) => ({ ...p, tags: JSON.parse(tags), favourite: Boolean(favourite) }));
-  return { kids, pieces };
+  return { kids, pieces, families: families.map(({ id, name }) => ({ id, name })) };
 }
 
 // ---- Validation ----
@@ -191,8 +203,40 @@ async function body(request) {
   return b;
 }
 
-async function kidExists(env, id) {
-  if (!(await env.DB.prepare('SELECT 1 FROM kids WHERE id = ?').bind(id).first())) bad('There’s no kid with that id.');
+// ---- Families ----
+// A kid's family, or null when it isn't one in FAMILIES (any more), so
+// taking a family out of FAMILIES, or FAMILIES away, gives every parent its
+// kids, as before there were families.
+const familyOf = (families, kid) => (families.some((f) => f.id === kid.family) ? kid.family : null);
+
+async function findKid(env, id) {
+  const kid = await env.DB.prepare('SELECT id, name, family FROM kids WHERE id = ?').bind(id).first();
+  return kid && { ...kid, family: familyOf(readFamilies(env), kid) };
+}
+// The kid with that id, or a 400: they were named in what was sent.
+async function kidById(env, id) {
+  const kid = await findKid(env, id);
+  if (!kid) bad('There’s no kid with that id.');
+  return kid;
+}
+async function pieceKid(env, pieceId) {
+  const row = await env.DB.prepare('SELECT kid_id FROM pieces WHERE id = ?').bind(pieceId).first();
+  if (!row) throw new HttpError(404, 'That isn’t on the fridge.');
+  return kidById(env, row.kid_id);
+}
+
+// The rule (canChangeKid in auth.js), as a refusal.
+function mayChange(who, kid) {
+  if (!canChangeKid(who, kid)) throw new HttpError(403, `${kid.name} is in another family. Only their family’s parents can change ${kid.name} or their art.`);
+}
+
+// The family a parent asked to put a kid in: one of their own, or null for none.
+function familyFor(env, who, value) {
+  if (value === null) return null;
+  const id = typeof value === 'string' ? value.trim() : '';
+  if (!readFamilies(env).some((f) => f.id === id)) bad('There’s no family with that id.');
+  if (!who.families.includes(id)) throw new HttpError(403, 'You can only put a kid in your own family.');
+  return id;
 }
 
 // Column names come from the fields functions above, never from the request.
@@ -207,10 +251,12 @@ async function update(env, table, id, fields) {
 }
 
 // ---- Changes ----
-async function addKid(env, b) {
+// In the family asked for, or else the adding parent's, if they're in just one.
+async function addKid(env, who, b) {
   const { name, born } = kidFields(b, false);
-  const row = await env.DB.prepare('INSERT INTO kids (name, born) VALUES (?, ?) RETURNING id').bind(name, born).first();
-  return { id: row.id };
+  const family = 'family' in b ? familyFor(env, who, b.family) : who.families.length === 1 ? who.families[0] : null;
+  const row = await env.DB.prepare('INSERT INTO kids (name, born, family) VALUES (?, ?, ?) RETURNING id').bind(name, born, family).first();
+  return { id: row.id, family };
 }
 
 const keyFor = (id, variant) => `pieces/${id}/${variant}`;
@@ -235,7 +281,7 @@ async function addPiece(env, who, request) {
   }
   if (!meta || typeof meta !== 'object') bad('The piece’s details are missing.');
   const fields = pieceFields(meta, false);
-  await kidExists(env, fields.kid_id);
+  mayChange(who, await kidById(env, fields.kid_id));
   const width = int(meta.width, 'width');
   const height = int(meta.height, 'height');
 

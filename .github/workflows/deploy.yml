@@ -48,14 +48,31 @@ jobs:
       - name: Apply database migrations
         run: npx wrangler d1 migrations apply fridge --remote
 
-      # PARENT_EMAILS goes up as a Worker secret, in a file so it's never on
-      # a command line. The Access settings aren't secret.
+      # PARENT_EMAILS and FAMILIES go up as Worker secrets, in a file so
+      # they're never on a command line. The Access settings aren't secret.
+      # FAMILIES (who's in which family, from infra's FRIDGE_PEOPLE) can be
+      # missing, which means no families: every parent changes everything.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}
+          FAMILIES: ${{ secrets.FAMILIES }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
         run: |
-          jq -n --arg p "$PARENT_EMAILS" '{PARENT_EMAILS: $p}' > "$RUNNER_TEMP/secrets.json"
+          families="${FAMILIES:-[]}"
+          # The Worker turns everyone away if it can't read FAMILIES, so a
+          # bad one stops here and the running Worker stays as it is. The
+          # check prints nothing of the secret.
+          if ! printf '%s' "$families" | jq -e '
+            type == "array"
+            and all(.[]; type == "object"
+              and (.id | type == "string" and test("\\S") and length <= 60)
+              and (.name | type == "string" and test("\\S"))
+              and (.parents | type == "array" and all(type == "string")))
+            and ([.[].id | gsub("^\\s+|\\s+$"; "")] | length == (unique | length))' > /dev/null 2>&1; then
+            echo "::error::The FAMILIES secret isn't a list of families, each with a unique id, a name and a list of parents' emails. Fix fridge_people's families in mwarkentin/infra."
+            exit 1
+          fi
+          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" '{PARENT_EMAILS: $p, FAMILIES: $f}' > "$RUNNER_TEMP/secrets.json"
           npx wrangler deploy --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD" --secrets-file "$RUNNER_TEMP/secrets.json"
           rm "$RUNNER_TEMP/secrets.json"

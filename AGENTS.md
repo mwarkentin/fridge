@@ -13,10 +13,11 @@ pull request and commit message:
 - the kids' names, birthdays, ages or school details
 - scans or photos of their art (tests make their own images)
 - Dropbox paths, which contain the kids' names
-- family email addresses (they live in mwarkentin/infra's `FRIDGE_PEOPLE`
-  secret)
+- family email addresses and who's in which family (they live in
+  mwarkentin/infra's `FRIDGE_PEOPLE` secret)
 
-Tests and examples use made-up names (Ada, Bo) and `example.com` addresses.
+Tests and examples use made-up names (Ada and Bo, and Cy and Dee in a second
+family; families like the Pines and the Oaks) and `example.com` addresses.
 CI's privacy job fails on pictures outside `public/icons/` and on any of the
 real names (from the `KID_NAMES` secret) in files, file names, commit
 messages or pull request text. Its log masks the names as `***`. If it
@@ -31,8 +32,10 @@ history on `main` is permanent.
   `ART` bucket) and the page (`public/`, through the `ASSETS` binding).
 - `src/auth.js`: verifies Cloudflare Access's JWT on every request. Parents
   (the `PARENT_EMAILS` Worker secret) can change things; everyone else Access
-  lets in can only look. It fails closed: with no Access settings, nobody
-  gets in.
+  lets in can only look. With families (the `FAMILIES` Worker secret), a
+  parent can change only the kids in their own families and kids in no
+  family, and those kids' art (`canChangeKid`). It fails closed: with no
+  Access settings, or a `FAMILIES` it can't read, nobody gets in.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -55,7 +58,7 @@ history on `main` is permanent.
 mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 `fridge-art` bucket, the `fridge` database, the Access application and its
 policies, the custom domain, the deploy token, and this repo's Actions
-secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`,
+secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
 `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `ACCESS_AUD`,
 `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
@@ -72,6 +75,13 @@ workers.dev only because they're a separate Worker with nothing real on it.
   `public/icons/`.
 - Changes (`POST`, `PATCH`, `DELETE`) need `X-Requested-With: fridge`, so
   another site can't send them with a family member's sign-in.
+- Every change to a kid or a piece checks the family rule in the Worker
+  (`mayChange`): a parent can change a kid, and that kid's pieces, when the
+  kid is in one of their families or in none. Moving a piece to another kid
+  needs rights over both. The page mirrors the rule (`canChange` in
+  `app.js`) only to hide what the Worker would refuse; the Worker decides.
+  Skips (`/api/skipped`) are fingerprints only, so any parent can record
+  them.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`).
 - The preview Worker never gets a binding, a sign-in or anything real:

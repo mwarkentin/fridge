@@ -10,8 +10,8 @@ it.
 
 - **One Cloudflare Worker** serves the page, a small API and the images. The
   page is plain HTML, CSS and JavaScript, with no build step.
-- **D1** holds the kids (name and birthday) and each piece's details: when it
-  was made, title, what they said, medium, tags, favourite.
+- **D1** holds the kids (name, birthday and family) and each piece's
+  details: when it was made, title, what they said, medium, tags, favourite.
 - **R2** holds three copies of each piece: the original, a screen-sized JPEG
   and a thumbnail. The copies are made before upload, by the import script or
   the page, so there's no paid image resizing.
@@ -19,7 +19,9 @@ it.
   code emailed to them; the kids' iPads sign in with addresses that deliver
   to a parent and stay signed in for a month. The Worker checks Access's
   token on every request too, and has no workers.dev address, so there's no
-  way around the sign-in. Parents can change things; everyone else can look.
+  way around the sign-in. Parents can change things (with families set up,
+  only their own family's: see [Families](#families)); everyone else can
+  look.
   The one thing anyone can fetch is the app icons in `public/icons/`, since
   iOS fetches Home Screen icons without the sign-in. They're in this repo
   for anyone to see anyway.
@@ -33,6 +35,38 @@ The bucket, database, sign-in, domain and deploy token are made by
 repo deploys the Worker into them.
 
 Nothing about the family is in this repo, which is public. See AGENTS.md.
+
+## Families
+
+The fridge can hold more than one family's kids. Everyone signed in sees
+everything, but a parent can add, edit, favourite and remove art only for
+their own family's kids, and change only those kids. A kid in no family is
+any parent's to change, as everything was before families. The page shows
+each parent only what they can change, and the Worker refuses the rest.
+
+- **Who's in which family** lives with the family's emails, in infra's
+  `FRIDGE_PEOPLE` secret: its optional `families` list, each family with an
+  `id`, a `name` and its `parents`. Infra hands it to this repo as the
+  `FAMILIES` Actions secret, and the Deploy workflow gives it to the Worker.
+  Each family's parents have to be in `parents` too: being in a family
+  doesn't make anyone a parent.
+- **Which family a kid is in** is kept on the fridge, with the kid.
+  `add-kid` puts a new kid in your family if you're in just one, or in the
+  one `--family` names, and `set-family` moves one:
+
+  ```sh
+  uv run scripts/fridge.py families               # the families, yours, and their kids
+  uv run scripts/fridge.py set-family Ada pine    # put Ada in the family with id pine
+  uv run scripts/fridge.py set-family Ada none    # or in no family
+  ```
+
+  You can put a kid only in your own family, and change only kids in it or
+  in none. Kids added before there were families are in none until someone
+  puts them in one.
+
+With no `families` in `FRIDGE_PEOPLE` there are no families, and every
+parent can change everything. Taking a family out does the same for its
+kids.
 
 ## Setting it up
 
@@ -55,6 +89,8 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    uv run scripts/fridge.py login
    uv run scripts/fridge.py add-kid "Name" 2018-03-14
    ```
+
+   With [families](#families) set up, each kid goes in your family.
 
 5. **Import the scans.** Survey a folder first. It works offline, uploads
    nothing, and opens a report with a picture of every page, saying which
@@ -111,16 +147,19 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 
    Whose a piece is comes from a folder (or failing that, file) name
    matching a kid's name; `--kid NAME` covers a folder that's all one
-   kid's. When it was made comes from a date in the file or folder name:
-   `2024-05-29`, `20240529`, `2024-05`, `May 2024` or `2024`. With none, it
-   guesses the month from the photo's data or the file's date, which is
-   usually when it was scanned, and the dry run says so. The title is the
-   rest of the file name, without the kid's name (or a short form of it of
-   four letters or more, like Theo for Theodora) and scanner words. In a
-   name with a filing label, like `2024-05-29 Ada Big-Hill Art Bundle
-   rocket.pdf`, only what follows "Art Bundle" (or "Bundle") is the title.
-   Titles are set when a piece is imported, so check them in the dry run.
-   Fix anything wrong on the page afterwards with **Edit details**.
+   kid's. With families set up, only your own family's kids (and kids in
+   no family) count, and the import says which files it leaves out because
+   they're another family's. When it was made comes from a date in the
+   file or folder name: `2024-05-29`, `20240529`, `2024-05`, `May 2024` or
+   `2024`. With none, it guesses the month from the photo's data or the
+   file's date, which is usually when it was scanned, and the dry run says
+   so. The title is the rest of the file name, without the kid's name (or a
+   short form of it of four letters or more, like Theo for Theodora) and
+   scanner words. In a name with a filing label, like `2024-05-29 Ada
+   Big-Hill Art Bundle rocket.pdf`, only what follows "Art Bundle" (or
+   "Bundle") is the title. Titles are set when a piece is imported, so
+   check them in the dry run. Fix anything wrong on the page afterwards
+   with **Edit details** (on your own family's kids' art).
 
    For a folder that mixes art with other papers (a school folder with
    report cards, say), add `--ask`: it shows each file and asks whether to
@@ -153,12 +192,18 @@ uv run --locked pytest        # import script tests
 ```
 
 To run it locally, create `.dev.vars` (git ignores it) with
-`DEV_EMAIL=you@example.com` and `PARENT_EMAILS=you@example.com`, then:
+`DEV_EMAIL=you@example.com` and `PARENT_EMAILS=you@example.com`, and
+optionally made-up families, then:
+
+```sh
+FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"]}]'
+```
 
 ```sh
 npx wrangler d1 migrations apply fridge --local
 npm run dev
 uv run scripts/fridge.py --url http://localhost:8787 add-kid Ada 2019-04-02
+uv run scripts/fridge.py --url http://localhost:8787 add-kid Cy 2020-02-02 --family none
 uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/pictures
 ```
 
