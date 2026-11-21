@@ -519,6 +519,8 @@ function drawFoot() {
   submit.disabled = batch.sending || batch.looking > 0 || n === 0;
   $('#a-more').disabled = batch.sending;
   $('#a-restart').disabled = batch.sending;
+  // On the preview, its note has its own buttons.
+  $('#a-foot .a-buttons').hidden = batch.said?.kind === 'preview';
   const said = $('#a-said');
   const unticked = batch.pieces.filter((p) => p.state === 'new' && !p.include && p.kind !== 'blank').length;
   const s = batch.said || (unticked && !batch.sending ? { kind: 'hint', text: `${unticked === 1 ? 'The unticked piece is' : `The ${unticked} unticked pieces are`} remembered as skipped, so the import script leaves ${unticked === 1 ? 'it' : 'them'} out too.` } : null);
