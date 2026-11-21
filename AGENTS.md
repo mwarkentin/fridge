@@ -47,8 +47,9 @@ history on `main` is permanent.
   computer. It signs in with `cloudflared` as that parent.
 - `tests/`: `worker.test.js` runs the Worker against local D1 and R2
   (wrangler's `getPlatformProxy`) with Access tokens it signs itself;
-  `preview.test.js` checks the preview; `test_fridge.py` tests the import
-  script.
+  `preview.test.js` checks the preview; `families.test.js` checks how the
+  page groups, orders and colours the kids by family (`public/families.js`);
+  `test_fridge.py` tests the import script.
 
 ## Stay in this repo's lane
 

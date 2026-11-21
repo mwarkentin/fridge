@@ -1,5 +1,5 @@
-// A public preview of the fridge's page, with a made-up family. It has no
-// database, no bucket and no sign-in, on purpose: every kid, piece and
+// A public preview of the fridge's page, with two made-up families. It has no
+// database, no bucket and no sign-in, on purpose: every family, kid, piece and
 // picture here is invented in this file, so there's nothing private for it
 // to reach. It refuses every change, so nobody can put anything on it.
 //
@@ -29,7 +29,8 @@ const json = (data, status = 200) => Response.json(data, { status, headers: { 'C
 async function handle(request, env) {
   const { pathname } = new URL(request.url);
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
-  if (pathname === '/api/session') return json({ email: 'visitor@example.com', canEdit: true, preview: true });
+  // The visitor is a parent in the first family.
+  if (pathname === '/api/session') return json({ email: 'visitor@example.com', canEdit: true, preview: true, families: [FAMILIES[0].id] });
   if (pathname === '/api/gallery') return json(gallery(new Date()));
   if (pathname.startsWith('/api/')) return json({ error: 'There’s nothing at that address.' }, 404);
   const img = pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
@@ -55,12 +56,18 @@ async function markAsPreview(res) {
   return new Response(html, { status: res.status, headers });
 }
 
-// ---- The made-up family ----
+// ---- The made-up families ----
 // Dates count back from today, so ages stay put and "This time of year"
 // always has something in it.
+const FAMILIES = [
+  { id: 'oaks', name: 'The Oaks' },
+  { id: 'willows', name: 'The Willows' },
+];
 const KIDS = [
-  { id: 1, name: 'Ada', born: [8, 64] },
-  { id: 2, name: 'Bo', born: [5, 288] },
+  { id: 1, name: 'Ada', family: 'oaks', born: [8, 64] },
+  { id: 2, name: 'Bo', family: 'oaks', born: [5, 288] },
+  { id: 3, name: 'Cy', family: 'willows', born: [7, 150] },
+  { id: 4, name: 'Dee', family: 'willows', born: [3, 200] },
 ];
 // [id, kid, drawing, width, height, [years, days] ago, precision, title, what they said, medium, tags, favourite]
 const PIECES = [
@@ -76,6 +83,15 @@ const PIECES = [
   [10, 2, 'flowers', 1400, 1000, [2, -2], 'month', 'Flowers for Mum', '', 'Crayon', ['flowers', 'family', 'outside'], true],
   [11, 2, 'night', 1000, 1350, [0, 303], 'day', 'Night time', 'The moon is watching our house.', 'Chalk pastel', ['night sky', 'home'], false],
   [12, 2, 'dino', 1400, 950, [1, 16], 'day', 'A very big dinosaur with spiky bits on its back', 'He is called Crunchy and he eats trees.', 'Marker', ['dinosaur', 'animals'], true],
+  [13, 3, 'boat', 1400, 1000, [0, 52], 'day', 'Sailing to the island', 'The flag says go faster.', 'Coloured pencil', ['sea', 'outside'], true],
+  [14, 3, 'butterfly', 1300, 1000, [3, -5], 'day', 'Butterfly', '', 'Watercolour', ['animals', 'outside'], false],
+  [15, 3, 'car', 1400, 900, [1, 120], 'day', 'Race car', 'Number one because it wins.', 'Marker', [], false],
+  [16, 3, 'snowman', 1000, 1300, [2, 300], 'month', 'Snowman with a scarf', '', 'Crayon', ['winter', 'outside'], true],
+  [17, 3, 'house', 1000, 1300, [4, 90], 'year', 'Our house', '', 'Crayon', ['home', 'family'], false],
+  [18, 4, 'balloons', 1000, 1300, [0, 12], 'day', 'Party balloons', 'One for everybody!', 'Crayon', ['party', 'family'], true],
+  [19, 4, 'scribble', 1300, 1000, [1, 4], 'day', '', '', 'Marker', [], false],
+  [20, 4, 'fishbowl', 1100, 1100, [0, 210], 'day', 'Blub the fish', 'He says blub.', 'Paint', ['animals', 'sea'], false],
+  [21, 4, 'sun', 1000, 1000, [1, 180], 'month', 'Big sun', '', 'Chalk pastel', ['summer', 'outside'], false],
 ].map(([id, kid_id, kind, width, height, ago, made_precision, title, story, medium, tags, favourite]) => ({ id, kid_id, kind, width, height, ago, made_precision, title, story, medium, tags, favourite }));
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -84,9 +100,9 @@ function back(today, [years, days]) {
   d.setUTCDate(d.getUTCDate() - days);
   return d;
 }
-// The same shape as the real /api/gallery.
+// The same shape as the real /api/gallery, kids oldest first like the real one.
 function gallery(today) {
-  const kids = KIDS.map(({ id, name, born }) => ({ id, name, born: iso(back(today, born)) }));
+  const kids = KIDS.map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
   const pieces = PIECES.map(({ kind, ago, ...p }) => {
     const d = back(today, ago);
     if (p.made_precision === 'month') d.setUTCDate(15);
@@ -94,7 +110,7 @@ function gallery(today) {
     const added = new Date(today.getTime() - (PIECES.length - p.id) * 36e5);
     return { ...p, made: iso(d > today ? today : d), source_name: null, created_at: added.toISOString().slice(0, 19).replace('T', ' ') };
   }).sort((a, b) => (a.made < b.made ? 1 : a.made > b.made ? -1 : b.id - a.id));
-  return { kids, pieces };
+  return { families: FAMILIES, kids, pieces };
 }
 
 // ---- Crayon drawings, as SVG ----
@@ -253,6 +269,83 @@ function drawing(piece) {
       line(ring(w * 0.7, h * 0.3, 70), C.yellow, 14);
       house(w * 0.15, h * 0.6, w * 0.3);
       break;
+    case 'boat': {
+      hatch(20, h * 0.62, w - 20, h - 24, '#78b4e6', 11);
+      sun(w * 0.82, h * 0.2, 46);
+      const x = w * 0.42, y = h * 0.62;
+      hatch(x - w * 0.18, y - 2, x + w * 0.18, y + h * 0.1, C.brown, 9);
+      line([[x - w * 0.22, y], [x + w * 0.22, y], [x + w * 0.16, y + h * 0.12], [x - w * 0.16, y + h * 0.12], [x - w * 0.22, y]], C.brown, 10);
+      line([[x, y], [x, y - h * 0.5]], C.black, 7);
+      line([[x + 8, y - h * 0.48], [x + w * 0.2, y - h * 0.08], [x + 8, y - h * 0.08], [x + 8, y - h * 0.48]], C.red, 9);
+      line([[x, y - h * 0.5], [x - w * 0.08, y - h * 0.46], [x, y - h * 0.42]], C.green, 7);
+      for (let i = 0; i < 4; i++) line([[w * (0.1 + i * 0.22), h * 0.78], [w * (0.16 + i * 0.22), h * 0.75], [w * (0.22 + i * 0.22), h * 0.78]], '#3c78c8', 6);
+      break;
+    }
+    case 'butterfly': {
+      const x = w / 2, y = h / 2, s = Math.min(w, h) * 0.3;
+      for (const sx of [-1, 1]) {
+        line(ring(x + sx * s * 0.62, y - s * 0.35, s * 0.55, s * 0.45, 30), C.purple, 10);
+        line(ring(x + sx * s * 0.5, y + s * 0.45, s * 0.38, s * 0.32, 26), C.pink, 10);
+        dot(x + sx * s * 0.62, y - s * 0.35, 16, C.yellow);
+        dot(x + sx * s * 0.5, y + s * 0.45, 12, C.orange);
+        line([[x, y - s * 0.7], [x + sx * s * 0.3, y - s * 1.15]], C.black, 5);
+      }
+      line([[x, y - s * 0.75], [x, y + s * 0.8]], C.black, 12);
+      for (let i = 0; i < 4; i++) flower(w * (0.12 + i * 0.25), h * 0.86, 16, [C.red, C.blue, C.orange, C.pink][i]);
+      break;
+    }
+    case 'car': {
+      hatch(20, h * 0.8, w - 20, h - 24, C.grey, 11);
+      const x = w * 0.18, y = h * 0.42, cw = w * 0.64, ch = h * 0.24;
+      hatch(x + 8, y + 8, x + cw - 8, y + ch - 8, C.red, 10);
+      line([[x, y + ch], [x, y], [x + cw * 0.3, y], [x + cw * 0.4, y - ch * 0.7], [x + cw * 0.75, y - ch * 0.7], [x + cw * 0.85, y], [x + cw, y + ch * 0.15], [x + cw, y + ch], [x, y + ch]], C.red, 10);
+      line([[x + cw * 0.44, y - ch * 0.55], [x + cw * 0.72, y - ch * 0.55], [x + cw * 0.78, y - 6], [x + cw * 0.4, y - 6], [x + cw * 0.44, y - ch * 0.55]], C.sky, 7);
+      for (const wx of [0.22, 0.78]) {
+        line(ring(x + cw * wx, y + ch, ch * 0.42), C.black, 12);
+        dot(x + cw * wx, y + ch, 10, C.grey);
+      }
+      line(ring(x + cw * 0.55, y + ch * 0.45, ch * 0.22), C.yellow, 7);
+      for (let i = 0; i < 3; i++) line([[x - 30 - i * 25, y + ch * (0.2 + i * 0.25)], [x - 90 - i * 25, y + ch * (0.2 + i * 0.25)]], C.grey, 7);
+      break;
+    }
+    case 'snowman': {
+      hatch(20, 24, w - 20, h - 24, '#cfe3f5', 12, 8);
+      for (let i = 0; i < 50; i++) dot(r() * w, r() * h * 0.8, 6, '#ffffff');
+      const x = w / 2;
+      line(ring(x, h * 0.72, w * 0.25, w * 0.22), C.sky, 10);
+      line(ring(x, h * 0.45, w * 0.18, w * 0.16), C.sky, 10);
+      line(ring(x, h * 0.26, w * 0.12, w * 0.11), C.sky, 10);
+      hatch(x - w * 0.12, h * 0.07, x + w * 0.12, h * 0.15, C.black, 8);
+      line([[x - w * 0.18, h * 0.16], [x + w * 0.18, h * 0.16]], C.black, 10);
+      line([[x - w * 0.16, h * 0.35], [x + w * 0.16, h * 0.36]], C.red, 16);
+      line([[x + w * 0.1, h * 0.36], [x + w * 0.14, h * 0.45]], C.red, 14);
+      line([[x, h * 0.27], [x + w * 0.12, h * 0.29], [x, h * 0.3]], C.orange, 7);
+      dot(x - 18, h * 0.23, 7, C.black);
+      dot(x + 18, h * 0.23, 7, C.black);
+      for (const k of [0.42, 0.48, 0.66, 0.74]) dot(x, h * k, 9, C.black);
+      line([[x - w * 0.17, h * 0.45], [x - w * 0.36, h * 0.36]], C.brown, 8);
+      line([[x + w * 0.17, h * 0.45], [x + w * 0.36, h * 0.34]], C.brown, 8);
+      break;
+    }
+    case 'balloons': {
+      [C.red, C.blue, C.yellow, C.green, C.purple].forEach((c, i) => {
+        const x = w * (0.2 + i * 0.15), y = h * (0.22 + (i % 2) * 0.1);
+        hatch(x - 50, y - 50, x + 50, y + 50, c, 13, 8);
+        line(ring(x, y, 70, 85, 30), c, 10);
+        line([[x, y + 85], [x + (r() - 0.5) * 40, y + 250], [w * 0.5, h * 0.82]], C.black, 4);
+      });
+      person(w * 0.5, h * 0.72, h * 0.26, C.orange);
+      break;
+    }
+    case 'fishbowl': {
+      line(ring(w / 2, h * 0.55, w * 0.38, h * 0.36, 40), C.sky, 10);
+      hatch(w * 0.16, h * 0.4, w * 0.84, h * 0.86, '#a8d4f0', 12, 8);
+      line([[w * 0.3, h * 0.2], [w * 0.7, h * 0.2]], C.sky, 10);
+      fish(w * 0.45, h * 0.55, 80, C.orange);
+      for (const [bx, by, br] of [[0.62, 0.42, 12], [0.66, 0.33, 9], [0.6, 0.26, 7]]) line(ring(w * bx, h * by, br, br, 12), C.blue, 4);
+      for (let i = 0; i < 4; i++) line([[w * (0.3 + i * 0.12), h * 0.86], [w * (0.3 + i * 0.12) + (r() - 0.5) * 30, h * 0.7]], C.green, 9);
+      break;
+    }
     case 'dino': {
       ground();
       line([[w * 0.2, h * 0.7], [w * 0.25, h * 0.45], [w * 0.5, h * 0.4], [w * 0.62, h * 0.25], [w * 0.75, h * 0.22], [w * 0.78, h * 0.32], [w * 0.65, h * 0.38], [w * 0.7, h * 0.7], [w * 0.2, h * 0.7]], C.green, 12);
