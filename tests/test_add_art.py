@@ -143,7 +143,9 @@ DATES = [
 
 
 def test_the_page_guesses_titles_and_dates_as_the_script_does(tmp_path):
-    names = ["rocket.jpg", "Scan 3.PDF", "a.b.c.png", ".hidden", "file.", "no extension", "IMG_1234.jpeg"]
+    # Not "file.": Python 3.14 gives it the stem "file", and 3.13 "file.". The
+    # title is the same either way.
+    names = ["rocket.jpg", "Scan 3.PDF", "a.b.c.png", ".hidden", "no extension", "IMG_1234.jpeg"]
     page = browser(tmp_path, titles=TITLES, dates=DATES, stems=names)
     assert page["titles"] == [fridge.title_from(stem, owner) for stem, owner in TITLES]
     assert page["dates"] == [list(d) if (d := fridge.date_in(t)) else None for t in DATES]
