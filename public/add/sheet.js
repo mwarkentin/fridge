@@ -66,6 +66,8 @@ export function open(context) {
   draw();
   wrap.hidden = false;
   ctx.lock(true);
+  // A toast saying to open Add art has done its job, and would cover the buttons.
+  $('#toast').hidden = true;
   sheet.scrollTop = 0;
   (batch.files.length ? $('#a-summary') : input).focus({ preventScroll: true });
 }
