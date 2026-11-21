@@ -7,6 +7,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let KIDS = [];
 let PIECES = [];
 let CAN_EDIT = false;
+// The public preview of a pull request (preview/worker.js), which saves nothing.
+let PREVIEW = false;
 
 // ---- API ----
 async function api(path, { method = 'GET', json, body } = {}) {
@@ -350,14 +352,14 @@ function buildChrome() {
   $('#tabs').innerHTML = section('home', 'Home', 'home') + section('timeline', 'Timeline', 'calendar') + KIDS.map((k) => `<a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a>`).join('');
   const kidOptions = KIDS.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
   $('#f-kid').innerHTML = kidOptions;
-  $('#a-who').innerHTML = `<legend>Who made it?</legend>${KIDS.map((k, i) => `<label class="who-opt" style="${kidStyle(k)}"><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><span class="who-card">${avatar(k)}${esc(k.name)}</span></label>`).join('')}`;
-  $('#open-add').hidden = !KIDS.length;
+  $('#open-add').hidden = !addableKids().length;
   $('#open-frame').hidden = !PIECES.length;
 }
 
 async function load() {
   const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
   CAN_EDIT = session.canEdit;
+  PREVIEW = Boolean(session.preview);
   KIDS = data.kids.map((k, i) => ({ ...k, colour: `var(--kid-${i % 6})`, soft: `var(--kid-${i % 6}-soft)`, slug: `kid-${k.id}` }));
   PIECES = data.pieces;
   buildChrome();
@@ -556,97 +558,49 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---- Add art (parents) ----
+// The sheet is add/sheet.js, loaded the first time it opens, so people who
+// only look never fetch it. It takes several pictures and PDFs at once.
 const add = $('#add');
-const addForm = $('#add-form');
-const ORIGINAL_TYPES = ['image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp', 'image/tiff', 'image/gif'];
+
+// ---- Add art: who made it ----
+// The kids Add art offers, for a whole batch and for each piece: everyone,
+// for now. add/sheet.js draws the pickers from this list and nothing else.
+const addableKids = () => KIDS;
+
+let addArt = null;
 function openAdd() {
-  addForm.reset();
-  $('#a-made').value = todayISO;
-  $('#a-preview').hidden = true;
-  $('#a-icon').removeAttribute('hidden');
-  $('#a-file-label').textContent = 'Take a photo or choose a scan';
-  $('#a-error').hidden = true;
-  add.hidden = false;
-  lock(true);
-  $('#a-file').focus();
+  addArt ||= import('./add/sheet.js');
+  addArt
+    .then((sheet) =>
+      sheet.open({
+        kids: addableKids(),
+        preview: PREVIEW,
+        today: todayISO,
+        api,
+        esc,
+        icon,
+        avatar,
+        kidStyle,
+        lock,
+        toast,
+        refresh: load,
+        // After adding: a kid's wall if it was all one kid's, else the timeline.
+        show(kidIds) {
+          const ids = [...new Set(kidIds)];
+          const kid = ids.length === 1 && KIDS.find((k) => k.id === ids[0]);
+          const to = kid ? kid.slug : 'timeline';
+          if (location.hash === `#${to}`) render();
+          else location.hash = to;
+        },
+      }),
+    )
+    .catch(() => {
+      addArt = null;
+      toast('Add art didn’t open. Check the connection and try again.');
+    });
 }
-function closeAdd() {
-  add.hidden = true;
-  lock(false);
-}
-function addError(msg) {
-  $('#a-error').textContent = msg;
-  $('#a-error').hidden = false;
-}
-// A JPEG no bigger than `max` on its long side, turned the right way up.
-async function shrink(file, max, quality) {
-  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
-  const w = Math.round(bmp.width * scale);
-  const h = Math.round(bmp.height * scale);
-  const cv = document.createElement('canvas');
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bmp, 0, 0, w, h);
-  bmp.close();
-  const blob = await new Promise((resolve) => cv.toBlob(resolve, 'image/jpeg', quality));
-  return { blob, w, h };
-}
+const closeAdd = () => addArt?.then((sheet) => sheet.close());
 $('#open-add').onclick = openAdd;
-$('#add-close').onclick = closeAdd;
-add.addEventListener('click', (e) => {
-  if (e.target === add) closeAdd();
-});
-$('#a-file').addEventListener('change', () => {
-  const f = $('#a-file').files[0];
-  if (!f) return;
-  const preview = $('#a-preview');
-  if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src);
-  preview.src = URL.createObjectURL(f);
-  preview.hidden = false;
-  $('#a-icon').setAttribute('hidden', '');
-  $('#a-file-label').textContent = f.name;
-  $('#a-error').hidden = true;
-});
-addForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = $('#a-file').files[0];
-  if (!file) return addError('Choose a photo or scan first.');
-  if (!ORIGINAL_TYPES.includes(file.type)) return addError('That isn’t a picture the fridge can take. Try a JPEG, PNG or HEIC.');
-  const kidId = Number(addForm.querySelector('input[name="who"]:checked')?.value);
-  const button = $('#a-submit');
-  button.disabled = true;
-  button.textContent = 'Adding…';
-  try {
-    let display, thumb;
-    try {
-      display = await shrink(file, 2000, 0.85);
-      thumb = await shrink(file, 480, 0.8);
-    } catch {
-      throw new Error('This browser can’t open that picture. Try a JPEG or PNG.');
-    }
-    const body = new FormData();
-    body.set('meta', JSON.stringify({ kid_id: kidId, made: $('#a-made').value || todayISO, made_precision: 'day', title: $('#a-title').value.trim(), story: $('#a-story').value.trim(), width: display.w, height: display.h }));
-    body.set('original', file);
-    body.set('display', display.blob, 'display.jpg');
-    body.set('thumb', thumb.blob, 'thumb.jpg');
-    await api('/api/pieces', { method: 'POST', body });
-    closeAdd();
-    await load();
-    const kid = KIDS.find((k) => k.id === kidId);
-    if (location.hash === `#${kid.slug}`) render();
-    else location.hash = kid.slug;
-    toast(`Added to ${kid.name}’s wall`);
-  } catch (err) {
-    addError(err.message);
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Add to the fridge';
-  }
-});
 
 // ---- Shared ----
 let toastTimer;
