@@ -28,6 +28,8 @@ test('with no families, everything is as it was: the API’s order, colours by p
     assert.deepEqual(names(out.kids), ['Ada', 'Cy', 'Bo', 'Dee']);
     assert.deepEqual(out.kids.map((k) => k.ci), [0, 1, 2, 3]);
   }
+  // A kid's family, if the API sends one without the families, is left as it came.
+  assert.deepEqual(arrange(kids, []).kids.map((k) => k.family), ['oaks', 'willows', 'oaks', 'willows']);
   const eight = Array.from({ length: 8 }, (_, i) => ({ id: i + 1, name: `Kid ${i}`, born: '2020-01-01' }));
   assert.deepEqual(arrange(eight, []).kids.map((k) => k.ci), [0, 1, 2, 3, 4, 5, 0, 1]);
 });
@@ -43,7 +45,9 @@ test('a parent sees their own family first, headed “Our kids”', () => {
   assert.deepEqual(willows.groups.map((g) => g.label), ['Our kids', 'The Oaks']);
   assert.deepEqual(names(willows.kids), ['Cy', 'Dee', 'Ada', 'Bo']);
   assert.deepEqual(willows.groups.map((g) => names(g.kids)), [['Cy', 'Dee'], ['Ada', 'Bo']]);
-  assert.equal(willows.kids[0].family.name, 'The Willows');
+  assert.equal(willows.kids[0].familyName, 'The Willows');
+  // The family stays the id the API sent: the page's edit rights go by it.
+  assert.deepEqual(willows.kids.map((k) => k.family), ['willows', 'willows', 'oaks', 'oaks']);
 });
 
 test('someone in no family sees the families in the API’s order, by name', () => {
@@ -97,7 +101,8 @@ test('kids in no family, or one that isn’t listed, come last as “Other kids�
   const out = arrange(list, families, ['oaks']);
   assert.deepEqual(out.groups.map((g) => g.label), ['Our kids', 'The Willows', 'Other kids']);
   assert.deepEqual(names(out.groups[2].kids), ['Eve', 'Fin']);
-  assert.equal(out.groups[2].kids[0].family, null);
+  assert.deepEqual(out.groups[2].kids.map((k) => k.familyName), [null, null]);
+  assert.deepEqual(out.groups[2].kids.map((k) => k.family), [null, 'gone']);
   assert.equal(out.kids.length, list.length);
 });
 
@@ -115,5 +120,5 @@ test('family names show only when there’s more than one family with kids', () 
 test('family ids match whether they come as text or numbers', () => {
   const out = arrange([{ id: 1, name: 'Ada', born: '2018-01-01', family: 7 }, { id: 2, name: 'Cy', born: '2019-01-01', family: '8' }], [{ id: '7', name: 'Seven' }, { id: 8, name: 'Eight' }], [8]);
   assert.deepEqual(out.groups.map((g) => g.label), ['Our kids', 'Seven']);
-  assert.ok(out.kids.every((k) => k.family));
+  assert.deepEqual(out.kids.map((k) => k.familyName), ['Eight', 'Seven']);
 });

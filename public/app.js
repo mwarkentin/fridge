@@ -296,7 +296,7 @@ function viewKid(kid) {
   return `
     <section class="kid-head" style="${kidStyle(kid)}">
       <h1>${magnetWord(kid.name, kid.ci)}</h1>
-      <ul class="facts">${HEADS && kid.family ? `<li>${icon('home')}${esc(kid.family.name)}</li>` : ''}<li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('calendar')}Born ${fmt(kid.born, { year: 'numeric', month: 'long' })}</li><li>${icon('pictures')}${plural(mine.length, 'piece')}</li>${favs ? `<li class="fav">${icon('heart', 'filled')}${plural(favs, 'favourite')}</li>` : ''}</ul>
+      <ul class="facts">${HEADS && kid.familyName ? `<li>${icon('home')}${esc(kid.familyName)}</li>` : ''}<li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('calendar')}Born ${fmt(kid.born, { year: 'numeric', month: 'long' })}</li><li>${icon('pictures')}${plural(mine.length, 'piece')}</li>${favs ? `<li class="fav">${icon('heart', 'filled')}${plural(favs, 'favourite')}</li>` : ''}</ul>
     </section>
     ${mine.length ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'All', { pic: 'pictures' })}${chip('fav', 'Favourites', { pic: 'heart', cls: 'fav', style: '--kid:var(--tab-home)' })}${mediums.map((m) => chip(m, m, { pic: 'crayon' })).join('')}</div>` : ''}
     <div class="groups" data-scope>${body}</div>`;

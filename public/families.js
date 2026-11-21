@@ -31,7 +31,8 @@ function colours(kids, familyOf) {
 }
 
 // The kids in the order the page lists them, each with `ci` (their colour,
-// 0 to 5) and `family` (the family, or null), and the groups to show them in.
+// 0 to 5) and `familyName` (or null), and the groups to show them in. Each
+// kid's `family` stays the id the API sent, which edit rights go by.
 //
 // With no families (before they're set up), it's the API's order and colours
 // by position, exactly as the page has always done, and no groups.
@@ -41,19 +42,19 @@ function colours(kids, familyOf) {
 // than one family to tell apart, so whether to show the families' names.
 export function arrange(kids, families, mine) {
   const fams = (Array.isArray(families) ? families : []).filter((f) => f && f.id != null);
-  if (!fams.length) return { grouped: false, heads: false, groups: [], kids: kids.map((k, i) => ({ ...k, ci: i % 6, family: null })) };
+  if (!fams.length) return { grouped: false, heads: false, groups: [], kids: kids.map((k, i) => ({ ...k, ci: i % 6, familyName: null })) };
 
   const byId = new Map(fams.map((f) => [String(f.id), f]));
   const familyOf = (k) => (k.family != null && byId.has(String(k.family)) ? String(k.family) : null);
   const ci = colours(kids, familyOf);
-  const all = kids.map((k, i) => ({ ...k, ci: ci[i], family: byId.get(familyOf(k)) || null }));
+  const all = kids.map((k, i) => ({ ...k, ci: ci[i], familyName: familyOf(k) ? String(byId.get(familyOf(k)).name ?? '') : null }));
 
   const own = new Set((Array.isArray(mine) ? mine : []).map(String));
-  const groups = fams.map((f) => ({ id: String(f.id), name: String(f.name ?? ''), mine: own.has(String(f.id)), kids: all.filter((k) => k.family === f) })).filter((g) => g.kids.length);
+  const groups = fams.map((f) => ({ id: String(f.id), name: String(f.name ?? ''), mine: own.has(String(f.id)), kids: all.filter((k) => familyOf(k) === String(f.id)) })).filter((g) => g.kids.length);
   groups.sort((a, b) => b.mine - a.mine); // stable: keeps the API's order otherwise
   const ours = groups.filter((g) => g.mine).length;
   for (const g of groups) g.label = g.mine && ours === 1 ? 'Our kids' : g.name || 'A family';
-  const loose = all.filter((k) => !k.family);
+  const loose = all.filter((k) => !familyOf(k));
   if (loose.length) groups.push({ id: null, name: '', mine: false, label: 'Other kids', kids: loose });
 
   return { grouped: true, heads: groups.filter((g) => g.id !== null).length > 1, groups, kids: groups.flatMap((g) => g.kids) };
