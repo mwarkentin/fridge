@@ -35,6 +35,8 @@
   --kid-0-soft: #e3edfb; --kid-1-soft: #fcebdc; --kid-2-soft: #e1f2e3; --kid-3-soft: #eee6fa; --kid-4-soft: #fbe4ee; --kid-5-soft: #dcf1ef;
   --tab-home: #c22f24; --tab-timeline: #7341b0;
   --tape: rgba(244, 228, 168, 0.86);
+  /* A family's name, written on a strip of masking tape. */
+  --label: #f2e3a9; --label-ink: #1c2a30;
   --paper-shadow: 0 1px 2px rgba(25, 45, 40, 0.16), 0 10px 18px -8px rgba(25, 45, 40, 0.34);
   --lift-shadow: 0 2px 4px rgba(25, 45, 40, 0.14), 0 22px 30px -12px rgba(25, 45, 40, 0.4);
   --scrim: rgba(16, 32, 30, 0.55);
@@ -59,6 +61,7 @@
     --kid-0-soft: #1d3550; --kid-1-soft: #3b2e22; --kid-2-soft: #1d3b2b; --kid-3-soft: #2f2a4a; --kid-4-soft: #3e2536; --kid-5-soft: #173c3d;
     --tab-home: #ff8a7f; --tab-timeline: #c3a0f4;
     --tape: rgba(226, 210, 152, 0.66);
+    --label: #c2b47f; --label-ink: #13232a;
     --paper-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 22px -8px rgba(0, 0, 0, 0.7);
     --lift-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 24px 34px -12px rgba(0, 0, 0, 0.8);
     --scrim: rgba(3, 8, 10, 0.7);
@@ -117,6 +120,35 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--surface); 
 @media (max-width: 380px) { .actions .btn { padding-inline: 11px; } .brand .magnets { font-size: 27px; } }
 /* On the narrowest phones Frame keeps its icon, and its word for screen readers. */
 @media (max-width: 359px) { #open-frame { width: 46px; padding: 0; } #open-frame .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
+
+/* With families, the kids' tabs go in family groups, and the page measures
+   them (fitTabs in app.js): they never scroll sideways. If they don't fit on
+   one line, the kids move into a menu behind one tab, then the tabs drop
+   their words one at a time, keeping their magnets. */
+.bar.grouped .tabs { -webkit-mask-image: none; mask-image: none; margin-right: -3px; padding-right: 3px; }
+.bar.fit-row .tabs { order: 3; flex-basis: 100%; }
+.tab-fam { display: flex; gap: 8px; flex: none; }
+.bar.heads .tab-fam::before { content: ""; flex: none; align-self: center; height: 30px; margin-right: 1px; border-left: 2.5px dashed var(--btn-line); }
+.kids-btn { display: none; }
+.bar.fit-menu .tab-fam { display: none; }
+.bar.fit-menu .kids-btn { display: flex; align-items: center; gap: 8px; flex: none; min-height: 44px; padding: 5px 11px 5px 6px; border: 0; border-radius: 999px; background: var(--chip); color: var(--ink); font: 800 16px/1 var(--body); white-space: nowrap; box-shadow: 0 2px 0 var(--line); cursor: pointer; }
+.bar.fit-menu .kids-btn.on { background: var(--kid); color: var(--on-kid); box-shadow: 0 2px 0 rgba(0, 0, 0, 0.22); }
+.kids-btn.on .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
+.kids-btn .chev { width: 18px; height: 18px; margin-left: -3px; stroke-width: 2.6; transform: rotate(90deg); transition: transform 0.2s ease; }
+.kids-btn[aria-expanded="true"] .chev { transform: rotate(-90deg); }
+.kids-stack { display: flex; }
+.kids-stack .av { box-shadow: 0 0 0 2px var(--bg-soft), inset 0 -2px 0 rgba(0, 0, 0, 0.16); }
+.kids-stack .av + .av { margin-left: -13px; }
+.bar.fit-no-home #tabs [data-route="home"], .bar.fit-no-timeline #tabs [data-route="timeline"] { padding: 5px 7px; }
+.bar.fit-no-kids .kids-btn { padding-right: 9px; }
+.bar.fit-no-home #tabs [data-route="home"] .lbl, .bar.fit-no-timeline #tabs [data-route="timeline"] .lbl, .bar.fit-no-kids .kids-btn .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.kids-menu { position: absolute; top: calc(100% + 6px); left: var(--km-left, 16px); z-index: 1; width: min(420px, calc(100% - 32px)); max-height: calc(100vh - 150px); max-height: calc(100dvh - 150px); overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 16px; padding: 16px 16px 18px; background: var(--surface); border-radius: 22px; box-shadow: 0 0 0 1px var(--line), 0 20px 40px -14px rgba(0, 0, 0, 0.45); }
+.km-fam { display: grid; gap: 10px; justify-items: start; }
+.km-fam ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.km-fam a { display: flex; align-items: center; gap: 9px; min-height: 52px; padding: 6px 18px 6px 7px; border-radius: 999px; background: var(--kid-soft); color: var(--ink); font: 800 17px/1.1 var(--body); text-decoration: none; overflow-wrap: anywhere; box-shadow: 0 2px 0 rgba(0, 0, 0, 0.1); }
+.km-fam a .av { --av: 38px; }
+.km-fam a[aria-current="page"] { background: var(--kid); color: var(--on-kid); }
+.km-fam a[aria-current="page"] .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
 
 /* ---- Buttons ---- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; font: 800 16px/1.1 var(--body); color: var(--ink); background: var(--surface); border: 2px solid var(--btn-line); border-radius: 14px; padding: 8px 15px; box-shadow: 0 3px 0 var(--btn-line); cursor: pointer; white-space: nowrap; text-decoration: none; transition: transform 0.12s ease, box-shadow 0.12s ease; }
@@ -212,7 +244,7 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 @media (hover: hover) and (prefers-reduced-motion: no-preference) { .kid-card:hover { transform: rotate(0deg) translateY(-3px); } }
 .kid-top { display: flex; align-items: center; gap: 14px; }
 .kid-top .av { --av: 60px; }
-.kid-top h3 { margin: 0; font: 700 2rem/1.05 var(--display); color: var(--kid); overflow-wrap: anywhere; }
+.kid-top h3, .kid-top h4 { margin: 0; font: 700 2rem/1.05 var(--display); color: var(--kid); overflow-wrap: anywhere; }
 .facts { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 15px; font-weight: 700; }
 .facts li { display: flex; align-items: center; gap: 6px; }
 .facts .i { width: 19px; height: 19px; }
@@ -222,6 +254,26 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .kid-thumbs > :nth-child(2) { transform: rotate(2deg) translateY(3px); }
 .kid-thumbs > :nth-child(3) { transform: rotate(-1.5deg); }
 .kid-thumbs span { background: none; box-shadow: none; border: 2.5px dashed var(--kid); opacity: 0.45; border-radius: 6px; }
+/* A family's name on a strip of masking tape: over its kids' cards, in the
+   kids menu, and before its kids' chips. */
+.fam-tag { display: block; justify-self: start; width: fit-content; max-width: 100%; margin: 0; padding: 5px 17px 7px; background: var(--label); color: var(--label-ink); font: 400 1.4rem/1.1 var(--hand); overflow-wrap: anywhere; transform: rotate(-1.2deg); clip-path: polygon(1.5% 0, 99% 6%, 100% 32%, 98.5% 56%, 100% 82%, 98% 100%, 2% 94%, 0 70%, 1.5% 45%, 0 16%); }
+.fam { display: grid; gap: 16px; }
+.fam + .fam { margin-top: 30px; }
+/* With families, two to a row at every width: a family's two kids side by
+   side, filling the page. Narrower than an iPad, the cards stack their facts. */
+.kids.pairs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 699px) {
+  .kids.pairs { gap: 14px; }
+  .kids.pairs .kid-card { gap: 12px; padding: 13px 12px 15px; border-radius: 20px; }
+  .kids.pairs .kid-top { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .kids.pairs .kid-top .av { --av: 46px; }
+  .kids.pairs .kid-top :is(h3, h4) { font-size: 1.6rem; }
+  .kids.pairs .facts { flex-direction: column; gap: 2px; font-size: 14px; }
+  .kids.pairs .facts .i { width: 17px; height: 17px; }
+  .kids.pairs .since { display: none; }
+  .kids.pairs .kid-thumbs { gap: 8px; padding: 2px 2px 0; }
+  .kids.pairs .kid-thumbs img, .kids.pairs .kid-thumbs span { padding: 3px; }
+}
 
 /* ---- A kid's wall, and the timeline ---- */
 .kid-head { padding-top: 16px; display: grid; gap: 14px; }
@@ -242,6 +294,10 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .chip:not([style])[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 .chip[aria-pressed="true"] .i { color: inherit; }
 .chip[aria-pressed="true"] .av { background: var(--on-kid); color: var(--kid); box-shadow: none; }
+/* Each family's chips stay together after its name, and wrap as one. */
+.chips:has(.chip-fam) { column-gap: 22px; }
+.chip-fam { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; max-width: 100%; }
+.chip-fam .fam-tag { font-size: 1.15rem; padding: 3px 12px 5px; }
 /* A count in the magnet: numbers line up, and Everyone's magnet is ink-coloured. */
 .av-count { width: auto; min-width: var(--av); padding: 0 7px; border-radius: 999px; font-family: var(--body); font-weight: 900; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip:not([style]) .av-count { --kid: var(--ink); color: var(--bg); }
