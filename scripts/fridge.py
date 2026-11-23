@@ -735,7 +735,7 @@ def families_(url: str) -> None:
         gallery = check(client.get("/api/gallery"))
     families = gallery.get("families", [])
     if not families:
-        click.echo("No families are set up, so every parent can change every kid. They're set up in FRIDGE_PEOPLE, in mwarkentin/infra.")
+        click.echo("No families are set up, so every parent can change every kid. They're set up in fridge_people.auto.tfvars, in mwarkentin/infra.")
         return
     kids = gallery["kids"]
     names = lambda family: ", ".join(k["name"] for k in kids if k.get("family") == family) or "no kids yet"
@@ -762,7 +762,7 @@ def set_family(url: str, kid_name: str, family: str) -> None:
         to = None if family.lower() == "none" else family
         ids = [f["id"] for f in gallery.get("families", [])]
         if to is not None and to not in ids:
-            raise click.ClickException(f"There's no family {to}. The fridge has: {', '.join(ids)}" if ids else "No families are set up yet. They're set up in FRIDGE_PEOPLE, in mwarkentin/infra.")
+            raise click.ClickException(f"There's no family {to}. The fridge has: {', '.join(ids)}" if ids else "No families are set up yet. They're set up in fridge_people.auto.tfvars, in mwarkentin/infra.")
         check(client.patch(f"/api/kids/{kid['id']}", json={"family": to}))
     click.echo(f"{kid['name']} is in family {to} now." if to else f"{kid['name']} is in no family now, so any parent can change them.")
 

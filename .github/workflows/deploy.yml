@@ -50,8 +50,9 @@ jobs:
 
       # PARENT_EMAILS and FAMILIES go up as Worker secrets, in a file so
       # they're never on a command line. The Access settings aren't secret.
-      # FAMILIES (who's in which family, from infra's FRIDGE_PEOPLE) can be
-      # missing, which means no families: every parent changes everything.
+      # FAMILIES (who's in which family, from infra's
+      # fridge_people.auto.tfvars) can be missing, which means no families:
+      # every parent changes everything.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}

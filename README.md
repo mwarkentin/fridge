@@ -45,8 +45,8 @@ any parent's to change, as everything was before families. The page shows
 each parent only what they can change, and the Worker refuses the rest.
 
 - **Who's in which family** lives with the family's emails, in infra's
-  `FRIDGE_PEOPLE` secret: its optional `families` list, each family with an
-  `id`, a `name` and its `parents`. Infra hands it to this repo as the
+  `fridge_people.auto.tfvars`: its optional `families` list, each family
+  with an `id`, a `name` and its `parents`. Infra hands it to this repo as the
   `FAMILIES` Actions secret, and the Deploy workflow gives it to the Worker.
   Each family's parents have to be in `parents` too: being in a family
   doesn't make anyone a parent.
@@ -64,7 +64,7 @@ each parent only what they can change, and the Worker refuses the rest.
   in none. Kids added before there were families are in none until someone
   puts them in one.
 
-With no `families` in `FRIDGE_PEOPLE` there are no families, and every
+With no `families` in that file there are no families, and every
 parent can change everything. Taking a family out does the same for its
 kids.
 
@@ -74,7 +74,7 @@ kids.
    and choose the Free plan (up to 50 people). That's a billing choice, so
    it can't be made from code.
 2. **mwarkentin/infra:** follow the "fridge" section of its README: token
-   permissions, the `FRIDGE_PEOPLE` secret, then merge its pull request.
+   permissions, who the fridge lets in, then merge its pull request.
    That adopts the Zero Trust organization, adds the One-time PIN login,
    makes everything else and fills in this repo's Actions secrets and
    variables.

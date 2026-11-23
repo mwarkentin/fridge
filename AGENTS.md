@@ -14,7 +14,7 @@ pull request and commit message:
 - scans or photos of their art (tests make their own images)
 - Dropbox paths, which contain the kids' names
 - family email addresses and who's in which family (they live in
-  mwarkentin/infra's `FRIDGE_PEOPLE` secret)
+  mwarkentin/infra's `fridge_people.auto.tfvars`, which is private)
 
 Tests and examples use made-up names (Ada and Bo, and Cy and Dee in a second
 family; families like the Pines and the Oaks) and `example.com` addresses.
