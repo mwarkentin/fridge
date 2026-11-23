@@ -44,12 +44,11 @@ their own family's kids, and change only those kids. A kid in no family is
 any parent's to change, as everything was before families. The page shows
 each parent only what they can change, and the Worker refuses the rest.
 
-- **Who's in which family** lives with the family's emails, in infra's
-  `fridge_people.auto.tfvars`: its optional `families` list, each family
-  with an `id`, a `name` and its `parents`. Infra hands it to this repo as the
-  `FAMILIES` Actions secret, and the Deploy workflow gives it to the Worker.
-  Each family's parents have to be in `parents` too: being in a family
-  doesn't make anyone a parent.
+- **Who's in which family** is in infra's `fridge_people.auto.tfvars`,
+  which lists each family once, by id, with its name, its parents and its
+  kids. Infra hands this repo `PARENT_EMAILS` (every family's parents) and
+  `FAMILIES` (each family's id, name and parents) as Actions secrets, and
+  the Deploy workflow gives them to the Worker.
 - **Which family a kid is in** is kept on the fridge, with the kid.
   `add-kid` puts a new kid in your family if you're in just one, or in the
   one `--family` names, and `set-family` moves one:
@@ -64,8 +63,8 @@ each parent only what they can change, and the Worker refuses the rest.
   in none. Kids added before there were families are in none until someone
   puts them in one.
 
-With no `families` in that file there are no families, and every
-parent can change everything. Taking a family out does the same for its
+Without `FAMILIES` there are no families, and every parent can change
+everything. Taking a family out of infra's file does the same for its
 kids.
 
 ## Setting it up
