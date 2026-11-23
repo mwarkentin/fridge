@@ -10,8 +10,9 @@ it.
 
 - **One Cloudflare Worker** serves the page, a small API and the images. The
   page is plain HTML, CSS and JavaScript, with no build step.
-- **D1** holds the kids (name and birthday) and each piece's details: when it
-  was made, title, what they said, medium, tags, favourite.
+- **D1** holds the kids (name and birthday, kept in step with infra's list
+  of them) and each piece's details: when it was made, title, what they
+  said, medium, tags, favourite.
 - **R2** holds three copies of each piece: the original, a screen-sized JPEG
   and a thumbnail. The copies are made before upload, by the import script or
   the page, so there's no paid image resizing.
@@ -19,7 +20,9 @@ it.
   code emailed to them; the kids' iPads sign in with addresses that deliver
   to a parent and stay signed in for a month. The Worker checks Access's
   token on every request too, and has no workers.dev address, so there's no
-  way around the sign-in. Parents can change things; everyone else can look.
+  way around the sign-in. Parents can change things (with families set up,
+  only their own family's: see [Families](#families)); everyone else can
+  look.
   The one thing anyone can fetch is the app icons in `public/icons/`, since
   iOS fetches Home Screen icons without the sign-in. They're in this repo
   for anyone to see anyway.
@@ -33,7 +36,9 @@ it.
   the blank ones, and guesses dates and titles from file names as the
   import script does. You check a card for each piece before anything goes
   up. It recognises pieces the same way as the import script, so neither
-  adds what the other already has.
+  adds what the other already has. It offers only the kids you can add art
+  for (see [Families](#families)); a kid who's an artist uses it for their
+  own art.
 
 The bucket, database, sign-in, domain and deploy token are made by
 [mwarkentin/infra](https://github.com/mwarkentin/infra) (`fridge.tf`). This
@@ -41,26 +46,60 @@ repo deploys the Worker into them.
 
 Nothing about the family is in this repo, which is public. See AGENTS.md.
 
+## Families
+
+The fridge can hold more than one family's kids. Everyone signed in sees
+everything, but a parent can add, edit, favourite and remove art only for
+their own family's kids, and change only those kids. A kid in no family is
+any parent's to change, as everything was before families. The page shows
+each parent only what they can change, and the Worker refuses the rest.
+
+Everything about who's who is in one place: infra's
+`fridge_people.auto.tfvars`, which lists each family once, with its name,
+its parents and its kids, and each kid with their birthday. Infra hands
+this repo `PARENT_EMAILS` (every family's parents) and `FAMILIES` (each
+family with its parents and kids) as Actions secrets, and the Deploy
+workflow gives them to the Worker.
+
+- **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
+  doesn't have yet, and copies over a changed birthday or spelling, the
+  next time the page or the import script loads the gallery. A kid renamed
+  in the file keeps their art: they're matched by birthday when their old
+  name is gone. A kid the file stops listing stays, with their art, in no
+  family. Nothing else adds or changes kids, so there's no `add-kid`.
+- **A kid's family** is the family the file lists them under.
+- **A kid who's an artist** (`artist = true` in the file, with their own
+  email) signs in to add their own art, and can edit, favourite or remove
+  only the pieces they added. Their parents still look after all of their
+  art, including what they add.
+
+To add a kid, change a name or birthday, or move someone between
+families, edit infra's file in a pull request, merge it, then run this
+repo's Deploy workflow. Without `FAMILIES` there are no families, and
+every parent can change everything. Taking a family out of infra's file
+does the same for its kids.
+
 ## Setting it up
 
 1. **Cloudflare Zero Trust:** in the Cloudflare dashboard, open Zero Trust
    and choose the Free plan (up to 50 people). That's a billing choice, so
    it can't be made from code.
 2. **mwarkentin/infra:** follow the "fridge" section of its README: token
-   permissions, the `FRIDGE_PEOPLE` secret, then merge its pull request.
+   permissions, who the fridge lets in, then merge its pull request.
    That adopts the Zero Trust organization, adds the One-time PIN login,
    makes everything else and fills in this repo's Actions secrets and
    variables.
 3. **Deploy:** run the Deploy workflow from this repo's Actions tab (after
    that, every merge to `main` deploys). Then merge the infra change that
    adds the custom domain: it can only point at a Worker that exists.
-4. **Add the kids**, from a computer with this repo checked out and
+4. **The kids** come from infra's file (see [Families](#families)), so
+   they're on the fridge once it has deployed. To import scans, sign the
+   import script in, from a computer with this repo checked out and
    [uv](https://docs.astral.sh/uv/) and cloudflared installed
    (`brew install cloudflared`):
 
    ```sh
    uv run scripts/fridge.py login
-   uv run scripts/fridge.py add-kid "Name" 2018-03-14
    ```
 
 5. **Import the scans.** On a phone or iPad, use **Add art** on the page
@@ -72,14 +111,14 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
    With no date in a file's name, it uses the day the photo was taken, or
    else today, and says so.
 
-   On a computer with this repo, survey a folder first. It works offline, uploads
-   nothing, and opens a report with a picture of every page, saying which
-   pages are blank, which look like art and which are plain (documents, or
-   pencil drawings). Each piece has a box to tick: pages that look like art
-   start ticked, plain and blank ones don't, and clicking a picture opens
-   the original. Press **Save my picks**, then import with the file it
-   saves (named after the folder's last three names). The survey prints the
-   exact command:
+   On a computer with this repo, survey a folder first. It works offline,
+   uploads nothing, and opens a report with a picture of every page, saying
+   which pages are blank, which look like art and which are plain
+   (documents, or pencil drawings). Each piece has a box to tick: pages
+   that look like art start ticked, plain and blank ones don't, and
+   clicking a picture opens the original. Press **Save my picks**, then
+   import with the file it saves (named after the folder's last three
+   names). The survey prints the exact command:
 
    ```sh
    uv run scripts/fridge.py survey ~/Dropbox/Kids\ Art --kid Ada
@@ -127,16 +166,19 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 
    Whose a piece is comes from a folder (or failing that, file) name
    matching a kid's name; `--kid NAME` covers a folder that's all one
-   kid's. When it was made comes from a date in the file or folder name:
-   `2024-05-29`, `20240529`, `2024-05`, `May 2024` or `2024`. With none, it
-   guesses the month from the photo's data or the file's date, which is
-   usually when it was scanned, and the dry run says so. The title is the
-   rest of the file name, without the kid's name (or a short form of it of
-   four letters or more, like Theo for Theodora) and scanner words. In a
-   name with a filing label, like `2024-05-29 Ada Big-Hill Art Bundle
-   rocket.pdf`, only what follows "Art Bundle" (or "Bundle") is the title.
-   Titles are set when a piece is imported, so check them in the dry run.
-   Fix anything wrong on the page afterwards with **Edit details**.
+   kid's. With families set up, only your own family's kids (and kids in
+   no family) count, and the import says which files it leaves out because
+   they're another family's. When it was made comes from a date in the
+   file or folder name: `2024-05-29`, `20240529`, `2024-05`, `May 2024` or
+   `2024`. With none, it guesses the month from the photo's data or the
+   file's date, which is usually when it was scanned, and the dry run says
+   so. The title is the rest of the file name, without the kid's name (or a
+   short form of it of four letters or more, like Theo for Theodora) and
+   scanner words. In a name with a filing label, like `2024-05-29 Ada
+   Big-Hill Art Bundle rocket.pdf`, only what follows "Art Bundle" (or
+   "Bundle") is the title. Titles are set when a piece is imported, so
+   check them in the dry run. Fix anything wrong on the page afterwards
+   with **Edit details** (on your own family's kids' art).
 
    For a folder that mixes art with other papers (a school folder with
    report cards, say), add `--ask`: it shows each file and asks whether to
@@ -169,12 +211,18 @@ uv run --locked pytest        # import script tests
 ```
 
 To run it locally, create `.dev.vars` (git ignores it) with
-`DEV_EMAIL=you@example.com` and `PARENT_EMAILS=you@example.com`, then:
+`DEV_EMAIL=you@example.com`, `PARENT_EMAILS=you@example.com` and made-up
+families and kids:
+
+```sh
+FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":[{"name":"Ada","born":"2019-04-02"},{"name":"Bo","born":"2021-07-02"}]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"],"kids":[{"name":"Cy","born":"2020-02-02"}]}]'
+```
+
+Then:
 
 ```sh
 npx wrangler d1 migrations apply fridge --local
 npm run dev
-uv run scripts/fridge.py --url http://localhost:8787 add-kid Ada 2019-04-02
 uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/pictures
 ```
 
@@ -184,8 +232,9 @@ uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/picture
 
 Each pull request from a branch in this repo gets a public preview at
 `fridge-preview-pr-<number>.<subdomain>.workers.dev`, linked from a comment
-on the pull request. It's the branch's page with a made-up family: Ada and
-Bo, and drawings that `preview/worker.js` makes up. It has no database,
+on the pull request. It's the branch's page with two made-up families, Ada
+and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings
+that `preview/worker.js` makes up. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request
 closes. To make one for a pull request opened before previews existed, run

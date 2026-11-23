@@ -1,5 +1,5 @@
-// The public preview (preview/worker.js): a made-up family, nothing private
-// it could reach, and no way to change anything.
+// The public preview (preview/worker.js): two made-up families, nothing
+// private it could reach, and no way to change anything.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -27,12 +27,28 @@ test('has nothing to reach but the page: no bindings, no imports, no build', () 
   assert.doesNotMatch(readFileSync('preview/worker.js', 'utf8'), /^\s*import\b|\bimport\s*\(/m);
 });
 
-test('serves a made-up family to anyone, in the real gallery’s shape', async () => {
+test('serves made-up families to anyone, in the real gallery’s shape', async () => {
   const res = await call('/api/gallery');
   assert.equal(res.status, 200);
-  const { kids, pieces } = await res.json();
-  assert.deepEqual(kids.map((k) => k.name), ['Ada', 'Bo']);
+  const { families, kids, pieces } = await res.json();
+  // Oldest first, as the real Worker sorts them, so the families interleave.
+  assert.deepEqual(kids.map((k) => k.name), ['Ada', 'Cy', 'Bo', 'Dee']);
+  assert.deepEqual(kids.map((k) => k.born), kids.map((k) => k.born).sort());
+  for (const k of kids) assert.deepEqual(Object.keys(k).sort(), ['born', 'family', 'id', 'name']);
+  // Families as the families contract has them: an id and a name each, and each kid's family by id.
+  assert.equal(families.length, 2);
+  for (const f of families) {
+    assert.deepEqual(Object.keys(f).sort(), ['id', 'name']);
+    assert.equal(typeof f.id, 'string');
+    assert.equal(typeof f.name, 'string');
+    assert.deepEqual(kids.filter((k) => k.family === f.id).length, 2, f.name);
+  }
+  assert.ok(kids.every((k) => families.some((f) => f.id === k.family)));
   assert.ok(pieces.length >= 10);
+  for (const k of kids) assert.ok(pieces.filter((p) => p.kid_id === k.id).length >= 3, `${k.name} has art`);
+  // Tags shared across the families, so a tag's page shows kids from both.
+  const familyOf = (p) => kids.find((k) => k.id === p.kid_id).family;
+  assert.ok(pieces.some((p) => p.tags.includes('animals') && familyOf(p) === families[0].id) && pieces.some((p) => p.tags.includes('animals') && familyOf(p) === families[1].id));
   // The same fields the real Worker selects for the page.
   const fields = readFileSync('src/worker.js', 'utf8').match(/SELECT (id, kid_id[^]*?) FROM pieces/)[1].split(',').map((s) => s.trim());
   const today = new Date().toISOString().slice(0, 10);
@@ -51,6 +67,8 @@ test('serves a made-up family to anyone, in the real gallery’s shape', async (
   assert.equal(session.canEdit, true);
   assert.equal(session.preview, true);
   assert.match(session.email, /@example\.com$/);
+  // A parent in the first family.
+  assert.deepEqual(session.families, [families[0].id]);
 });
 
 test('draws every piece, at its size', async () => {

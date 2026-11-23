@@ -131,7 +131,7 @@ test('the copy of pdf.js is one pinned version, with its licences, and nothing e
 
 test('pdf.js loads only when a PDF is chosen, and the page only when Add art opens', () => {
   const statics = (file) => [...readFileSync(file, 'utf8').matchAll(/^import\b[^;]*?from\s+'([^']+)'/gm)].map((m) => m[1]);
-  assert.deepEqual(statics('public/app.js'), []);
+  assert.ok(!statics('public/app.js').some((m) => /add\/|pdf/.test(m)), 'app.js loads Add art only when it opens');
   assert.match(readFileSync('public/app.js', 'utf8'), /import\('\.\/add\/sheet\.js'\)/);
   assert.ok(!statics('public/add/sheet.js').some((m) => /pdf/.test(m)), 'add/sheet.js imports pdf.js only when it needs it');
   assert.match(readFileSync('public/add/sheet.js', 'utf8'), /import\('\.\/pdf\.js'\)/);

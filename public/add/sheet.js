@@ -23,7 +23,11 @@ const MAX_BYTES = 85 * 1024 * 1024;
 const TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', heif: 'image/heif', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff', gif: 'image/gif', pdf: 'application/pdf' };
 const PDF = 'application/pdf';
 
-let ctx = null; // from app.js: kids, preview, today, api, esc, icon, avatar, kidStyle, lock, toast, refresh, show
+let ctx = null; // from app.js: kids, parent, preview, today, api, esc, icon, avatar, kidStyle, lock, toast, refresh, show
+// What the fridge already has, and skips, are the importer's, so parents'
+// only: an artist adding their own art goes without (the Worker still never
+// adds a piece twice).
+const importer = () => ctx.parent && !ctx.preview;
 let keys = 0;
 let batch = fresh();
 let pdfModule = null;
@@ -117,7 +121,7 @@ function choose(files) {
   batch.files.push(...entries);
   batch.looking += entries.length;
   batch.said = null;
-  if (!batch.known && !ctx.preview) askTheFridge(batch);
+  if (!batch.known && importer()) askTheFridge(batch);
   if (first) draw();
   else {
     list.insertAdjacentHTML('beforeend', entries.map(lookingCard).join(''));
@@ -525,7 +529,7 @@ function drawFoot() {
   $('#a-foot .a-buttons').hidden = batch.said?.kind === 'preview';
   const said = $('#a-said');
   const unticked = batch.pieces.filter((p) => p.state === 'new' && !p.include && p.kind !== 'blank').length;
-  const s = batch.said || (unticked && !batch.sending ? { kind: 'hint', text: `${unticked === 1 ? 'The unticked piece is' : `The ${unticked} unticked pieces are`} remembered as skipped, so the import script leaves ${unticked === 1 ? 'it' : 'them'} out too.` } : null);
+  const s = batch.said || (unticked && !batch.sending && importer() ? { kind: 'hint', text: `${unticked === 1 ? 'The unticked piece is' : `The ${unticked} unticked pieces are`} remembered as skipped, so the import script leaves ${unticked === 1 ? 'it' : 'them'} out too.` } : null);
   said.hidden = !s;
   said.className = `a-said${s ? ` said-${s.kind}` : ''}`;
   said.innerHTML = s ? s.html || ctx.esc(s.text) : '';
@@ -664,6 +668,7 @@ async function finish(mine, { lost, todo }) {
 // does, so the import script leaves them out too. Blank pages it leaves out
 // by itself.
 async function rememberSkips(mine) {
+  if (!importer()) return;
   const add = mine.pieces.filter((p) => p.state === 'new' && !p.include && p.kind !== 'blank' && !p.remembered);
   if (!add.length) return;
   try {

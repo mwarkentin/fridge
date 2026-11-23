@@ -1,5 +1,9 @@
 // The fridge's page: reads the gallery from /api/gallery, draws it, and lets
-// parents edit details, mark favourites and add new pieces.
+// parents edit details, mark favourites and add new pieces, for the kids in
+// their own families (and kids in none), and lets a kid who's an artist add
+// their own art and change the pieces they added.
+
+import { arrange } from './families.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -9,6 +13,23 @@ let PIECES = [];
 let CAN_EDIT = false;
 // The public preview of a pull request (preview/worker.js), which saves nothing.
 let PREVIEW = false;
+// The kids by family, the viewer's own first (families.js). Until families
+// are set up there are none, and the page is as it was before them.
+let GROUPED = false;
+let GROUPS = [];
+// More than one family, so their names show.
+let HEADS = false;
+let MY_FAMILIES = [];
+let ARTIST = null; // the kid's name, for a kid signed in to add their own art
+let MINE = new Set(); // the pieces that artist added
+// The Worker's rules, so the page offers only what it would allow: a parent
+// can change a kid's pieces if the kid is in one of the parent's families
+// or in none; an artist can add their own art, and change the pieces they
+// added.
+const canChange = (kid) => CAN_EDIT && (kid?.family == null || MY_FAMILIES.includes(kid.family));
+const isArtist = (kid) => ARTIST != null && kid != null && kid.name.trim().toLowerCase() === ARTIST.trim().toLowerCase();
+const canAddFor = (kid) => canChange(kid) || isArtist(kid);
+const canChangePiece = (p) => canChange(kidOf(p)) || (isArtist(kidOf(p)) && MINE.has(p.id));
 
 // ---- API ----
 async function api(path, { method = 'GET', json, body } = {}) {
@@ -176,6 +197,16 @@ const wall = (list, opts) => `<div class="wall">${list.map((p) => tile(p, opts))
 // With `count`, the round magnet shows how many pieces instead of a letter or icon.
 const chip = (value, label, { kid, pic, style, cls = '', count } = {}) =>
   `<button class="chip${kid || count != null ? ' has-av' : ''}${cls ? ` ${cls}` : ''}" type="button" data-filter="${esc(value)}" aria-pressed="${filter === value}"${count != null ? ` aria-label="${esc(label)}, ${plural(count, 'piece')}"` : ''}${kid || style ? ` style="${kid ? kidStyle(kid) : style}"` : ''}>${count != null ? `<i class="av av-count" aria-hidden="true"${kid ? ` style="${kidStyle(kid)}"` : ''}>${count}</i>` : kid ? avatar(kid) : pic ? icon(pic) : ''}${esc(label)}</button>`;
+// A family's name on a strip of masking tape, as a heading or beside its kids.
+const famTag = (g, tag = 'span', attrs = '') => `<${tag} class="fam-tag"${attrs}>${esc(g.label)}</${tag}>`;
+// The kids' filter chips, in the page's order. When they come from more than
+// one family, each family's chips stay together, after its name.
+function kidChips(kids, opts = () => ({})) {
+  const one = (k) => chip(String(k.id), k.name, { kid: k, ...opts(k) });
+  const groups = HEADS ? GROUPS.map((g) => ({ ...g, kids: g.kids.filter((k) => kids.includes(k)) })).filter((g) => g.kids.length) : [];
+  if (groups.length < 2) return kids.map(one).join('');
+  return groups.map((g) => `<span class="chip-fam" role="group" aria-label="${esc(g.label)}">${famTag(g, 'span', ' aria-hidden="true"')}${g.kids.map(one).join('')}</span>`).join('');
+}
 function yearsSpan(list) {
   const ys = list.map((p) => +p.made.slice(0, 4));
   const a = Math.min(...ys);
@@ -186,10 +217,10 @@ function yearsSpan(list) {
 function emptyFridge() {
   if (!KIDS.length) {
     return CAN_EDIT
-      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Add each kid first, from a computer with this repo checked out:</p><code class="cmd">uv run scripts/fridge.py add-kid "Name" 2018-03-14</code><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
+      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>The kids come from <code>fridge_people.auto.tfvars</code> in mwarkentin/infra, and show up here after the next deploy.</p><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
       : `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
   }
-  return CAN_EDIT
+  return KIDS.some(canAddFor)
     ? `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Hang the first piece up here, or bring in the scans from Dropbox with:</p><code class="cmd">uv run scripts/fridge.py import</code><p><button class="btn primary" type="button" data-add>${icon('plus')}Add art</button></p></section>`
     : `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
 }
@@ -235,7 +266,7 @@ function viewHome() {
     </section>
     <section>
       <div class="sec-head"><h2>The artists${squiggle()}</h2></div>
-      <div class="kids">${KIDS.map(kidCard).join('')}</div>
+      ${artists()}
     </section>
     ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year${squiggle()}</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
     <section data-scope><div class="sec-head"><h2>Just added${squiggle()}</h2><a href="#timeline">See everything${icon('right')}</a></div>${wall(newest)}</section>
@@ -243,13 +274,23 @@ function viewHome() {
     <p class="footnote"><svg class="doodle" aria-hidden="true"><use href="#i-heart"/></svg>Only family can see the fridge. <a href="/cdn-cgi/access/logout">${icon('door')}Sign out</a></p>`;
 }
 
-function kidCard(kid) {
+// The artists' cards. With more than one family, each family's under its
+// name. With families, they're two to a row at every width, so a family's
+// two kids fill the page side by side.
+function artists() {
+  const pairs = GROUPED && KIDS.length > 1;
+  const cards = (kids, h) => `<div class="kids${pairs ? ' pairs' : ''}">${kids.map((k) => kidCard(k, { h, pairs })).join('')}</div>`;
+  if (!HEADS) return cards(KIDS, 'h3');
+  return GROUPS.map((g) => `<div class="fam">${famTag(g, 'h3')}${cards(g.kids, 'h4')}</div>`).join('');
+}
+
+function kidCard(kid, { h = 'h3', pairs = false } = {}) {
   const mine = PIECES.filter((p) => p.kid_id === kid.id).sort(byMadeDesc);
   const thumbs = mine.slice(0, 3).map((p) => `<img src="${img(p, 'thumb')}" alt="" loading="lazy">`);
   while (thumbs.length < 3) thumbs.push('<span></span>');
   const since = mine.length ? ` since ${mine[mine.length - 1].made.slice(0, 4)}` : '';
   return `<a class="kid-card" href="#${kid.slug}" style="${kidStyle(kid)}">
-    <div class="kid-top">${avatar(kid)}<div><h3>${esc(kid.name)}</h3><ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('pictures')}${plural(mine.length, 'piece')}${since}</li></ul></div></div>
+    <div class="kid-top">${avatar(kid)}<div><${h}>${esc(kid.name)}</${h}><ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('pictures')}${plural(mine.length, 'piece')}${since && pairs ? `<span class="since">${since}</span>` : since}</li></ul></div></div>
     <div class="kid-thumbs">${thumbs.join('')}</div>
   </a>`;
 }
@@ -270,8 +311,8 @@ function viewKid(kid) {
   const favs = mine.filter((p) => p.favourite).length;
   return `
     <section class="kid-head" style="${kidStyle(kid)}">
-      <h1>${magnetWord(kid.name, KIDS.indexOf(kid))}</h1>
-      <ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('calendar')}Born ${fmt(kid.born, { year: 'numeric', month: 'long' })}</li><li>${icon('pictures')}${plural(mine.length, 'piece')}</li>${favs ? `<li class="fav">${icon('heart', 'filled')}${plural(favs, 'favourite')}</li>` : ''}</ul>
+      <h1>${magnetWord(kid.name, kid.ci)}</h1>
+      <ul class="facts">${HEADS && kid.familyName ? `<li>${icon('home')}${esc(kid.familyName)}</li>` : ''}<li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('calendar')}Born ${fmt(kid.born, { year: 'numeric', month: 'long' })}</li><li>${icon('pictures')}${plural(mine.length, 'piece')}</li>${favs ? `<li class="fav">${icon('heart', 'filled')}${plural(favs, 'favourite')}</li>` : ''}</ul>
     </section>
     ${mine.length ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'All', { pic: 'pictures' })}${chip('fav', 'Favourites', { pic: 'heart', cls: 'fav', style: '--kid:var(--tab-home)' })}${mediums.map((m) => chip(m, m, { pic: 'crayon' })).join('')}</div>` : ''}
     <div class="groups" data-scope>${body}</div>`;
@@ -288,7 +329,7 @@ function viewTimeline() {
   }
   return `
     <section class="page-head"><h1>${magnetWord('Timeline', 4)}</h1><p>${plural(PIECES.length, 'piece')}, ${yearsSpan(PIECES)}</p></section>
-    <div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { pic: 'pictures' })}${KIDS.map((k) => chip(String(k.id), k.name, { kid: k })).join('')}</div>
+    <div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { pic: 'pictures' })}${kidChips(KIDS)}</div>
     <div class="groups" data-scope>${[...years].map(([y, list]) => `<section class="year"><div class="sec-head"><h2>${magnetWord(y, Number(y))}</h2><span class="count">${plural(list.length, 'piece')}</span></div>${wall(list)}</section>`).join('')}</div>`;
 }
 
@@ -306,7 +347,7 @@ function viewTag(name) {
       <p><a class="btn" href="#home">${icon('home')}Back to the fridge</a></p>`;
   }
   return `${head}<p>${plural(tagged.length, 'piece')}${kids.length > 1 ? ` by ${kids.length} artists` : ` by ${esc(kids[0].name)}`}, ${yearsSpan(tagged)}</p></section>
-    ${kids.length > 1 ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { count: tagged.length })}${kids.map((k) => chip(String(k.id), k.name, { kid: k, count: tagged.filter((p) => p.kid_id === k.id).length })).join('')}</div>` : ''}
+    ${kids.length > 1 ? `<div class="chips" role="group" aria-label="Show">${chip('all', 'Everyone', { count: tagged.length })}${kidChips(kids, (k) => ({ count: tagged.filter((p) => p.kid_id === k.id).length }))}</div>` : ''}
     <section data-scope>${wall(shown)}</section>`;
 }
 
@@ -338,21 +379,143 @@ function render() {
   applyTagQuery();
   // Arriving at a tag, start reading (and tabbing) from its name.
   if (moved && !firstLoad && tag !== null && detail.hidden) $('#view h1')?.focus({ preventScroll: true });
-  document.querySelectorAll('#tabs a').forEach((a) => (a.dataset.route === r ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  document.querySelectorAll('#tabs a, #kids-menu a').forEach((a) => (a.dataset.route === r ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  if (GROUPED) kidsButton(kid);
   // On a phone the tabs scroll sideways: keep the current one in sight.
   const tab = $('#tabs [aria-current]');
   const tabs = $('#tabs');
   if (tab && tabs.scrollWidth > tabs.clientWidth) tabs.scrollLeft = Math.max(0, tab.offsetLeft - tabs.offsetLeft - (tabs.clientWidth - tab.offsetWidth) / 2);
 }
 
+// ---- The tabs, with families ----
+// The kids' tabs go in family groups. When the tabs don't fit on one line (on
+// a phone, or with long names), the kids move into a menu behind one tab,
+// and then the tabs drop their words one at a time, keeping their magnets.
+// Each step is tried in turn until the tabs fit, so there's never sideways
+// scrolling, whatever the names.
+const topBar = $('.bar');
+const FIT = [[], ['fit-row'], ['fit-menu'], ['fit-menu', 'fit-no-home'], ['fit-menu', 'fit-no-home', 'fit-no-kids'], ['fit-menu', 'fit-no-home', 'fit-no-kids', 'fit-no-timeline']];
+const FIT_CLASSES = [...new Set(FIT.flat())];
+let kidsMenu = null;
+function groupedTabs(section, kidTab) {
+  return `${section('home', 'Home', 'home')}${section('timeline', 'Timeline', 'calendar')}${GROUPS.map((g) => `<span class="tab-fam"${HEADS ? ` role="group" aria-label="${esc(g.label)}"` : ''}>${g.kids.map(kidTab).join('')}</span>`).join('')}<button class="kids-btn" id="kids-btn" type="button" aria-expanded="false" aria-controls="kids-menu"></button>`;
+}
+function buildKidsMenu() {
+  if (!kidsMenu) {
+    kidsMenu = document.createElement('nav');
+    kidsMenu.id = 'kids-menu';
+    kidsMenu.className = 'kids-menu';
+    kidsMenu.setAttribute('aria-label', 'Kids');
+    kidsMenu.hidden = true;
+    kidsMenu.addEventListener('click', (e) => {
+      if (e.target.closest('a')) setKidsMenu(false);
+    });
+    // Right after the tabs, so Tab goes from its tab into it.
+    $('#tabs').after(kidsMenu);
+  }
+  kidsMenu.innerHTML = GROUPS.map((g, i) => `<div class="km-fam">${HEADS ? famTag(g, 'p', ` id="km-${i}"`) : ''}<ul${HEADS ? ` aria-labelledby="km-${i}"` : ''}>${g.kids.map((k) => `<li><a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a></li>`).join('')}</ul></div>`).join('');
+}
+// The menu's tab: the kid whose wall this is, or the first few kids' magnets.
+let kidsButtonFor = null;
+function kidsButton(kid) {
+  kidsButtonFor = kid || null;
+  const b = $('#kids-btn');
+  const chev = '<svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg>';
+  b.classList.toggle('on', Boolean(kid));
+  if (kid) b.setAttribute('style', kidStyle(kid));
+  else b.removeAttribute('style');
+  b.innerHTML = kid
+    ? `${avatar(kid)}<span class="sr">Kids: </span><span class="lbl">${esc(kid.name)}</span>${chev}`
+    : `<span class="kids-stack" aria-hidden="true">${KIDS.slice(0, 3).map((k) => avatar(k)).join('')}</span><span class="lbl">Kids</span>${chev}`;
+}
+// The menu's tab is measured at its widest (the longest name, or "Kids"), so
+// the tabs keep the same words from page to page.
+function fitTabs() {
+  if (!GROUPED) return;
+  const tabs = $('#tabs');
+  const b = $('#kids-btn');
+  const showing = kidsButtonFor;
+  topBar.classList.remove(...FIT_CLASSES);
+  topBar.classList.add('fit-menu');
+  let widest = null;
+  let most = -1;
+  for (const k of [null, ...KIDS]) {
+    kidsButton(k);
+    if (b.offsetWidth > most) [widest, most] = [k, b.offsetWidth];
+  }
+  kidsButton(widest);
+  for (const level of FIT) {
+    topBar.classList.remove(...FIT_CLASSES);
+    topBar.classList.add(...level);
+    if (tabs.scrollWidth <= tabs.clientWidth + 1) break;
+  }
+  kidsButton(showing);
+  if (!topBar.classList.contains('fit-menu')) setKidsMenu(false);
+  else if (kidsMenu && !kidsMenu.hidden) placeKidsMenu();
+}
+function setKidsMenu(open) {
+  if (!kidsMenu) return;
+  kidsMenu.hidden = !open;
+  $('#kids-btn')?.setAttribute('aria-expanded', String(open));
+  if (open) placeKidsMenu();
+}
+// Under its tab, as far as the screen allows.
+function placeKidsMenu() {
+  const b = $('#kids-btn').getBoundingClientRect();
+  const r = topBar.getBoundingClientRect();
+  const gutter = Math.max(16, parseFloat(getComputedStyle($('.bar-inner')).paddingLeft) || 0);
+  const left = Math.min(b.left - r.left - 4, r.width - kidsMenu.offsetWidth - gutter);
+  kidsMenu.style.setProperty('--km-left', `${Math.round(Math.max(gutter, left))}px`);
+}
+$('#tabs').addEventListener('click', (e) => {
+  if (e.target.closest('#kids-btn')) setKidsMenu(kidsMenu.hidden);
+});
+document.addEventListener('click', (e) => {
+  if (kidsMenu && !kidsMenu.hidden && !e.target.closest('#kids-menu, #kids-btn')) setKidsMenu(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !kidsMenu || kidsMenu.hidden) return;
+  setKidsMenu(false);
+  $('#kids-btn').focus();
+});
+// Tabbing away closes it. (A tap elsewhere is the click above: Safari doesn't
+// move focus on a tap, so this only acts when focus goes somewhere.)
+topBar.addEventListener('focusout', (e) => {
+  if (kidsMenu && !kidsMenu.hidden && e.relatedTarget instanceof Element && !e.relatedTarget.closest('#kids-menu, #kids-btn')) setKidsMenu(false);
+});
+window.addEventListener('hashchange', () => setKidsMenu(false));
+let fitWidth = innerWidth;
+window.addEventListener('resize', () => {
+  if (innerWidth === fitWidth) return;
+  fitWidth = innerWidth;
+  fitTabs();
+});
+// Words change width when the fonts arrive.
+document.fonts?.addEventListener?.('loadingdone', () => fitTabs());
+
 function buildChrome() {
-  document.body.classList.toggle('can-edit', CAN_EDIT);
+  document.body.classList.toggle('can-edit', CAN_EDIT || ARTIST != null);
   // Every tab has a round magnet: a kid's initial, or an icon for those who can't read yet.
-  const section = (id, label, pic) => `<a href="#${id}" data-route="${id}" style="--kid:var(--tab-${id})"><i class="av" aria-hidden="true">${icon(pic)}</i>${label}</a>`;
-  $('#tabs').innerHTML = section('home', 'Home', 'home') + section('timeline', 'Timeline', 'calendar') + KIDS.map((k) => `<a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a>`).join('');
-  const kidOptions = KIDS.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
-  $('#f-kid').innerHTML = kidOptions;
-  $('#open-add').hidden = !addableKids().length;
+  const section = (id, label, pic) => `<a href="#${id}" data-route="${id}" style="--kid:var(--tab-${id})"><i class="av" aria-hidden="true">${icon(pic)}</i>${GROUPED ? `<span class="lbl">${label}</span>` : label}</a>`;
+  const kidTab = (k) => `<a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a>`;
+  topBar.classList.toggle('grouped', GROUPED);
+  topBar.classList.toggle('heads', HEADS);
+  if (GROUPED) {
+    $('#tabs').innerHTML = groupedTabs(section, kidTab);
+    buildKidsMenu();
+    fitTabs();
+  } else {
+    $('#tabs').innerHTML = section('home', 'Home', 'home') + section('timeline', 'Timeline', 'calendar') + KIDS.map(kidTab).join('');
+    if (kidsMenu) {
+      kidsMenu.remove();
+      kidsMenu = null;
+      topBar.classList.remove(...FIT_CLASSES);
+    }
+  }
+  // Only the kids this parent (or artist) can add art for, or move a piece to.
+  const mine = addableKids();
+  $('#f-kid').innerHTML = mine.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
+  $('#open-add').hidden = !mine.length;
   $('#open-frame').hidden = !PIECES.length;
 }
 
@@ -360,7 +523,12 @@ async function load() {
   const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
   CAN_EDIT = session.canEdit;
   PREVIEW = Boolean(session.preview);
-  KIDS = data.kids.map((k, i) => ({ ...k, colour: `var(--kid-${i % 6})`, soft: `var(--kid-${i % 6}-soft)`, slug: `kid-${k.id}` }));
+  MY_FAMILIES = session.families || [];
+  ARTIST = session.artist ?? null;
+  MINE = new Set(data.mine || []);
+  const families = arrange(data.kids, data.families, session.families);
+  ({ grouped: GROUPED, heads: HEADS, groups: GROUPS, kids: KIDS } = families);
+  for (const k of KIDS) Object.assign(k, { colour: `var(--kid-${k.ci})`, soft: `var(--kid-${k.ci}-soft)`, slug: `kid-${k.id}` });
   PIECES = data.pieces;
   buildChrome();
   render();
@@ -389,6 +557,7 @@ function showPiece(id) {
   const p = (current = PIECES.find((x) => x.id === id));
   if (!p) return closeDetail();
   const kid = kidOf(p);
+  const mayChange = canChangePiece(p);
   $('#d-img').src = img(p, 'display');
   $('#d-img').alt = `${titleOf(p)}, by ${kid.name}`;
   $('#d-count').textContent = `${listCtx.indexOf(id) + 1} of ${listCtx.length}`;
@@ -399,12 +568,12 @@ function showPiece(id) {
     <ul class="d-facts">
       ${p.medium ? `<li>${icon('crayon')}${esc(p.medium)}</li>` : ''}
       <li>${icon('calendar')}Made ${madeLong(p)}</li>
-      ${p.favourite ? `<li class="view-only">${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
+      ${p.favourite && !mayChange ? `<li>${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
     </ul>
     ${p.tags.length ? `<ul class="tags" aria-label="Tags">${p.tags.map((t) => `<li><a class="tag" href="${tagHref(t)}"><span class="tag-s">${icon('tag')}${esc(t)}</span></a></li>`).join('')}</ul>` : ''}
     <div class="row">
-      <button class="btn edit-only" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
-      <button class="btn edit-only" type="button" id="d-edit">${icon('pencil')}Edit details</button>
+      ${mayChange ? `<button class="btn" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
+      <button class="btn" type="button" id="d-edit">${icon('pencil')}Edit details</button>` : ''}
       <a class="btn" href="${img(p, 'original')}" download>${icon('download')}Save full scan</a>
     </div>
     ${p.source_name ? `<p class="d-source">From ${esc(p.source_name)}</p>` : ''}</div>`;
@@ -563,9 +732,11 @@ document.addEventListener('visibilitychange', () => {
 const add = $('#add');
 
 // ---- Add art: who made it ----
-// The kids Add art offers, for a whole batch and for each piece: everyone,
-// for now. add/sheet.js draws the pickers from this list and nothing else.
-const addableKids = () => KIDS;
+// The kids Add art offers, for a whole batch and for each piece: the ones
+// this parent can add art for (their families' and kids in none), or an
+// artist's own name (canAddFor). add/sheet.js draws the pickers from this
+// list and nothing else; the Worker checks each piece again.
+const addableKids = () => KIDS.filter(canAddFor);
 
 let addArt = null;
 function openAdd() {
@@ -574,6 +745,9 @@ function openAdd() {
     .then((sheet) =>
       sheet.open({
         kids: addableKids(),
+        // Only parents import: they can ask what's on the fridge already and
+        // record skips. An artist adds their own art without either.
+        parent: CAN_EDIT,
         preview: PREVIEW,
         today: todayISO,
         api,

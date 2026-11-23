@@ -13,10 +13,11 @@ pull request and commit message:
 - the kids' names, birthdays, ages or school details
 - scans or photos of their art (tests make their own images)
 - Dropbox paths, which contain the kids' names
-- family email addresses (they live in mwarkentin/infra's `FRIDGE_PEOPLE`
-  secret)
+- family email addresses and who's in which family (they live in
+  mwarkentin/infra's `fridge_people.auto.tfvars`, which is private)
 
-Tests and examples use made-up names (Ada, Bo) and `example.com` addresses.
+Tests and examples use made-up names (Ada and Bo, and Cy and Dee in a second
+family; families like the Pines and the Oaks) and `example.com` addresses.
 CI's privacy job fails on pictures outside `public/icons/` and on any of the
 real names (from the `KID_NAMES` secret) in files, file names, commit
 messages or pull request text. Its log masks the names as `***`. If it
@@ -31,8 +32,11 @@ history on `main` is permanent.
   `ART` bucket) and the page (`public/`, through the `ASSETS` binding).
 - `src/auth.js`: verifies Cloudflare Access's JWT on every request. Parents
   (the `PARENT_EMAILS` Worker secret) can change things; everyone else Access
-  lets in can only look. It fails closed: with no Access settings, nobody
-  gets in.
+  lets in can only look. With families (the `FAMILIES` Worker secret), a
+  parent can change only the art of the kids in their own families and kids
+  in no family (`canChangeKid`), and a kid who's an artist can add their own
+  art and change only the pieces they added (`isArtistOf`). It fails closed:
+  with no Access settings, or a `FAMILIES` it can't read, nobody gets in.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -56,17 +60,19 @@ history on `main` is permanent.
   computer. It signs in with `cloudflared` as that parent.
 - `tests/`: `worker.test.js` runs the Worker against local D1 and R2
   (wrangler's `getPlatformProxy`) with Access tokens it signs itself;
-  `preview.test.js` checks the preview; `add-art.test.js` checks Add art's
-  modules and the copy of pdf.js; `test_fridge.py` tests the import script;
-  `test_add_art.py` runs Add art's modules (in Node, through
-  `browser_side.mjs`) and the script on the same files and checks they agree.
+  `preview.test.js` checks the preview; `families.test.js` checks how the
+  page groups, orders and colours the kids by family (`public/families.js`);
+  `add-art.test.js` checks Add art's modules and the copy of pdf.js;
+  `test_fridge.py` tests the import script; `test_add_art.py` runs Add art's
+  modules (in Node, through `browser_side.mjs`) and the script on the same
+  files and checks they agree.
 
 ## Stay in this repo's lane
 
 mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 `fridge-art` bucket, the `fridge` database, the Access application and its
 policies, the custom domain, the deploy token, and this repo's Actions
-secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`,
+secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
 `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `ACCESS_AUD`,
 `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
@@ -83,6 +89,19 @@ workers.dev only because they're a separate Worker with nothing real on it.
   `public/icons/`.
 - Changes (`POST`, `PATCH`, `DELETE`) need `X-Requested-With: fridge`, so
   another site can't send them with a family member's sign-in.
+- The kids come only from `FAMILIES`, which infra writes from its
+  `fridge_people.auto.tfvars`: the Worker adds and updates them to match
+  (`syncKids`), and a kid's family is the one listing them. Don't add a
+  route that adds or changes kids.
+- Every change to a piece checks the rules in the Worker (`mayAddFor`,
+  `mayChange`): a parent can change a kid's pieces when the kid is in one
+  of their families or in none, and an artist can add their own art and
+  change only the pieces they added. Moving a piece to another kid needs
+  rights over both. The page mirrors the rules (`canAddFor` and
+  `canChangePiece` in `app.js`) only to hide what the Worker would refuse;
+  the Worker decides. The importer's routes are for parents only.
+  Skips (`/api/skipped`) are fingerprints only, so any parent can record
+  them.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`).
 - The preview Worker never gets a binding, a sign-in or anything real:

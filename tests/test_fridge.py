@@ -375,3 +375,98 @@ def test_script_pins_match_pyproject():
     script = tomllib.loads("\n".join(line.removeprefix("# ").removeprefix("#") for line in header.splitlines()))
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     assert script["dependencies"] == project["dependencies"]
+
+
+# ---- Families ----
+# A fake fridge with two made-up families: the Pines (Ada and Bo) and the
+# Oaks (Cy and Dee), and Di in no family. The rule is the Worker's, and
+# refusals come back as the Worker sends them. refuse_pieces makes it refuse
+# every piece, as if a kid moved family since the import looked.
+class FakeFridge:
+    def __init__(self, families=("pine",)):
+        self.session = {"email": "pine@example.com", "canEdit": True, "families": list(families)}
+        self.families = [{"id": "pine", "name": "The Pines"}, {"id": "oak", "name": "The Oaks"}]
+        self.kids = [
+            {"id": 1, "name": "Ada", "born": "2019-04-02", "family": "pine"},
+            {"id": 2, "name": "Bo", "born": "2021-07-02", "family": "pine"},
+            {"id": 3, "name": "Cy", "born": "2020-02-02", "family": "oak"},
+            {"id": 4, "name": "Dee", "born": "2018-05-05", "family": "oak"},
+            {"id": 5, "name": "Di", "born": "2018-05-05", "family": None},
+        ]
+        self.sent = []
+        self.refuse_pieces = False
+
+    def handle(self, request):
+        import httpx
+
+        body = json.loads(request.content) if request.headers.get("content-type") == "application/json" else None
+        self.sent.append((request.method, request.url.path, body))
+        if request.url.path == "/api/session":
+            return httpx.Response(200, json=self.session)
+        if request.url.path == "/api/gallery":
+            return httpx.Response(200, json={"kids": self.kids, "pieces": [], "families": self.families})
+        if request.url.path == "/api/imported":
+            return httpx.Response(200, json={"hashes": [], "skipped": []})
+        if request.method == "POST" and request.url.path == "/api/pieces":
+            if self.refuse_pieces:
+                return httpx.Response(403, json={"error": "Cy is in another family. Only their family’s parents can change Cy or their art."})
+            return httpx.Response(201, json={"id": len(self.sent)})
+        return httpx.Response(404, json={"error": "There’s nothing at that address."})
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    import httpx
+
+    f = FakeFridge()
+    monkeypatch.setattr(fridge, "connect", lambda url: httpx.Client(base_url="http://fridge.test", transport=httpx.MockTransport(f.handle)))
+    return f
+
+
+def run(*args):
+    return CliRunner().invoke(fridge.cli, list(args))
+
+
+def test_the_rule_matches_the_fridges():
+    session = {"canEdit": True, "families": ["pine"]}
+    assert fridge.can_change({"family": "pine"}, session)
+    assert fridge.can_change({"family": None}, session), "a kid in no family"
+    assert not fridge.can_change({"family": "oak"}, session)
+    assert not fridge.can_change({"family": None}, {"canEdit": False, "families": []}), "a viewer"
+    assert fridge.can_change({"family": None}, {"canEdit": True, "families": []}), "no families set up"
+
+
+def test_a_refusal_is_said_plainly(fake, tmp_path):
+    (tmp_path / "Ada").mkdir()
+    art_page().save(tmp_path / "Ada" / "2024-05-29 sun.png")
+    fake.refuse_pieces = True
+    result = run("import", str(tmp_path))
+    assert result.exit_code == 1
+    assert "Error: The fridge said: Cy is in another family. Only their family’s parents can change Cy or their art. (HTTP 403)" in result.output
+    assert isinstance(result.exception, SystemExit), "no traceback"
+
+
+def test_the_kid_commands_are_gone():
+    # Kids, and which family each is in, come from infra's file.
+    for command in ("add-kid", "set-family", "families"):
+        assert command not in fridge.cli.commands
+
+
+def test_import_brings_in_only_your_familys_kids(fake, tmp_path):
+    for kid, paper in (("Ada", "white"), ("Cy", (241, 198, 208)), ("Di", (250, 240, 200))):
+        (tmp_path / kid).mkdir()
+        art_page(paper).save(tmp_path / kid / f"2024-05-29 {kid.lower()} sun.png")
+    result = run("import", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    posted = [path for method, path, _ in fake.sent if method == "POST"]
+    assert posted == ["/api/pieces", "/api/pieces"], "Ada's and Di's"
+    assert "Cy/2024-05-29 cy sun.png: it’s Cy’s, and Cy is in another family, so only their family can import it" in result.output
+    assert "Added 2." in result.output
+
+    result = run("import", str(tmp_path / "Cy"), "--kid", "Cy")
+    assert result.exit_code == 1 and "Cy is in another family, so only their family can import Cy’s art." in result.output
+    fake.session["families"] = []
+    for kid in fake.kids:
+        kid["family"] = kid["family"] and "elsewhere"
+    fake.kids = [k for k in fake.kids if k["family"]]
+    assert "Every kid on the fridge is in another family" in run("import", str(tmp_path)).output
