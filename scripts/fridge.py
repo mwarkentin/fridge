@@ -8,10 +8,9 @@
 #     "pypdfium2==5.14.0",
 # ]
 # ///
-"""Bring scans into the fridge, and add the kids they belong to.
+"""Bring scans into the fridge.
 
     uv run scripts/fridge.py login
-    uv run scripts/fridge.py add-kid "Name" 2018-03-14
     uv run scripts/fridge.py folders add ~/Dropbox/Kids\\ Art/Ada --kid Ada
     uv run scripts/fridge.py survey
     uv run scripts/fridge.py import --picks ~/Downloads/fridge-picks-saved-folders.json
@@ -26,7 +25,10 @@ pencil drawings), with a report showing every page. import turns a PDF of
 several pages into one piece per page, leaving out blank ones.
 
 It signs in as you through Cloudflare Access, with cloudflared
-(brew install cloudflared), so it can do only what you can do on the page.
+(brew install cloudflared), so it can do only what you can do on the page:
+with families set up, import art only for your own family's kids (and kids
+in no family). The kids themselves, and their families, come from
+fridge_people.auto.tfvars in mwarkentin/infra.
 
 For each file it works out whose it is from a folder or file name that
 matches a kid's name, and when it was made from a date in the file or folder
@@ -193,11 +195,18 @@ class Plan:
     problem: str | None = None
 
 
-def plan_for(path: Path, root: Path, kids: list[dict], forced_kid: dict | None) -> Plan:
+def plan_for(path: Path, root: Path, kids: list[dict], forced_kid: dict | None, others: list[dict] = ()) -> Plan:
+    """What to import a file as. kids are the ones you can import art for;
+    others, the kids in other families, only to say why a file of theirs is
+    left out."""
     relative = path.relative_to(root)
     plan = Plan(path, relative, forced_kid or match_kid(relative, kids))
     if not plan.kid:
-        plan.problem = "can’t tell whose it is (put it in a folder named after them, or use --kid)"
+        other = not forced_kid and match_kid(relative, others)
+        if other:
+            plan.problem = f"it’s {other['name']}’s, and {other['name']} is in another family, so only their family can import it"
+        else:
+            plan.problem = "can’t tell whose it is (put it in a folder named after them, or use --kid)"
         return plan
     if found := date_from_path(relative):
         plan.made, plan.precision, plan.made_from = found
@@ -656,6 +665,12 @@ def status_of(piece: str, known: tuple[set[str], set[str]] | None) -> str:
     return "on" if piece in imported else "skipped" if piece in skipped else "new"
 
 
+def can_change(kid: dict, session: dict) -> bool:
+    """The fridge's rule: a parent can change a kid, and their art, if the
+    kid is in one of the parent's families or in none."""
+    return bool(session.get("canEdit")) and (kid.get("family") is None or kid["family"] in session.get("families", []))
+
+
 def describe(plan: Plan) -> str:
     when = {"day": plan.made, "month": plan.made[:7] if plan.made else "", "year": plan.made[:4] if plan.made else ""}[plan.precision]
     title = f"“{plan.title}”" if plan.title else "untitled"
@@ -679,17 +694,6 @@ def login(url: str) -> None:
     if not exe:
         raise click.ClickException("Signing in needs cloudflared: brew install cloudflared")
     subprocess.run([exe, "access", "login", url], check=True)
-
-
-@cli.command("add-kid")
-@click.argument("name")
-@click.argument("born")
-@click.pass_obj
-def add_kid(url: str, name: str, born: str) -> None:
-    """Add a kid, with their birthday as YYYY-MM-DD."""
-    with connect(url) as client:
-        kid = check(client.post("/api/kids", json={"name": name, "born": born}))
-    click.echo(f"Added {name} (kid {kid['id']}).")
 
 
 @cli.group()
@@ -843,15 +847,23 @@ def import_(url: str, folder: Path | None, kid_name: str | None, dry_run: bool, 
     if picks and first_only:
         raise click.ClickException("Picks are made page by page, so they can’t be used with --first-page-only.")
     with connect(url) as client:
-        kids = check(client.get("/api/gallery"))["kids"]
+        everyone = check(client.get("/api/gallery"))["kids"]
+        if not everyone:
+            raise click.ClickException("There are no kids on the fridge yet. They come from fridge_people.auto.tfvars, in mwarkentin/infra.")
+        # Only the kids you can change: your families' and those in none.
+        session = check(client.get("/api/session"))
+        kids = [k for k in everyone if can_change(k, session)]
+        others = [k for k in everyone if k not in kids]
         if not kids:
-            raise click.ClickException("Add the kids first: uv run scripts/fridge.py add-kid NAME YYYY-MM-DD")
+            raise click.ClickException("Every kid on the fridge is in another family, so there’s nobody you can import art for.")
         forced_for = {}
         for _, name in targets:
             if name:
                 forced_for[name] = next((k for k in kids if k["name"].lower() == name.lower()), None)
                 if not forced_for[name]:
-                    raise click.ClickException(f"No kid called {name}. The fridge has: {', '.join(k['name'] for k in kids)}")
+                    if any(k["name"].lower() == name.lower() for k in others):
+                        raise click.ClickException(f"{name} is in another family, so only their family can import {name}’s art.")
+                    raise click.ClickException(f"No kid called {name}. You can import art for: {', '.join(k['name'] for k in kids)}")
         done, skipped_before = fetch_known(client)
 
         counts = {"added": 0, "already": 0, "skipped": 0, "unpicked": 0, "skipped_before": 0}
@@ -866,7 +878,7 @@ def import_(url: str, folder: Path | None, kid_name: str | None, dry_run: bool, 
                 if picks and not picks_cover(picks, root):
                     click.echo("- not in the survey those picks came from, so left out. Survey again to include it.")
                     continue
-                if import_files(client, root, kids, forced_for.get(name), picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts):
+                if import_files(client, root, kids, forced_for.get(name), picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts, others):
                     break
         finally:
             if to_skip and not dry_run:
@@ -881,12 +893,12 @@ def import_(url: str, folder: Path | None, kid_name: str | None, dry_run: bool, 
         click.echo("Fix any wrong names or dates in the files or folders, or on the page after importing, then run it again without --dry-run.")
 
 
-def import_files(client, root, kids, forced, picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts) -> bool:
+def import_files(client, root, kids, forced, picks, first_only, ask, dry_run, done, skipped_before, to_skip, counts, others=()) -> bool:
     """The import's loop over one folder's files and their pieces (see
     import_). True if the person chose to stop."""
     stopped = False
     for path in find_files(root):
-        plan = plan_for(path, root, kids, forced)
+        plan = plan_for(path, root, kids, forced, others)
         if plan.problem:
             counts["skipped"] += 1
             click.echo(f"- {plan.relative}: {plan.problem}")

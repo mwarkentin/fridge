@@ -1,5 +1,7 @@
 // The fridge's page: reads the gallery from /api/gallery, draws it, and lets
-// parents edit details, mark favourites and add new pieces.
+// parents edit details, mark favourites and add new pieces, for the kids in
+// their own families (and kids in none), and lets a kid who's an artist add
+// their own art and change the pieces they added.
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -7,6 +9,17 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let KIDS = [];
 let PIECES = [];
 let CAN_EDIT = false;
+let MY_FAMILIES = [];
+let ARTIST = null; // the kid's name, for a kid signed in to add their own art
+let MINE = new Set(); // the pieces that artist added
+// The Worker's rules, so the page offers only what it would allow: a parent
+// can change a kid's pieces if the kid is in one of the parent's families
+// or in none; an artist can add their own art, and change the pieces they
+// added.
+const canChange = (kid) => CAN_EDIT && (kid?.family == null || MY_FAMILIES.includes(kid.family));
+const isArtist = (kid) => ARTIST != null && kid != null && kid.name.trim().toLowerCase() === ARTIST.trim().toLowerCase();
+const canAddFor = (kid) => canChange(kid) || isArtist(kid);
+const canChangePiece = (p) => canChange(kidOf(p)) || (isArtist(kidOf(p)) && MINE.has(p.id));
 
 // ---- API ----
 async function api(path, { method = 'GET', json, body } = {}) {
@@ -184,10 +197,10 @@ function yearsSpan(list) {
 function emptyFridge() {
   if (!KIDS.length) {
     return CAN_EDIT
-      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Add each kid first, from a computer with this repo checked out:</p><code class="cmd">uv run scripts/fridge.py add-kid "Name" 2018-03-14</code><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
+      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>The kids come from <code>fridge_people.auto.tfvars</code> in mwarkentin/infra, and show up here after the next deploy.</p><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
       : `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
   }
-  return CAN_EDIT
+  return KIDS.some(canAddFor)
     ? `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Hang the first piece up here, or bring in the scans from Dropbox with:</p><code class="cmd">uv run scripts/fridge.py import</code><p><button class="btn primary" type="button" data-add>${icon('plus')}Add art</button></p></section>`
     : `<section class="empty-state">${EMPTY_ART}<h1>Nothing on the fridge yet</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
 }
@@ -344,20 +357,24 @@ function render() {
 }
 
 function buildChrome() {
-  document.body.classList.toggle('can-edit', CAN_EDIT);
+  document.body.classList.toggle('can-edit', CAN_EDIT || ARTIST != null);
   // Every tab has a round magnet: a kid's initial, or an icon for those who can't read yet.
   const section = (id, label, pic) => `<a href="#${id}" data-route="${id}" style="--kid:var(--tab-${id})"><i class="av" aria-hidden="true">${icon(pic)}</i>${label}</a>`;
   $('#tabs').innerHTML = section('home', 'Home', 'home') + section('timeline', 'Timeline', 'calendar') + KIDS.map((k) => `<a href="#${k.slug}" data-route="${k.slug}" style="${kidStyle(k)}">${avatar(k)}${esc(k.name)}</a>`).join('');
-  const kidOptions = KIDS.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
-  $('#f-kid').innerHTML = kidOptions;
-  $('#a-who').innerHTML = `<legend>Who made it?</legend>${KIDS.map((k, i) => `<label class="who-opt" style="${kidStyle(k)}"><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><span class="who-card">${avatar(k)}${esc(k.name)}</span></label>`).join('')}`;
-  $('#open-add').hidden = !KIDS.length;
+  // Only the kids this parent (or artist) can add art for, or move a piece to.
+  const mine = KIDS.filter(canAddFor);
+  $('#f-kid').innerHTML = mine.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
+  $('#a-who').innerHTML = `<legend>Who made it?</legend>${mine.map((k, i) => `<label class="who-opt" style="${kidStyle(k)}"><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><span class="who-card">${avatar(k)}${esc(k.name)}</span></label>`).join('')}`;
+  $('#open-add').hidden = !mine.length;
   $('#open-frame').hidden = !PIECES.length;
 }
 
 async function load() {
   const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
   CAN_EDIT = session.canEdit;
+  MY_FAMILIES = session.families || [];
+  ARTIST = session.artist ?? null;
+  MINE = new Set(data.mine || []);
   KIDS = data.kids.map((k, i) => ({ ...k, colour: `var(--kid-${i % 6})`, soft: `var(--kid-${i % 6}-soft)`, slug: `kid-${k.id}` }));
   PIECES = data.pieces;
   buildChrome();
@@ -387,6 +404,7 @@ function showPiece(id) {
   const p = (current = PIECES.find((x) => x.id === id));
   if (!p) return closeDetail();
   const kid = kidOf(p);
+  const mayChange = canChangePiece(p);
   $('#d-img').src = img(p, 'display');
   $('#d-img').alt = `${titleOf(p)}, by ${kid.name}`;
   $('#d-count').textContent = `${listCtx.indexOf(id) + 1} of ${listCtx.length}`;
@@ -397,12 +415,12 @@ function showPiece(id) {
     <ul class="d-facts">
       ${p.medium ? `<li>${icon('crayon')}${esc(p.medium)}</li>` : ''}
       <li>${icon('calendar')}Made ${madeLong(p)}</li>
-      ${p.favourite ? `<li class="view-only">${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
+      ${p.favourite && !mayChange ? `<li>${icon('heart', 'filled fav-mark')}A favourite</li>` : ''}
     </ul>
     ${p.tags.length ? `<ul class="tags" aria-label="Tags">${p.tags.map((t) => `<li><a class="tag" href="${tagHref(t)}"><span class="tag-s">${icon('tag')}${esc(t)}</span></a></li>`).join('')}</ul>` : ''}
     <div class="row">
-      <button class="btn edit-only" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
-      <button class="btn edit-only" type="button" id="d-edit">${icon('pencil')}Edit details</button>
+      ${mayChange ? `<button class="btn" type="button" id="d-fav" aria-pressed="${p.favourite}">${icon('heart', p.favourite ? 'filled' : '')}Favourite</button>
+      <button class="btn" type="button" id="d-edit">${icon('pencil')}Edit details</button>` : ''}
       <a class="btn" href="${img(p, 'original')}" download>${icon('download')}Save full scan</a>
     </div>
     ${p.source_name ? `<p class="d-source">From ${esc(p.source_name)}</p>` : ''}</div>`;
