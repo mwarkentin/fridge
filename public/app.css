@@ -259,18 +259,20 @@ figcaption .t .fav-mark { display: inline-block; vertical-align: -1px; margin-le
 .fam-tag { display: block; justify-self: start; width: fit-content; max-width: 100%; margin: 0; padding: 5px 17px 7px; background: var(--label); color: var(--label-ink); font: 400 1.4rem/1.1 var(--hand); overflow-wrap: anywhere; transform: rotate(-1.2deg); clip-path: polygon(1.5% 0, 99% 6%, 100% 32%, 98.5% 56%, 100% 82%, 98% 100%, 2% 94%, 0 70%, 1.5% 45%, 0 16%); }
 .fam { display: grid; gap: 16px; }
 .fam + .fam { margin-top: 30px; }
-/* More than two kids: two to a row on a phone, with the facts stacked. */
-@media (max-width: 559px) {
-  .kids.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  .kids.compact .kid-card { gap: 12px; padding: 13px 12px 15px; border-radius: 20px; }
-  .kids.compact .kid-top { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .kids.compact .kid-top .av { --av: 46px; }
-  .kids.compact .kid-top :is(h3, h4) { font-size: 1.6rem; }
-  .kids.compact .facts { flex-direction: column; gap: 2px; font-size: 14px; }
-  .kids.compact .facts .i { width: 17px; height: 17px; }
-  .kids.compact .since { display: none; }
-  .kids.compact .kid-thumbs { gap: 8px; padding: 2px 2px 0; }
-  .kids.compact .kid-thumbs img, .kids.compact .kid-thumbs span { padding: 3px; }
+/* With families, two to a row at every width: a family's two kids side by
+   side, filling the page. Narrower than an iPad, the cards stack their facts. */
+.kids.pairs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 699px) {
+  .kids.pairs { gap: 14px; }
+  .kids.pairs .kid-card { gap: 12px; padding: 13px 12px 15px; border-radius: 20px; }
+  .kids.pairs .kid-top { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .kids.pairs .kid-top .av { --av: 46px; }
+  .kids.pairs .kid-top :is(h3, h4) { font-size: 1.6rem; }
+  .kids.pairs .facts { flex-direction: column; gap: 2px; font-size: 14px; }
+  .kids.pairs .facts .i { width: 17px; height: 17px; }
+  .kids.pairs .since { display: none; }
+  .kids.pairs .kid-thumbs { gap: 8px; padding: 2px 2px 0; }
+  .kids.pairs .kid-thumbs img, .kids.pairs .kid-thumbs span { padding: 3px; }
 }
 
 /* ---- A kid's wall, and the timeline ---- */

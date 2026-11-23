@@ -273,21 +273,22 @@ function viewHome() {
 }
 
 // The artists' cards. With more than one family, each family's under its
-// name. With more than two kids, phones show them two to a row.
+// name. With families, they're two to a row at every width, so a family's
+// two kids fill the page side by side.
 function artists() {
-  const compact = GROUPED && KIDS.length > 2;
-  const cards = (kids, h) => `<div class="kids${compact ? ' compact' : ''}">${kids.map((k) => kidCard(k, { h, compact })).join('')}</div>`;
+  const pairs = GROUPED && KIDS.length > 1;
+  const cards = (kids, h) => `<div class="kids${pairs ? ' pairs' : ''}">${kids.map((k) => kidCard(k, { h, pairs })).join('')}</div>`;
   if (!HEADS) return cards(KIDS, 'h3');
   return GROUPS.map((g) => `<div class="fam">${famTag(g, 'h3')}${cards(g.kids, 'h4')}</div>`).join('');
 }
 
-function kidCard(kid, { h = 'h3', compact = false } = {}) {
+function kidCard(kid, { h = 'h3', pairs = false } = {}) {
   const mine = PIECES.filter((p) => p.kid_id === kid.id).sort(byMadeDesc);
   const thumbs = mine.slice(0, 3).map((p) => `<img src="${img(p, 'thumb')}" alt="" loading="lazy">`);
   while (thumbs.length < 3) thumbs.push('<span></span>');
   const since = mine.length ? ` since ${mine[mine.length - 1].made.slice(0, 4)}` : '';
   return `<a class="kid-card" href="#${kid.slug}" style="${kidStyle(kid)}">
-    <div class="kid-top">${avatar(kid)}<div><${h}>${esc(kid.name)}</${h}><ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('pictures')}${plural(mine.length, 'piece')}${since && compact ? `<span class="since">${since}</span>` : since}</li></ul></div></div>
+    <div class="kid-top">${avatar(kid)}<div><${h}>${esc(kid.name)}</${h}><ul class="facts"><li>${icon('cake')}${ageNow(kid)} years old</li><li>${icon('pictures')}${plural(mine.length, 'piece')}${since && pairs ? `<span class="since">${since}</span>` : since}</li></ul></div></div>
     <div class="kid-thumbs">${thumbs.join('')}</div>
   </a>`;
 }
