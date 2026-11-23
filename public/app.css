@@ -70,7 +70,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body:not(.can-edit) .edit-only, body.can-edit .view-only { display: none !important; }
+body:not(.can-edit) .edit-only { display: none !important; }
 html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 500 16px/1.5 var(--body); -webkit-tap-highlight-color: transparent; }
 body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }

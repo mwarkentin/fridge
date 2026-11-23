@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { identify } from './auth.js';
+import { canChangeKid, identify, isArtistOf, readFamilies, sameName } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -81,18 +81,15 @@ async function api(request, env, who, url) {
   if (method !== 'GET' && method !== 'HEAD' && request.headers.get('X-Requested-With') !== 'fridge') {
     throw new HttpError(403, 'Changes have to come from the fridge’s own page or importer.');
   }
-  if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit });
-  if (method === 'GET' && path === '/api/gallery') return json(await gallery(env));
+  if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit, families: who.families, artist: who.artist });
+  if (method === 'GET' && path === '/api/gallery') return json(await gallery(env, who));
 
-  if (!who.canEdit) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
+  if (!who.canEdit && !who.artist) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
   let m;
-  if (method === 'POST' && path === '/api/kids') return json(await addKid(env, await body(request)), 201);
-  if (method === 'PATCH' && (m = path.match(/^\/api\/kids\/(\d+)$/))) {
-    await update(env, 'kids', Number(m[1]), kidFields(await body(request), true));
-    return json({ ok: true });
-  }
   // What the importer and the survey already know: pieces on the fridge
-  // (`hashes`), and pieces a parent chose not to import (`skipped`).
+  // (`hashes`), and pieces a parent chose not to import (`skipped`). The
+  // importer's, so parents' only.
+  if ((path === '/api/imported' || path === '/api/skipped') && !who.canEdit) throw new HttpError(403, 'Only parents can import.');
   if (method === 'GET' && path === '/api/imported') {
     const [imported, skipped] = await env.DB.batch([
       env.DB.prepare('SELECT source_hash FROM pieces WHERE source_hash IS NOT NULL'),
@@ -106,11 +103,15 @@ async function api(request, env, who, url) {
     const id = Number(m[1]);
     if (method === 'PATCH') {
       const fields = pieceFields(await body(request), true);
-      if ('kid_id' in fields) await kidExists(env, fields.kid_id);
+      const piece = await pieceOwner(env, id);
+      mayChange(who, piece);
+      // Moving it to another kid needs rights over both.
+      if ('kid_id' in fields && fields.kid_id !== piece.kid.id) mayAddFor(who, await kidById(env, fields.kid_id));
       await update(env, 'pieces', id, fields);
       return json({ ok: true });
     }
     if (method === 'DELETE') {
+      mayChange(who, await pieceOwner(env, id));
       await deletePiece(env, id);
       return new Response(null, { status: 204 });
     }
@@ -118,15 +119,18 @@ async function api(request, env, who, url) {
   throw new HttpError(404, 'There’s nothing at that address.');
 }
 
-async function gallery(env) {
-  const kids = (await env.DB.prepare('SELECT id, name, born FROM kids ORDER BY born, id').all()).results;
+// `mine` lists the pieces an artist added, which they can change.
+async function gallery(env, who) {
+  const families = readFamilies(env);
+  const kids = (await syncKids(env, families)).map((k) => ({ ...k, family: familyOf(families, k) }));
   const rows = (
     await env.DB.prepare(
       'SELECT id, kid_id, made, made_precision, title, story, medium, tags, favourite, width, height, source_name, created_at FROM pieces ORDER BY made DESC, id DESC',
     ).all()
   ).results;
   const pieces = rows.map(({ tags, favourite, ...p }) => ({ ...p, tags: JSON.parse(tags), favourite: Boolean(favourite) }));
-  return { kids, pieces };
+  const mine = who.artist ? (await env.DB.prepare('SELECT id FROM pieces WHERE added_by = ?').bind(who.email).all()).results.map((r) => r.id) : [];
+  return { kids, pieces, families: families.map(({ id, name }) => ({ id, name })), mine };
 }
 
 // ---- Validation ----
@@ -141,19 +145,6 @@ function int(v, label) {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) bad(`${label} must be a positive whole number.`);
   return n;
-}
-
-function kidFields(b, partial) {
-  const out = {};
-  if (!partial || 'name' in b) {
-    out.name = str(b.name, 60, 'Name');
-    if (!out.name) bad('Give the kid a name.');
-  }
-  if (!partial || 'born' in b) {
-    if (!validDate(b.born)) bad('Birthday must be a date like 2018-03-14.');
-    out.born = b.born;
-  }
-  return out;
 }
 
 function pieceFields(b, partial) {
@@ -191,9 +182,74 @@ async function body(request) {
   return b;
 }
 
-async function kidExists(env, id) {
-  if (!(await env.DB.prepare('SELECT 1 FROM kids WHERE id = ?').bind(id).first())) bad('There’s no kid with that id.');
+// ---- Families ----
+// A kid's family is the one FAMILIES lists them in, by name, or null. So a
+// kid the file doesn't list, or a family taken out of FAMILIES, or FAMILIES
+// taken away, leaves those kids to every parent, as before families.
+const familyOf = (families, kid) => families.find((f) => f.kids.some((k) => sameName(k.name, kid.name)))?.id ?? null;
+
+// The kids on the fridge, after making them match the kids in FAMILIES: a
+// kid it lists who isn't here yet is added, and a changed birthday or
+// spelling is copied over. A kid is matched by name or, when renamed there,
+// by birthday (when exactly one kid here that it no longer lists has that
+// birthday, and exactly one new name does). Kids here that it doesn't list
+// stay, with their art, in no family. Kids are never added or changed any
+// other way, so infra's file is where they're looked after.
+async function syncKids(env, families) {
+  const read = async () => (await env.DB.prepare('SELECT id, name, born FROM kids ORDER BY born, id').all()).results;
+  const rows = await read();
+  const listed = families.flatMap((f) => f.kids);
+  const isListed = (row) => listed.some((k) => sameName(k.name, row.name));
+  const isHere = (kid) => rows.some((r) => sameName(r.name, kid.name));
+  const changes = [];
+  for (const kid of listed) {
+    let row = rows.find((r) => sameName(r.name, kid.name));
+    if (!row) {
+      const was = rows.filter((r) => !isListed(r) && r.born === kid.born);
+      const twins = listed.filter((k) => !isHere(k) && k.born === kid.born);
+      if (was.length === 1 && twins.length === 1) row = was[0];
+    }
+    if (!row) {
+      // Only if it's still not here, in case another request added it first.
+      changes.push(env.DB.prepare('INSERT INTO kids (name, born) SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM kids WHERE name = ?1 COLLATE NOCASE)').bind(kid.name, kid.born));
+    } else if (row.name !== kid.name || row.born !== kid.born) {
+      changes.push(env.DB.prepare('UPDATE kids SET name = ?, born = ? WHERE id = ?').bind(kid.name, kid.born, row.id));
+    }
+  }
+  if (!changes.length) return rows;
+  await env.DB.batch(changes);
+  return read();
 }
+
+async function findKid(env, id) {
+  const kid = await env.DB.prepare('SELECT id, name FROM kids WHERE id = ?').bind(id).first();
+  return kid && { ...kid, family: familyOf(readFamilies(env), kid) };
+}
+// The kid with that id, or a 400: they were named in what was sent.
+async function kidById(env, id) {
+  const kid = await findKid(env, id);
+  if (!kid) bad('There’s no kid with that id.');
+  return kid;
+}
+// A piece's kid, and who added it.
+async function pieceOwner(env, pieceId) {
+  const row = await env.DB.prepare('SELECT kid_id, added_by FROM pieces WHERE id = ?').bind(pieceId).first();
+  if (!row) throw new HttpError(404, 'That isn’t on the fridge.');
+  return { kid: await kidById(env, row.kid_id), addedBy: row.added_by };
+}
+
+// The rules (auth.js), as refusals. A parent can add and change a kid's art
+// when the kid is in their family or none; an artist can add their own art,
+// and change only the pieces they added.
+const refusal = (who, kid) =>
+  new HttpError(403, who.artist ? 'You can add your own art, and change only the pieces you added yourself.' : `${kid.name} is in another family. Only their family’s parents can change ${kid.name} or their art.`);
+function mayAddFor(who, kid) {
+  if (!canChangeKid(who, kid) && !isArtistOf(who, kid)) throw refusal(who, kid);
+}
+function mayChange(who, { kid, addedBy }) {
+  if (!canChangeKid(who, kid) && !(isArtistOf(who, kid) && addedBy === who.email)) throw refusal(who, kid);
+}
+
 
 // Column names come from the fields functions above, never from the request.
 async function update(env, table, id, fields) {
@@ -207,12 +263,6 @@ async function update(env, table, id, fields) {
 }
 
 // ---- Changes ----
-async function addKid(env, b) {
-  const { name, born } = kidFields(b, false);
-  const row = await env.DB.prepare('INSERT INTO kids (name, born) VALUES (?, ?) RETURNING id').bind(name, born).first();
-  return { id: row.id };
-}
-
 const keyFor = (id, variant) => `pieces/${id}/${variant}`;
 
 // multipart/form-data: `meta` (JSON: kid_id, made and the other fields, plus
@@ -235,7 +285,7 @@ async function addPiece(env, who, request) {
   }
   if (!meta || typeof meta !== 'object') bad('The piece’s details are missing.');
   const fields = pieceFields(meta, false);
-  await kidExists(env, fields.kid_id);
+  mayAddFor(who, await kidById(env, fields.kid_id));
   const width = int(meta.width, 'width');
   const height = int(meta.height, 'height');
 
