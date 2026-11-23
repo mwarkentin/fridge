@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, identify, readFamilies } from './auth.js';
+import { canChangeKid, identify, readFamilies, sameName } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -86,18 +86,6 @@ async function api(request, env, who, url) {
 
   if (!who.canEdit) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
   let m;
-  if (method === 'POST' && path === '/api/kids') return json(await addKid(env, who, await body(request)), 201);
-  if (method === 'PATCH' && (m = path.match(/^\/api\/kids\/(\d+)$/))) {
-    const id = Number(m[1]);
-    const b = await body(request);
-    const fields = kidFields(b, true);
-    if ('family' in b) fields.family = familyFor(env, who, b.family);
-    const kid = await findKid(env, id);
-    if (!kid) throw new HttpError(404, 'That isn’t on the fridge.');
-    mayChange(who, kid);
-    await update(env, 'kids', id, fields);
-    return json({ ok: true });
-  }
   // What the importer and the survey already know: pieces on the fridge
   // (`hashes`), and pieces a parent chose not to import (`skipped`).
   if (method === 'GET' && path === '/api/imported') {
@@ -131,7 +119,7 @@ async function api(request, env, who, url) {
 
 async function gallery(env) {
   const families = readFamilies(env);
-  const kids = (await env.DB.prepare('SELECT id, name, born, family FROM kids ORDER BY born, id').all()).results.map((k) => ({ ...k, family: familyOf(families, k) }));
+  const kids = (await syncKids(env, families)).map((k) => ({ ...k, family: familyOf(families, k) }));
   const rows = (
     await env.DB.prepare(
       'SELECT id, kid_id, made, made_precision, title, story, medium, tags, favourite, width, height, source_name, created_at FROM pieces ORDER BY made DESC, id DESC',
@@ -153,19 +141,6 @@ function int(v, label) {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) bad(`${label} must be a positive whole number.`);
   return n;
-}
-
-function kidFields(b, partial) {
-  const out = {};
-  if (!partial || 'name' in b) {
-    out.name = str(b.name, 60, 'Name');
-    if (!out.name) bad('Give the kid a name.');
-  }
-  if (!partial || 'born' in b) {
-    if (!validDate(b.born)) bad('Birthday must be a date like 2018-03-14.');
-    out.born = b.born;
-  }
-  return out;
 }
 
 function pieceFields(b, partial) {
@@ -204,13 +179,46 @@ async function body(request) {
 }
 
 // ---- Families ----
-// A kid's family, or null when it isn't one in FAMILIES (any more), so
-// taking a family out of FAMILIES, or FAMILIES away, gives every parent its
-// kids, as before there were families.
-const familyOf = (families, kid) => (families.some((f) => f.id === kid.family) ? kid.family : null);
+// A kid's family is the one FAMILIES lists them in, by name, or null. So a
+// kid the file doesn't list, or a family taken out of FAMILIES, or FAMILIES
+// taken away, leaves those kids to every parent, as before families.
+const familyOf = (families, kid) => families.find((f) => f.kids.some((k) => sameName(k.name, kid.name)))?.id ?? null;
+
+// The kids on the fridge, after making them match the kids in FAMILIES: a
+// kid it lists who isn't here yet is added, and a changed birthday or
+// spelling is copied over. A kid is matched by name or, when renamed there,
+// by birthday (when exactly one kid here that it no longer lists has that
+// birthday, and exactly one new name does). Kids here that it doesn't list
+// stay, with their art, in no family. Kids are never added or changed any
+// other way, so infra's file is where they're looked after.
+async function syncKids(env, families) {
+  const read = async () => (await env.DB.prepare('SELECT id, name, born FROM kids ORDER BY born, id').all()).results;
+  const rows = await read();
+  const listed = families.flatMap((f) => f.kids);
+  const isListed = (row) => listed.some((k) => sameName(k.name, row.name));
+  const isHere = (kid) => rows.some((r) => sameName(r.name, kid.name));
+  const changes = [];
+  for (const kid of listed) {
+    let row = rows.find((r) => sameName(r.name, kid.name));
+    if (!row) {
+      const was = rows.filter((r) => !isListed(r) && r.born === kid.born);
+      const twins = listed.filter((k) => !isHere(k) && k.born === kid.born);
+      if (was.length === 1 && twins.length === 1) row = was[0];
+    }
+    if (!row) {
+      // Only if it's still not here, in case another request added it first.
+      changes.push(env.DB.prepare('INSERT INTO kids (name, born) SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM kids WHERE name = ?1 COLLATE NOCASE)').bind(kid.name, kid.born));
+    } else if (row.name !== kid.name || row.born !== kid.born) {
+      changes.push(env.DB.prepare('UPDATE kids SET name = ?, born = ? WHERE id = ?').bind(kid.name, kid.born, row.id));
+    }
+  }
+  if (!changes.length) return rows;
+  await env.DB.batch(changes);
+  return read();
+}
 
 async function findKid(env, id) {
-  const kid = await env.DB.prepare('SELECT id, name, family FROM kids WHERE id = ?').bind(id).first();
+  const kid = await env.DB.prepare('SELECT id, name FROM kids WHERE id = ?').bind(id).first();
   return kid && { ...kid, family: familyOf(readFamilies(env), kid) };
 }
 // The kid with that id, or a 400: they were named in what was sent.
@@ -230,14 +238,6 @@ function mayChange(who, kid) {
   if (!canChangeKid(who, kid)) throw new HttpError(403, `${kid.name} is in another family. Only their family’s parents can change ${kid.name} or their art.`);
 }
 
-// The family a parent asked to put a kid in: one of their own, or null for none.
-function familyFor(env, who, value) {
-  if (value === null) return null;
-  const id = typeof value === 'string' ? value.trim() : '';
-  if (!readFamilies(env).some((f) => f.id === id)) bad('There’s no family with that id.');
-  if (!who.families.includes(id)) throw new HttpError(403, 'You can only put a kid in your own family.');
-  return id;
-}
 
 // Column names come from the fields functions above, never from the request.
 async function update(env, table, id, fields) {
@@ -251,14 +251,6 @@ async function update(env, table, id, fields) {
 }
 
 // ---- Changes ----
-// In the family asked for, or else the adding parent's, if they're in just one.
-async function addKid(env, who, b) {
-  const { name, born } = kidFields(b, false);
-  const family = 'family' in b ? familyFor(env, who, b.family) : who.families.length === 1 ? who.families[0] : null;
-  const row = await env.DB.prepare('INSERT INTO kids (name, born, family) VALUES (?, ?, ?) RETURNING id').bind(name, born, family).first();
-  return { id: row.id, family };
-}
-
 const keyFor = (id, variant) => `pieces/${id}/${variant}`;
 
 // multipart/form-data: `meta` (JSON: kid_id, made and the other fields, plus

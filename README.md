@@ -10,8 +10,9 @@ it.
 
 - **One Cloudflare Worker** serves the page, a small API and the images. The
   page is plain HTML, CSS and JavaScript, with no build step.
-- **D1** holds the kids (name, birthday and family) and each piece's
-  details: when it was made, title, what they said, medium, tags, favourite.
+- **D1** holds the kids (name and birthday, kept in step with infra's list
+  of them) and each piece's details: when it was made, title, what they
+  said, medium, tags, favourite.
 - **R2** holds three copies of each piece: the original, a screen-sized JPEG
   and a thumbnail. The copies are made before upload, by the import script or
   the page, so there's no paid image resizing.
@@ -44,28 +45,26 @@ their own family's kids, and change only those kids. A kid in no family is
 any parent's to change, as everything was before families. The page shows
 each parent only what they can change, and the Worker refuses the rest.
 
-- **Who's in which family** is in infra's `fridge_people.auto.tfvars`,
-  which lists each family once, by id, with its name, its parents and its
-  kids. Infra hands this repo `PARENT_EMAILS` (every family's parents) and
-  `FAMILIES` (each family's id, name and parents) as Actions secrets, and
-  the Deploy workflow gives them to the Worker.
-- **Which family a kid is in** is kept on the fridge, with the kid.
-  `add-kid` puts a new kid in your family if you're in just one, or in the
-  one `--family` names, and `set-family` moves one:
+Everything about who's who is in one place: infra's
+`fridge_people.auto.tfvars`, which lists each family once, with its name,
+its parents and its kids, and each kid with their birthday. Infra hands
+this repo `PARENT_EMAILS` (every family's parents) and `FAMILIES` (each
+family with its parents and kids) as Actions secrets, and the Deploy
+workflow gives them to the Worker.
 
-  ```sh
-  uv run scripts/fridge.py families               # the families, yours, and their kids
-  uv run scripts/fridge.py set-family Ada pine    # put Ada in the family with id pine
-  uv run scripts/fridge.py set-family Ada none    # or in no family
-  ```
+- **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
+  doesn't have yet, and copies over a changed birthday or spelling, the
+  next time the page or the import script loads the gallery. A kid renamed
+  in the file keeps their art: they're matched by birthday when their old
+  name is gone. A kid the file stops listing stays, with their art, in no
+  family. Nothing else adds or changes kids, so there's no `add-kid`.
+- **A kid's family** is the family the file lists them under.
 
-  You can put a kid only in your own family, and change only kids in it or
-  in none. Kids added before there were families are in none until someone
-  puts them in one.
-
-Without `FAMILIES` there are no families, and every parent can change
-everything. Taking a family out of infra's file does the same for its
-kids.
+To add a kid, change a name or birthday, or move someone between
+families, edit infra's file in a pull request, merge it, then run this
+repo's Deploy workflow. Without `FAMILIES` there are no families, and
+every parent can change everything. Taking a family out of infra's file
+does the same for its kids.
 
 ## Setting it up
 
@@ -80,16 +79,15 @@ kids.
 3. **Deploy:** run the Deploy workflow from this repo's Actions tab (after
    that, every merge to `main` deploys). Then merge the infra change that
    adds the custom domain: it can only point at a Worker that exists.
-4. **Add the kids**, from a computer with this repo checked out and
+4. **The kids** come from infra's file (see [Families](#families)), so
+   they're on the fridge once it has deployed. To import scans, sign the
+   import script in, from a computer with this repo checked out and
    [uv](https://docs.astral.sh/uv/) and cloudflared installed
    (`brew install cloudflared`):
 
    ```sh
    uv run scripts/fridge.py login
-   uv run scripts/fridge.py add-kid "Name" 2018-03-14
    ```
-
-   With [families](#families) set up, each kid goes in your family.
 
 5. **Import the scans.** Survey a folder first. It works offline, uploads
    nothing, and opens a report with a picture of every page, saying which
@@ -191,18 +189,18 @@ uv run --locked pytest        # import script tests
 ```
 
 To run it locally, create `.dev.vars` (git ignores it) with
-`DEV_EMAIL=you@example.com` and `PARENT_EMAILS=you@example.com`, and
-optionally made-up families, then:
+`DEV_EMAIL=you@example.com`, `PARENT_EMAILS=you@example.com` and made-up
+families and kids:
 
 ```sh
-FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"]}]'
+FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":[{"name":"Ada","born":"2019-04-02"},{"name":"Bo","born":"2021-07-02"}]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"],"kids":[{"name":"Cy","born":"2020-02-02"}]}]'
 ```
+
+Then:
 
 ```sh
 npx wrangler d1 migrations apply fridge --local
 npm run dev
-uv run scripts/fridge.py --url http://localhost:8787 add-kid Ada 2019-04-02
-uv run scripts/fridge.py --url http://localhost:8787 add-kid Cy 2020-02-02 --family none
 uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/pictures
 ```
 

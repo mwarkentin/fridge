@@ -45,6 +45,9 @@ async function call(path, { as = PARENT, method = 'GET', json, form, headers = {
   return worker.fetch(new Request(`https://${host}${path}`, { method, headers: h, body }), localEnv || env);
 }
 const jpeg = (label) => new File([`fake jpeg ${label}`], `${label}.jpg`, { type: 'image/jpeg' });
+// Kids come only from FAMILIES (infra's file). A test that isn't about
+// families puts one straight into the database, like a kid from before them.
+const kidRow = async (name, born) => (await env.DB.prepare('INSERT INTO kids (name, born) VALUES (?, ?) RETURNING id').bind(name, born).first()).id;
 function pieceForm(meta, original = jpeg('original')) {
   const form = new FormData();
   form.set('meta', JSON.stringify({ width: 1600, height: 2000, ...meta }));
@@ -153,10 +156,8 @@ test('serves every font the stylesheet names, each with its licence, and no othe
   }
 });
 
-test('a parent adds a kid and a piece, and everyone can see it', async () => {
-  const kid = await call('/api/kids', { method: 'POST', json: { name: 'Ada', born: '2019-04-02' } });
-  assert.equal(kid.status, 201);
-  const { id: kidId } = await kid.json();
+test('a parent adds a piece, and everyone can see it', async () => {
+  const kidId = await kidRow('Ada', '2019-04-02');
 
   const added = await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2024-05-15', made_precision: 'month', title: 'Rocket', tags: ['Space', 'space', ''], source_hash: 'a'.repeat(64), source_name: 'Ada/2024-05 rocket.jpg' }) });
   assert.equal(added.status, 201);
@@ -194,7 +195,7 @@ test('remembers pieces a parent chose not to import', async () => {
   assert.deepEqual(known.skipped, [h('b')]);
 
   // Importing a skipped piece after all forgets the skip.
-  const { id: kidId } = await (await call('/api/kids', { method: 'POST', json: { name: 'Di', born: '2018-05-05' } })).json();
+  const kidId = await kidRow('Di', '2018-05-05');
   assert.equal((await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2025-01-03', source_hash: h('b') }) })).status, 201);
   known = await (await call('/api/imported')).json();
   assert.deepEqual(known.skipped, []);
@@ -206,18 +207,18 @@ test('remembers pieces a parent chose not to import', async () => {
 });
 
 test('viewers can’t change anything', async () => {
-  assert.equal((await call('/api/kids', { as: VIEWER, method: 'POST', json: { name: 'Bo', born: '2021-01-01' } })).status, 403);
+  assert.equal((await call('/api/pieces/1', { as: VIEWER, method: 'DELETE' })).status, 403);
   assert.equal((await call('/api/pieces/1', { as: VIEWER, method: 'PATCH', json: { favourite: true } })).status, 403);
   assert.equal((await call('/api/imported', { as: VIEWER })).status, 403);
 });
 
 test('changes need the X-Requested-With header', async () => {
-  const res = await call('/api/kids', { method: 'POST', json: { name: 'Bo', born: '2021-01-01' }, headers: { 'X-Requested-With': 'elsewhere' } });
+  const res = await call('/api/pieces/1', { method: 'PATCH', json: { title: 'Nope' }, headers: { 'X-Requested-With': 'elsewhere' } });
   assert.equal(res.status, 403);
 });
 
 test('editing and removing a piece', async () => {
-  const { id: kidId } = await (await call('/api/kids', { method: 'POST', json: { name: 'Bo', born: '2021-07-02' } })).json();
+  const kidId = await kidRow('Bo', '2021-07-02');
   const { id } = await (await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2025-01-03' }) })).json();
 
   const edit = await call(`/api/pieces/${id}`, { method: 'PATCH', json: { title: '  Snow day ', story: 'Brr.', favourite: true, medium: 'Crayon' } });
@@ -238,35 +239,34 @@ test('editing and removing a piece', async () => {
 });
 
 test('uploads are checked', async () => {
-  const { id: kidId } = await (await call('/api/kids', { method: 'POST', json: { name: 'Cy', born: '2020-02-02' } })).json();
+  const kidId = await kidRow('Cy', '2020-02-02');
   const notImage = new File(['hello'], 'notes.txt', { type: 'text/plain' });
   assert.equal((await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: '2025-01-03' }, notImage) })).status, 400);
   assert.equal((await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: kidId, made: 'last week' }) })).status, 400);
   const noThumb = pieceForm({ kid_id: kidId, made: '2025-01-03' });
   noThumb.delete('thumb');
   assert.equal((await call('/api/pieces', { method: 'POST', form: noThumb })).status, 400);
-  assert.equal((await call('/api/kids', { method: 'POST', json: { name: '', born: '2020-02-02' } })).status, 400);
 });
 
 // ---- Families ----
 // Two made-up families: the Pines (Ada and Bo) and the Oaks (Cy and Dee),
-// a parent in both, a parent in neither, and Di, a kid from before there
-// were families.
+// a parent in both, a parent in neither, and Di, a kid on the fridge that
+// FAMILIES doesn't list. The kids come from FAMILIES, as from infra's file.
 const PINE = 'pine@example.com';
 const PINE_TOO = 'pine.too@example.com';
 const OAK = 'oak@example.com';
 const BOTH = 'both@example.com';
 const LONER = 'loner@example.com';
 const NAMED_ONLY = 'named.only@example.com'; // in a family's list, but not a parent
-const FAMILIES = [
-  { id: 'pine', name: 'The Pines', parents: [PINE, 'Pine.Too@Example.com ', BOTH, NAMED_ONLY] },
-  { id: 'oak', name: 'The Oaks', parents: [OAK, BOTH] },
-];
+const PINES = { id: 'pine', name: 'The Pines', parents: [PINE, 'Pine.Too@Example.com ', BOTH, NAMED_ONLY], kids: [{ name: 'Ada', born: '2019-04-02' }, { name: 'Bo', born: '2021-07-02' }] };
+const OAKS = { id: 'oak', name: 'The Oaks', parents: [OAK, BOTH], kids: [{ name: 'Cy', born: '2020-02-02' }, { name: 'Dee', born: '2018-05-05' }] };
+const FAMILIES = [PINES, OAKS];
 const familyEnv = (families = FAMILIES) => ({ ...env, PARENT_EMAILS: [PARENT, PINE, PINE_TOO, OAK, BOTH, LONER].join(', '), FAMILIES: JSON.stringify(families) });
 const fam = (path, opts = {}) => call(path, { localEnv: familyEnv(), ...opts });
 const errorOf = async (res) => (await res.json()).error;
-const kidsNow = async (localEnv = familyEnv()) => Object.fromEntries((await (await call('/api/gallery', { as: VIEWER, localEnv })).json()).kids.map((k) => [k.id, k]));
-const pieceNow = async (id) => (await (await fam('/api/gallery', { as: VIEWER })).json()).pieces.find((p) => p.id === id);
+const galleryNow = async (localEnv = familyEnv()) => (await call('/api/gallery', { as: VIEWER, localEnv })).json();
+const kidsNow = async (localEnv) => Object.fromEntries((await galleryNow(localEnv)).kids.map((k) => [k.name, k]));
+const pieceNow = async (id) => (await galleryNow()).pieces.find((p) => p.id === id);
 const fk = {}; // kid ids by name
 const fp = {}; // a piece of each kid's, by kid name
 
@@ -274,15 +274,19 @@ test('with no families set up, nobody is in one, and every parent can change eve
   for (const FAMILIES of [undefined, '', '  ', '[]']) {
     const localEnv = { ...env, FAMILIES };
     assert.deepEqual(await (await call('/api/session', { localEnv })).json(), { email: PARENT, canEdit: true, families: [] });
-    const g = await (await call('/api/gallery', { as: VIEWER, localEnv })).json();
+    const g = await galleryNow(localEnv);
     assert.deepEqual(g.families, []);
     assert.ok(g.kids.length && g.kids.every((k) => k.family === null), 'every kid is in no family');
   }
-  const { id, family } = await (await call('/api/kids', { method: 'POST', json: { name: 'Di', born: '2018-05-05' } })).json();
-  assert.equal(family, null);
-  fk.Di = id;
-  fp.Di = (await (await call('/api/pieces', { method: 'POST', form: pieceForm({ kid_id: id, made: '2025-03-01', title: 'From before families' }) })).json()).id;
-  assert.equal((await call('/api/kids', { method: 'POST', json: { name: 'X', born: '2018-05-05', family: 'pine' } })).status, 400, 'no such family');
+  // FAMILIES from before it listed kids: the kids here are in no family.
+  const { kids } = await galleryNow({ ...env, FAMILIES: JSON.stringify([{ id: 'pine', name: 'The Pines', parents: [PARENT] }]) });
+  assert.ok(kids.every((k) => k.family === null));
+});
+
+test('kids can’t be added or changed through the API: they come from FAMILIES', async () => {
+  assert.equal((await call('/api/kids', { method: 'POST', json: { name: 'Ada', born: '2019-04-02' } })).status, 404);
+  assert.equal((await call('/api/kids/1', { method: 'PATCH', json: { name: 'Ada' } })).status, 404);
+  assert.equal((await fam('/api/kids', { as: PINE, method: 'POST', json: { name: 'Ada', born: '2019-04-02' } })).status, 404);
 });
 
 test('says which families each parent is in', async () => {
@@ -295,36 +299,29 @@ test('says which families each parent is in', async () => {
   assert.deepEqual(await session(NAMED_ONLY), { email: NAMED_ONLY, canEdit: false, families: [] }, 'PARENT_EMAILS says who’s a parent');
 });
 
-test('adds a kid to the adding parent’s family, and only to their own', async () => {
-  const add = async (as, json) => fam('/api/kids', { as, method: 'POST', json: { born: '2019-04-02', ...json } });
-  let res = await add(PINE, { name: 'Ada' });
-  assert.equal(res.status, 201);
-  let kid = await res.json();
-  assert.equal(kid.family, 'pine', 'the parent’s one family, when none is given');
-  fk.Ada = kid.id;
-  fk.Bo = (await (await add(PINE_TOO, { name: 'Bo', family: 'pine' })).json()).id;
-  fk.Cy = (await (await add(OAK, { name: 'Cy' })).json()).id;
-  res = await add(BOTH, { name: 'Dee', family: 'oak' });
-  assert.equal(res.status, 201);
-  fk.Dee = (await res.json()).id;
+test('puts the kids FAMILIES lists on the fridge, each in their family, once', async () => {
+  // A fridge with only Di on it, from before families.
+  await env.DB.batch([env.DB.prepare('DELETE FROM pieces'), env.DB.prepare('DELETE FROM kids')]);
+  fk.Di = await kidRow('Di', '2018-09-09');
 
-  kid = await (await add(BOTH, { name: 'Undecided' })).json();
-  assert.equal(kid.family, null, 'a parent in two families has to say which');
-  assert.equal((await add(PINE, { name: 'Nobody’s', family: null })).status, 201, 'in no family, on purpose');
+  const g = await galleryNow();
+  assert.deepEqual(g.families, [{ id: 'pine', name: 'The Pines' }, { id: 'oak', name: 'The Oaks' }], 'in FAMILIES’ order, without parents or kids');
+  const kids = Object.fromEntries(g.kids.map((k) => [k.name, k]));
+  assert.deepEqual(Object.keys(kids).sort(), ['Ada', 'Bo', 'Cy', 'Dee', 'Di']);
+  assert.deepEqual(['Ada', 'Bo', 'Cy', 'Dee', 'Di'].map((n) => kids[n].family), ['pine', 'pine', 'oak', 'oak', null]);
+  assert.equal(kids.Ada.born, '2019-04-02');
+  assert.deepEqual(Object.keys(kids.Ada).sort(), ['born', 'family', 'id', 'name']);
+  for (const [name, k] of Object.entries(kids)) fk[name] = k.id;
 
-  res = await add(PINE, { name: 'Sneaky', family: 'oak' });
-  assert.equal(res.status, 403);
-  assert.equal(await errorOf(res), 'You can only put a kid in your own family.');
-  assert.equal((await add(LONER, { name: 'Sneaky', family: 'pine' })).status, 403);
-  assert.equal((await add(PINE, { name: 'Lost', family: 'nowhere' })).status, 400);
-  assert.equal((await add(PINE, { name: 'Lost', family: 7 })).status, 400);
-  assert.equal((await add(VIEWER, { name: 'Lost' })).status, 403);
-
-  const g = await (await fam('/api/gallery', { as: VIEWER })).json();
-  assert.deepEqual(g.families, [{ id: 'pine', name: 'The Pines' }, { id: 'oak', name: 'The Oaks' }], 'in FAMILIES’ order, without the parents');
-  const kids = Object.fromEntries(g.kids.map((k) => [k.id, k]));
-  assert.deepEqual([fk.Ada, fk.Bo, fk.Cy, fk.Dee, fk.Di].map((id) => kids[id].family), ['pine', 'pine', 'oak', 'oak', null]);
-  assert.deepEqual(Object.keys(kids[fk.Ada]).sort(), ['born', 'family', 'id', 'name']);
+  // Loading again, or several pages at once, adds nobody twice.
+  await Promise.all([galleryNow(), galleryNow(), galleryNow()]);
+  const again = await galleryNow();
+  assert.equal(again.kids.length, 5);
+  assert.deepEqual(Object.fromEntries(again.kids.map((k) => [k.name, k.id])), fk);
+  // Nor does a kid written differently in FAMILIES.
+  const shouting = [{ ...PINES, kids: [{ name: 'ADA ', born: '2019-04-02' }, PINES.kids[1]] }, OAKS];
+  assert.equal((await kidsNow(familyEnv(shouting))).ADA.id, fk.Ada);
+  assert.equal((await kidsNow()).Ada.id, fk.Ada, 'and back');
 });
 
 test('a parent adds art only for their own family’s kids, and kids in no family', async () => {
@@ -340,8 +337,37 @@ test('a parent adds art only for their own family’s kids, and kids in no famil
   assert.equal((await add(OAK, 'Bo')).status, 403);
   assert.equal((await add(LONER, 'Ada')).status, 403, 'a parent in no family');
   for (const as of [PINE, OAK, LONER]) assert.equal((await add(as, 'Di')).status, 201, `${as} adds Di’s`);
+  fp.Di = (await (await add(PINE, 'Di')).json()).id;
   for (const kid of ['Ada', 'Cy']) assert.equal((await add(BOTH, kid)).status, 201, `the parent in both adds ${kid}’s`);
   assert.equal((await fam('/api/pieces', { as: VIEWER, method: 'POST', form: pieceForm({ kid_id: fk.Di, made: '2025-06-01' }) })).status, 403);
+});
+
+test('keeps the kids in step with FAMILIES: birthdays, renames, and a kid it stops listing', async () => {
+  const withKid = (family, i, kid) => FAMILIES.map((f) => (f === family ? { ...f, kids: f.kids.map((k, j) => (j === i ? kid : k)).filter(Boolean) } : f));
+
+  // A corrected birthday is copied over.
+  let kids = await kidsNow(familyEnv(withKid(PINES, 0, { name: 'Ada', born: '2019-04-03' })));
+  assert.equal(kids.Ada.born, '2019-04-03');
+  assert.equal(kids.Ada.id, fk.Ada);
+
+  // Renamed in FAMILIES, with the same birthday: the same kid, art and all.
+  kids = await kidsNow(familyEnv(withKid(PINES, 1, { name: 'Bea', born: '2021-07-02' })));
+  assert.equal(kids.Bea.id, fk.Bo);
+  assert.equal(kids.Bea.family, 'pine');
+  assert.equal(kids.Bo, undefined);
+  assert.equal((await galleryNow()).pieces.find((p) => p.id === fp.Bo).kid_id, fk.Bo);
+
+  // Back as they were.
+  kids = await kidsNow();
+  assert.deepEqual([kids.Ada.born, kids.Bo.id], ['2019-04-02', fk.Bo]);
+
+  // A kid FAMILIES stops listing stays, with their art, in no family.
+  const noDee = familyEnv(withKid(OAKS, 1, null));
+  kids = await kidsNow(noDee);
+  assert.equal(kids.Dee.family, null);
+  assert.equal((await call(`/api/pieces/${fp.Dee}`, { as: PINE, method: 'PATCH', json: { title: 'Anyone’s now' }, localEnv: noDee })).status, 200);
+  assert.equal((await kidsNow()).Dee.family, 'oak', 'until it lists them again');
+  assert.equal((await fam(`/api/pieces/${fp.Dee}`, { as: PINE, method: 'PATCH', json: { title: 'Not now' } })).status, 403);
 });
 
 test('a parent edits, favourites and removes only their own family’s art', async () => {
@@ -405,51 +431,18 @@ test('moving a piece to another kid needs rights over both', async () => {
   assert.equal((await fam(`/api/pieces/${fp.Ada}`, { as: PINE, method: 'PATCH', json: { kid_id: 99999 } })).status, 400, 'no such kid');
 });
 
-test('a parent changes only their own family’s kids, and can put a kid in no family into theirs', async () => {
-  const patch = (as, kid, json) => fam(`/api/kids/${fk[kid]}`, { as, method: 'PATCH', json });
-  let res = await patch(PINE, 'Cy', { name: 'Not yours' });
-  assert.equal(res.status, 403);
-  assert.match(await errorOf(res), /^Cy is in another family\./);
-  assert.equal((await patch(LONER, 'Ada', { born: '2019-04-03' })).status, 403);
-  assert.equal((await patch(PINE, 'Ada', { born: '2019-04-03' })).status, 200);
-  assert.equal((await kidsNow())[fk.Ada].born, '2019-04-03');
-
-  res = await patch(PINE, 'Ada', { family: 'oak' });
-  assert.equal(res.status, 403, 'not into another family');
-  assert.equal(await errorOf(res), 'You can only put a kid in your own family.');
-  assert.equal((await patch(PINE, 'Ada', { family: 'nowhere' })).status, 400);
-  assert.equal((await patch(PINE, 'Ada', { family: '' })).status, 400);
-  assert.equal((await kidsNow())[fk.Ada].family, 'pine');
-  assert.equal((await patch(BOTH, 'Ada', { family: 'oak' })).status, 200, 'a parent in both');
-  assert.equal((await patch(PINE, 'Ada', { family: 'pine' })).status, 403, 'it’s the Oaks’ now');
-  assert.equal((await patch(BOTH, 'Ada', { family: 'pine' })).status, 200);
-
-  // After deploying: putting a kid from before families into a family.
-  assert.equal((await patch(PINE, 'Di', { family: 'pine' })).status, 200);
-  assert.equal((await kidsNow())[fk.Di].family, 'pine');
-  assert.equal((await patch(OAK, 'Di', { name: 'Di' })).status, 403);
-  assert.equal((await fam(`/api/pieces/${fp.Di}`, { as: OAK, method: 'PATCH', json: { favourite: true } })).status, 403, 'nor their art');
-  assert.equal((await patch(PINE, 'Di', { family: null })).status, 200, 'and back out of it');
-  assert.equal((await kidsNow())[fk.Di].family, null);
-
-  assert.equal((await patch(VIEWER, 'Di', { name: 'Di' })).status, 403);
-  assert.equal((await fam('/api/kids/99999', { as: PINE, method: 'PATCH', json: { name: 'Nobody' } })).status, 404);
-});
-
 test('a family taken out of FAMILIES leaves its kids to every parent, and no FAMILIES is how it was', async () => {
-  const pinesOnly = familyEnv([FAMILIES[0]]);
+  const pinesOnly = familyEnv([PINES]);
   const kids = await kidsNow(pinesOnly);
-  assert.equal(kids[fk.Cy].family, null, 'the Oaks aren’t a family any more');
-  assert.equal(kids[fk.Ada].family, 'pine');
+  assert.equal(kids.Cy.family, null, 'the Oaks aren’t a family any more');
+  assert.equal(kids.Ada.family, 'pine');
   assert.deepEqual(await (await call('/api/session', { as: OAK, localEnv: pinesOnly })).json(), { email: OAK, canEdit: true, families: [] });
   assert.equal((await call(`/api/pieces/${fp.Cy}`, { as: PINE, method: 'PATCH', json: { title: 'Anyone’s now' }, localEnv: pinesOnly })).status, 200);
   assert.equal((await call(`/api/pieces/${fp.Ada}`, { as: OAK, method: 'PATCH', json: { title: 'Still not' }, localEnv: pinesOnly })).status, 403);
 
-  // Without FAMILIES, families stored on the kids are ignored.
   const none = { ...familyEnv(), FAMILIES: undefined };
   assert.ok(Object.values(await kidsNow(none)).every((k) => k.family === null));
   for (const kid of ['Ada', 'Cy']) assert.equal((await call(`/api/pieces/${fp[kid]}`, { as: LONER, method: 'PATCH', json: { title: `${kid}’s` }, localEnv: none })).status, 200);
-  assert.equal((await call(`/api/kids/${fk.Cy}`, { as: PINE, method: 'PATCH', json: { name: 'Cy' }, localEnv: none })).status, 200);
 });
 
 test('skips and the import’s list are for any parent, in any family', async () => {
@@ -462,7 +455,20 @@ test('skips and the import’s list are for any parent, in any family', async ()
 
 test('a FAMILIES that can’t be read turns everyone away', async (t) => {
   t.mock.method(console, 'error', () => {});
-  const broken = ['{', '{"id":"pine"}', '[{"name":"No id","parents":[]}]', '[{"id":"a","name":"A","parents":[]},{"id":"a","name":"Again","parents":[]}]', '[{"id":"a","name":"A","parents":"a@example.com"}]', '[{"id":"a","parents":[]}]'];
+  const family = (kids) => JSON.stringify([{ id: 'a', name: 'A', parents: [], kids }]);
+  const broken = [
+    '{',
+    '{"id":"pine"}',
+    '[{"name":"No id","parents":[]}]',
+    '[{"id":"a","name":"A","parents":[]},{"id":"a","name":"Again","parents":[]}]',
+    '[{"id":"a","name":"A","parents":"a@example.com"}]',
+    '[{"id":"a","parents":[]}]',
+    '[{"id":"a","name":"A","parents":[],"kids":{"name":"Ada"}}]',
+    family([{ name: 'Ada' }]),
+    family([{ name: 'Ada', born: '2019-02-30' }]),
+    family([{ name: ' ', born: '2019-02-03' }]),
+    JSON.stringify([{ ...PINES }, { ...OAKS, kids: [{ name: 'ada', born: '2020-01-01' }] }]),
+  ];
   for (const FAMILIES of broken) {
     for (const as of [PINE, VIEWER]) {
       const res = await call('/api/gallery', { as, localEnv: { ...familyEnv(), FAMILIES } });

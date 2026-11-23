@@ -380,7 +380,8 @@ def test_script_pins_match_pyproject():
 # ---- Families ----
 # A fake fridge with two made-up families: the Pines (Ada and Bo) and the
 # Oaks (Cy and Dee), and Di in no family. The rule is the Worker's, and
-# refusals come back as the Worker sends them.
+# refusals come back as the Worker sends them. refuse_pieces makes it refuse
+# every piece, as if a kid moved family since the import looked.
 class FakeFridge:
     def __init__(self, families=("pine",)):
         self.session = {"email": "pine@example.com", "canEdit": True, "families": list(families)}
@@ -393,6 +394,7 @@ class FakeFridge:
             {"id": 5, "name": "Di", "born": "2018-05-05", "family": None},
         ]
         self.sent = []
+        self.refuse_pieces = False
 
     def handle(self, request):
         import httpx
@@ -405,14 +407,9 @@ class FakeFridge:
             return httpx.Response(200, json={"kids": self.kids, "pieces": [], "families": self.families})
         if request.url.path == "/api/imported":
             return httpx.Response(200, json={"hashes": [], "skipped": []})
-        if request.method == "POST" and request.url.path == "/api/kids":
-            return httpx.Response(201, json={"id": 9, "family": body.get("family", "pine")})
-        if request.method == "PATCH" and request.url.path.startswith("/api/kids/"):
-            kid = next(k for k in self.kids if k["id"] == int(request.url.path.rsplit("/", 1)[1]))
-            if not fridge.can_change(kid, self.session):
-                return httpx.Response(403, json={"error": f"{kid['name']} is in another family. Only their family’s parents can change {kid['name']} or their art."})
-            return httpx.Response(200, json={"ok": True})
         if request.method == "POST" and request.url.path == "/api/pieces":
+            if self.refuse_pieces:
+                return httpx.Response(403, json={"error": "Cy is in another family. Only their family’s parents can change Cy or their art."})
             return httpx.Response(201, json={"id": len(self.sent)})
         return httpx.Response(404, json={"error": "There’s nothing at that address."})
 
@@ -439,45 +436,20 @@ def test_the_rule_matches_the_fridges():
     assert fridge.can_change({"family": None}, {"canEdit": True, "families": []}), "no families set up"
 
 
-def test_add_kid_says_which_family(fake):
-    assert run("add-kid", "Ada", "2019-04-02").exit_code == 0
-    assert fake.sent[-1] == ("POST", "/api/kids", {"name": "Ada", "born": "2019-04-02"}), "the fridge picks the parent's family"
-    result = run("add-kid", "Ada", "2019-04-02", "--family", "pine")
-    assert fake.sent[-1][2]["family"] == "pine"
-    assert "Added Ada (kid 9), in family pine." in result.output
-    run("add-kid", "Ada", "2019-04-02", "--family", "none")
-    assert fake.sent[-1][2]["family"] is None
-
-
-def test_set_family_puts_a_kid_in_a_family(fake):
-    result = run("set-family", "di", "pine")
-    assert result.exit_code == 0, result.output
-    assert fake.sent[-1] == ("PATCH", "/api/kids/5", {"family": "pine"})
-    assert "Di is in family pine now." in result.output
-    assert run("set-family", "5", "none").exit_code == 0
-    assert fake.sent[-1] == ("PATCH", "/api/kids/5", {"family": None})
-
-    result = run("set-family", "Di", "elm")
-    assert result.exit_code == 1 and "There's no family elm. The fridge has: pine, oak" in result.output
-    assert run("set-family", "Eli", "pine").output.startswith("Error: No kid called Eli. The fridge has: Ada, Bo, Cy, Dee, Di")
-    fake.kids.append({"id": 6, "name": "Ada", "born": "2022-01-01", "family": None})
-    assert "There are 2 kids called Ada: kids 1, 6. Use the number instead." in run("set-family", "Ada", "pine").output
-    assert all(method != "PATCH" or path == "/api/kids/5" for method, path, _ in fake.sent), "nothing sent when it can't tell"
-
-
-def test_a_refusal_is_said_plainly(fake):
-    result = run("set-family", "Cy", "pine")
+def test_a_refusal_is_said_plainly(fake, tmp_path):
+    (tmp_path / "Ada").mkdir()
+    art_page().save(tmp_path / "Ada" / "2024-05-29 sun.png")
+    fake.refuse_pieces = True
+    result = run("import", str(tmp_path))
     assert result.exit_code == 1
-    assert result.output == "Error: The fridge said: Cy is in another family. Only their family’s parents can change Cy or their art. (HTTP 403)\n"
+    assert "Error: The fridge said: Cy is in another family. Only their family’s parents can change Cy or their art. (HTTP 403)" in result.output
     assert isinstance(result.exception, SystemExit), "no traceback"
 
 
-def test_families_lists_them_and_their_kids(fake):
-    result = run("families")
-    assert result.exit_code == 0, result.output
-    assert "The Pines, id pine (yours): Ada, Bo\nThe Oaks, id oak: Cy, Dee\nIn no family, so any parent can change them: Di\n" in result.output
-    fake.families = []
-    assert "No families are set up" in run("families").output
+def test_the_kid_commands_are_gone():
+    # Kids, and which family each is in, come from infra's file.
+    for command in ("add-kid", "set-family", "families"):
+        assert command not in fridge.cli.commands
 
 
 def test_import_brings_in_only_your_familys_kids(fake, tmp_path):

@@ -47,12 +47,18 @@ export async function verifyAccessJwt(token, { domain, aud }, now = Date.now() /
   return claims;
 }
 
-// The families, from FAMILIES: a Worker secret infra hands to the deploy,
-// JSON like [{ "id": "pine", "name": "The Pines", "parents": ["a@example.com"] }],
-// in the order the page shows them. Missing or empty means no families, and
+// The families and their kids, from FAMILIES: a Worker secret infra hands to
+// the deploy, JSON like
+//   [{ "id": "pine", "name": "The Pines", "parents": ["a@example.com"],
+//      "kids": [{ "name": "Ada", "born": "2019-04-02" }] }]
+// in the order the page shows them. The kids are the fridge's: the Worker
+// adds them (worker.js, syncKids). Missing or empty means no families, and
 // then every parent can change everything. A FAMILIES that can't be read
 // throws, so nobody gets in until it's fixed, rather than every parent
 // getting every family's rights.
+const realDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().startsWith(s);
+export const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 export function readFamilies(env) {
   const raw = (env.FAMILIES || '').trim();
   if (!raw) return [];
@@ -64,6 +70,7 @@ export function readFamilies(env) {
   }
   if (!Array.isArray(list)) throw new Error('FAMILIES must be a JSON list.');
   const seen = new Set();
+  const kidNames = [];
   return list.map((f, i) => {
     const id = typeof f?.id === 'string' ? f.id.trim() : '';
     if (!id || id.length > 60) throw new Error(`FAMILIES entry ${i + 1} needs an id of 1 to 60 characters.`);
@@ -71,7 +78,17 @@ export function readFamilies(env) {
     seen.add(id);
     if (typeof f.name !== 'string' || !f.name.trim()) throw new Error(`FAMILIES entry ${i + 1} needs a name.`);
     if (!Array.isArray(f.parents) || !f.parents.every((e) => typeof e === 'string')) throw new Error(`FAMILIES entry ${i + 1} needs parents, a list of emails.`);
-    return { id, name: f.name.trim(), parents: f.parents.map((e) => e.trim().toLowerCase()).filter(Boolean) };
+    if (!Array.isArray(f.kids ?? [])) throw new Error(`FAMILIES entry ${i + 1}'s kids must be a list.`);
+    const kids = (f.kids ?? []).map((k, j) => {
+      const name = typeof k?.name === 'string' ? k.name.trim() : '';
+      if (!name || name.length > 60) throw new Error(`FAMILIES entry ${i + 1}'s kid ${j + 1} needs a name of 1 to 60 characters.`);
+      if (!realDate(k.born)) throw new Error(`FAMILIES entry ${i + 1}'s kid ${j + 1} needs born, a date like 2018-03-14.`);
+      // A kid's family is the one listing them, so one family each.
+      if (kidNames.some((n) => sameName(n, name))) throw new Error(`FAMILIES lists a kid's name twice.`);
+      kidNames.push(name);
+      return { name, born: k.born };
+    });
+    return { id, name: f.name.trim(), parents: f.parents.map((e) => e.trim().toLowerCase()).filter(Boolean), kids };
   });
 }
 

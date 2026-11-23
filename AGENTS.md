@@ -33,9 +33,9 @@ history on `main` is permanent.
 - `src/auth.js`: verifies Cloudflare Access's JWT on every request. Parents
   (the `PARENT_EMAILS` Worker secret) can change things; everyone else Access
   lets in can only look. With families (the `FAMILIES` Worker secret), a
-  parent can change only the kids in their own families and kids in no
-  family, and those kids' art (`canChangeKid`). It fails closed: with no
-  Access settings, or a `FAMILIES` it can't read, nobody gets in.
+  parent can change only the art of the kids in their own families and kids
+  in no family (`canChangeKid`). It fails closed: with no Access settings,
+  or a `FAMILIES` it can't read, nobody gets in.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -75,10 +75,14 @@ workers.dev only because they're a separate Worker with nothing real on it.
   `public/icons/`.
 - Changes (`POST`, `PATCH`, `DELETE`) need `X-Requested-With: fridge`, so
   another site can't send them with a family member's sign-in.
-- Every change to a kid or a piece checks the family rule in the Worker
-  (`mayChange`): a parent can change a kid, and that kid's pieces, when the
-  kid is in one of their families or in none. Moving a piece to another kid
-  needs rights over both. The page mirrors the rule (`canChange` in
+- The kids come only from `FAMILIES`, which infra writes from its
+  `fridge_people.auto.tfvars`: the Worker adds and updates them to match
+  (`syncKids`), and a kid's family is the one listing them. Don't add a
+  route that adds or changes kids.
+- Every change to a piece checks the family rule in the Worker
+  (`mayChange`): a parent can change a kid's pieces when the kid is in one
+  of their families or in none. Moving a piece to another kid needs rights
+  over both. The page mirrors the rule (`canChange` in
   `app.js`) only to hide what the Worker would refuse; the Worker decides.
   Skips (`/api/skipped`) are fingerprints only, so any parent can record
   them.

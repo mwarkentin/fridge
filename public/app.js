@@ -190,7 +190,7 @@ function yearsSpan(list) {
 function emptyFridge() {
   if (!KIDS.length) {
     return CAN_EDIT
-      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Add each kid first, from a computer with this repo checked out:</p><code class="cmd">uv run scripts/fridge.py add-kid "Name" 2018-03-14</code><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
+      ? `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>The kids come from <code>fridge_people.auto.tfvars</code> in mwarkentin/infra, and show up here after the next deploy.</p><p>Then bring in the scans from Dropbox with <code>uv run scripts/fridge.py import</code>. The README has the details.</p></section>`
       : `<section class="empty-state">${EMPTY_ART}<h1>The fridge is empty</h1><p>Nothing’s been hung up yet. Check back soon.</p></section>`;
   }
   return KIDS.some(canChange)
