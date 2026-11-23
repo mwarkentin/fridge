@@ -50,9 +50,10 @@ export async function verifyAccessJwt(token, { domain, aud }, now = Date.now() /
 // The families and their kids, from FAMILIES: a Worker secret infra hands to
 // the deploy, JSON like
 //   [{ "id": "pine", "name": "The Pines", "parents": ["a@example.com"],
-//      "kids": [{ "name": "Ada", "born": "2019-04-02" }] }]
+//      "kids": [{ "name": "Ada", "born": "2019-04-02", "artist": null }] }]
 // in the order the page shows them. The kids are the fridge's: the Worker
-// adds them (worker.js, syncKids). Missing or empty means no families, and
+// adds them (worker.js, syncKids). A kid's artist is the address they sign
+// in with to add their own art, or null. Missing or empty means no families, and
 // then every parent can change everything. A FAMILIES that can't be read
 // throws, so nobody gets in until it's fixed, rather than every parent
 // getting every family's rights.
@@ -71,6 +72,7 @@ export function readFamilies(env) {
   if (!Array.isArray(list)) throw new Error('FAMILIES must be a JSON list.');
   const seen = new Set();
   const kidNames = [];
+  const artists = [];
   return list.map((f, i) => {
     const id = typeof f?.id === 'string' ? f.id.trim() : '';
     if (!id || id.length > 60) throw new Error(`FAMILIES entry ${i + 1} needs an id of 1 to 60 characters.`);
@@ -86,17 +88,22 @@ export function readFamilies(env) {
       // A kid's family is the one listing them, so one family each.
       if (kidNames.some((n) => sameName(n, name))) throw new Error(`FAMILIES lists a kid's name twice.`);
       kidNames.push(name);
-      return { name, born: k.born };
+      if (k.artist != null && (typeof k.artist !== 'string' || !/^[^@\s]+@[^@\s]+$/.test(k.artist.trim()))) throw new Error(`FAMILIES entry ${i + 1}'s kid ${j + 1} has an artist that isn't an email.`);
+      const artist = k.artist == null ? null : k.artist.trim().toLowerCase();
+      if (artist && artists.includes(artist)) throw new Error('FAMILIES gives two kids the same artist address.');
+      if (artist) artists.push(artist);
+      return { name, born: k.born, artist };
     });
     return { id, name: f.name.trim(), parents: f.parents.map((e) => e.trim().toLowerCase()).filter(Boolean), kids };
   });
 }
 
-// { email, canEdit, families } for a signed-in person, or null. Parents
-// (PARENT_EMAILS, a Worker secret infra hands to the deploy) can change
-// things; everyone else Access lets in can look. `families` are the ids of
-// the families (FAMILIES) a parent is in: they can change only those
-// families' kids, and kids in no family.
+// { email, canEdit, families, artist } for a signed-in person, or null.
+// Parents (PARENT_EMAILS, a Worker secret infra hands to the deploy) can
+// change things; everyone else Access lets in can look. `families` are the
+// ids of the families (FAMILIES) a parent is in: they can change only those
+// families' kids, and kids in no family. `artist` is the name of the kid
+// someone signs in as to add their own art (FAMILIES), or null.
 export async function identify(request, env) {
   const host = new URL(request.url).hostname;
   // Local development only: wrangler dev has no Access in front of it.
@@ -119,9 +126,13 @@ function person(email, env) {
   // in a family makes nobody a parent: PARENT_EMAILS says who is.
   const all = readFamilies(env);
   const families = canEdit ? all.filter((f) => f.parents.includes(me)).map((f) => f.id) : [];
-  return { email: me, canEdit, families };
+  // A parent is a parent, even if a kid's artist address is theirs too.
+  const artist = canEdit ? null : (all.flatMap((f) => f.kids).find((k) => k.artist === me)?.name ?? null);
+  return { email: me, canEdit, families, artist };
 }
 
-// The rule, mirrored in the page: a parent can change a kid, and that kid's
-// pieces, when the kid is in one of their families or in none.
+// The rules, mirrored in the page. A parent can change a kid's pieces when
+// the kid is in one of their families or in none. An artist can add their
+// own art, and change only the pieces they added (worker.js, mayChange).
 export const canChangeKid = (who, kid) => who.canEdit && (kid.family === null || who.families.includes(kid.family));
+export const isArtistOf = (who, kid) => who.artist !== null && sameName(who.artist, kid.name);

@@ -79,12 +79,12 @@ test('fails closed when the Access settings are missing', async () => {
 test('DEV_EMAIL signs in only on localhost', async () => {
   const dev = { ...env, ACCESS_AUD: '', DEV_EMAIL: PARENT };
   const res = await call('/api/session', { as: null, host: 'localhost:8787', localEnv: dev });
-  assert.deepEqual(await res.json(), { email: PARENT, canEdit: true, families: [] });
+  assert.deepEqual(await res.json(), { email: PARENT, canEdit: true, families: [], artist: null });
 });
 
 test('knows parents from viewers, case-insensitively', async () => {
-  assert.deepEqual(await (await call('/api/session', { as: 'PARENT@Example.com' })).json(), { email: PARENT, canEdit: true, families: [] });
-  assert.deepEqual(await (await call('/api/session', { as: VIEWER })).json(), { email: VIEWER, canEdit: false, families: [] });
+  assert.deepEqual(await (await call('/api/session', { as: 'PARENT@Example.com' })).json(), { email: PARENT, canEdit: true, families: [], artist: null });
+  assert.deepEqual(await (await call('/api/session', { as: VIEWER })).json(), { email: VIEWER, canEdit: false, families: [], artist: null });
 });
 
 test('sends security headers', async () => {
@@ -258,8 +258,9 @@ const OAK = 'oak@example.com';
 const BOTH = 'both@example.com';
 const LONER = 'loner@example.com';
 const NAMED_ONLY = 'named.only@example.com'; // in a family's list, but not a parent
+const DEE = 'dee@example.com'; // Dee's own address: she adds her own art
 const PINES = { id: 'pine', name: 'The Pines', parents: [PINE, 'Pine.Too@Example.com ', BOTH, NAMED_ONLY], kids: [{ name: 'Ada', born: '2019-04-02' }, { name: 'Bo', born: '2021-07-02' }] };
-const OAKS = { id: 'oak', name: 'The Oaks', parents: [OAK, BOTH], kids: [{ name: 'Cy', born: '2020-02-02' }, { name: 'Dee', born: '2018-05-05' }] };
+const OAKS = { id: 'oak', name: 'The Oaks', parents: [OAK, BOTH], kids: [{ name: 'Cy', born: '2020-02-02' }, { name: 'Dee', born: '2018-05-05', artist: 'Dee@Example.com' }] };
 const FAMILIES = [PINES, OAKS];
 const familyEnv = (families = FAMILIES) => ({ ...env, PARENT_EMAILS: [PARENT, PINE, PINE_TOO, OAK, BOTH, LONER].join(', '), FAMILIES: JSON.stringify(families) });
 const fam = (path, opts = {}) => call(path, { localEnv: familyEnv(), ...opts });
@@ -273,7 +274,7 @@ const fp = {}; // a piece of each kid's, by kid name
 test('with no families set up, nobody is in one, and every parent can change every kid', async () => {
   for (const FAMILIES of [undefined, '', '  ', '[]']) {
     const localEnv = { ...env, FAMILIES };
-    assert.deepEqual(await (await call('/api/session', { localEnv })).json(), { email: PARENT, canEdit: true, families: [] });
+    assert.deepEqual(await (await call('/api/session', { localEnv })).json(), { email: PARENT, canEdit: true, families: [], artist: null });
     const g = await galleryNow(localEnv);
     assert.deepEqual(g.families, []);
     assert.ok(g.kids.length && g.kids.every((k) => k.family === null), 'every kid is in no family');
@@ -291,12 +292,12 @@ test('kids can’t be added or changed through the API: they come from FAMILIES'
 
 test('says which families each parent is in', async () => {
   const session = async (as) => (await fam('/api/session', { as })).json();
-  assert.deepEqual(await session(PINE), { email: PINE, canEdit: true, families: ['pine'] });
-  assert.deepEqual(await session('PINE.TOO@example.com'), { email: PINE_TOO, canEdit: true, families: ['pine'] });
-  assert.deepEqual(await session(BOTH), { email: BOTH, canEdit: true, families: ['pine', 'oak'] });
-  assert.deepEqual(await session(LONER), { email: LONER, canEdit: true, families: [] });
-  assert.deepEqual(await session(VIEWER), { email: VIEWER, canEdit: false, families: [] });
-  assert.deepEqual(await session(NAMED_ONLY), { email: NAMED_ONLY, canEdit: false, families: [] }, 'PARENT_EMAILS says who’s a parent');
+  assert.deepEqual(await session(PINE), { email: PINE, canEdit: true, families: ['pine'], artist: null });
+  assert.deepEqual(await session('PINE.TOO@example.com'), { email: PINE_TOO, canEdit: true, families: ['pine'], artist: null });
+  assert.deepEqual(await session(BOTH), { email: BOTH, canEdit: true, families: ['pine', 'oak'], artist: null });
+  assert.deepEqual(await session(LONER), { email: LONER, canEdit: true, families: [], artist: null });
+  assert.deepEqual(await session(VIEWER), { email: VIEWER, canEdit: false, families: [], artist: null });
+  assert.deepEqual(await session(NAMED_ONLY), { email: NAMED_ONLY, canEdit: false, families: [], artist: null }, 'PARENT_EMAILS says who’s a parent');
 });
 
 test('puts the kids FAMILIES lists on the fridge, each in their family, once', async () => {
@@ -436,7 +437,7 @@ test('a family taken out of FAMILIES leaves its kids to every parent, and no FAM
   const kids = await kidsNow(pinesOnly);
   assert.equal(kids.Cy.family, null, 'the Oaks aren’t a family any more');
   assert.equal(kids.Ada.family, 'pine');
-  assert.deepEqual(await (await call('/api/session', { as: OAK, localEnv: pinesOnly })).json(), { email: OAK, canEdit: true, families: [] });
+  assert.deepEqual(await (await call('/api/session', { as: OAK, localEnv: pinesOnly })).json(), { email: OAK, canEdit: true, families: [], artist: null });
   assert.equal((await call(`/api/pieces/${fp.Cy}`, { as: PINE, method: 'PATCH', json: { title: 'Anyone’s now' }, localEnv: pinesOnly })).status, 200);
   assert.equal((await call(`/api/pieces/${fp.Ada}`, { as: OAK, method: 'PATCH', json: { title: 'Still not' }, localEnv: pinesOnly })).status, 403);
 
@@ -468,6 +469,9 @@ test('a FAMILIES that can’t be read turns everyone away', async (t) => {
     family([{ name: 'Ada', born: '2019-02-30' }]),
     family([{ name: ' ', born: '2019-02-03' }]),
     JSON.stringify([{ ...PINES }, { ...OAKS, kids: [{ name: 'ada', born: '2020-01-01' }] }]),
+    family([{ name: 'Ada', born: '2019-04-02', artist: 'not an address' }]),
+    family([{ name: 'Ada', born: '2019-04-02', artist: 7 }]),
+    family([{ name: 'Ada', born: '2019-04-02', artist: 'a@example.com' }, { name: 'Bo', born: '2021-07-02', artist: 'A@example.com' }]),
   ];
   for (const FAMILIES of broken) {
     for (const as of [PINE, VIEWER]) {
@@ -475,4 +479,47 @@ test('a FAMILIES that can’t be read turns everyone away', async (t) => {
       assert.equal(res.status, 503, `${FAMILIES} as ${as}`);
     }
   }
+});
+
+test('a kid who’s an artist adds their own art, and changes only the pieces they added', async () => {
+  const as = (who) => ({ as: who });
+  assert.deepEqual(await (await fam('/api/session', as(DEE))).json(), { email: DEE, canEdit: false, families: [], artist: 'Dee' });
+  assert.deepEqual((await (await fam('/api/gallery', as(DEE))).json()).mine, []);
+
+  const add = (who, kid) => fam('/api/pieces', { as: who, method: 'POST', form: pieceForm({ kid_id: fk[kid], made: '2025-08-01', title: 'By Dee' }) });
+  let res = await add(DEE, 'Dee');
+  assert.equal(res.status, 201);
+  const own = (await res.json()).id;
+  res = await add(DEE, 'Cy');
+  assert.equal(res.status, 403, 'only her own art');
+  assert.equal(await errorOf(res), 'You can add your own art, and change only the pieces you added yourself.');
+  assert.deepEqual((await (await fam('/api/gallery', as(DEE))).json()).mine, [own], 'the pieces she can change');
+  assert.deepEqual((await (await fam('/api/gallery', as(OAK))).json()).mine, [], 'a parent’s list is empty: their rights are by family');
+
+  const patch = (who, id, json) => fam(`/api/pieces/${id}`, { as: who, method: 'PATCH', json });
+  assert.equal((await patch(DEE, own, { title: 'Mine', favourite: true, tags: ['ink'] })).status, 200);
+  assert.equal((await pieceNow(own)).title, 'Mine');
+  assert.equal((await patch(DEE, fp.Dee, { title: 'Not mine' })).status, 403, 'her art that a parent added');
+  assert.equal((await fam(`/api/pieces/${fp.Dee}`, { as: DEE, method: 'DELETE' })).status, 403);
+  assert.equal((await patch(DEE, fp.Cy, { favourite: true })).status, 403, 'someone else’s art');
+  assert.equal((await patch(DEE, own, { kid_id: fk.Cy })).status, 403, 'nor give hers to someone else');
+  assert.equal((await pieceNow(own)).kid_id, fk.Dee);
+
+  // Her parents still look after all of her art, including what she adds.
+  assert.equal((await patch(OAK, own, { title: 'Ours too' })).status, 200);
+  assert.equal((await patch(PINE, own, { title: 'Not ours' })).status, 403);
+
+  // The importer is for parents.
+  assert.equal((await fam('/api/imported', as(DEE))).status, 403);
+  assert.equal((await fam('/api/skipped', { as: DEE, method: 'POST', json: { add: ['f'.repeat(64)] } })).status, 403);
+
+  assert.equal((await fam(`/api/pieces/${own}`, { as: DEE, method: 'DELETE' })).status, 204);
+  assert.equal(await pieceNow(own), undefined);
+
+  // Without artist in FAMILIES she can only look, and a parent's address is a parent's.
+  const notArtist = familyEnv([PINES, { ...OAKS, kids: OAKS.kids.map(({ artist, ...k }) => k) }]);
+  assert.equal((await call('/api/session', { as: DEE, localEnv: notArtist }).then((r) => r.json())).artist, null);
+  assert.equal((await call('/api/pieces', { as: DEE, method: 'POST', form: pieceForm({ kid_id: fk.Dee, made: '2025-08-01' }), localEnv: notArtist })).status, 403);
+  const alsoParent = { ...familyEnv(), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${DEE}` };
+  assert.deepEqual(await (await call('/api/session', { as: DEE, localEnv: alsoParent })).json(), { email: DEE, canEdit: true, families: [], artist: null });
 });

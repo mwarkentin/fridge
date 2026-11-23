@@ -59,6 +59,10 @@ workflow gives them to the Worker.
   name is gone. A kid the file stops listing stays, with their art, in no
   family. Nothing else adds or changes kids, so there's no `add-kid`.
 - **A kid's family** is the family the file lists them under.
+- **A kid who's an artist** (`artist = true` in the file, with their own
+  email) signs in to add their own art, and can edit, favourite or remove
+  only the pieces they added. Their parents still look after all of their
+  art, including what they add.
 
 To add a kid, change a name or birthday, or move someone between
 families, edit infra's file in a pull request, merge it, then run this

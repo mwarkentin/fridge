@@ -34,8 +34,9 @@ history on `main` is permanent.
   (the `PARENT_EMAILS` Worker secret) can change things; everyone else Access
   lets in can only look. With families (the `FAMILIES` Worker secret), a
   parent can change only the art of the kids in their own families and kids
-  in no family (`canChangeKid`). It fails closed: with no Access settings,
-  or a `FAMILIES` it can't read, nobody gets in.
+  in no family (`canChangeKid`), and a kid who's an artist can add their own
+  art and change only the pieces they added (`isArtistOf`). It fails closed:
+  with no Access settings, or a `FAMILIES` it can't read, nobody gets in.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -79,11 +80,13 @@ workers.dev only because they're a separate Worker with nothing real on it.
   `fridge_people.auto.tfvars`: the Worker adds and updates them to match
   (`syncKids`), and a kid's family is the one listing them. Don't add a
   route that adds or changes kids.
-- Every change to a piece checks the family rule in the Worker
-  (`mayChange`): a parent can change a kid's pieces when the kid is in one
-  of their families or in none. Moving a piece to another kid needs rights
-  over both. The page mirrors the rule (`canChange` in
-  `app.js`) only to hide what the Worker would refuse; the Worker decides.
+- Every change to a piece checks the rules in the Worker (`mayAddFor`,
+  `mayChange`): a parent can change a kid's pieces when the kid is in one
+  of their families or in none, and an artist can add their own art and
+  change only the pieces they added. Moving a piece to another kid needs
+  rights over both. The page mirrors the rules (`canAddFor` and
+  `canChangePiece` in `app.js`) only to hide what the Worker would refuse;
+  the Worker decides. The importer's routes are for parents only.
   Skips (`/api/skipped`) are fingerprints only, so any parent can record
   them.
 - Escape everything that came from the database before putting it in HTML

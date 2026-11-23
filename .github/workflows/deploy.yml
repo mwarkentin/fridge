@@ -72,10 +72,11 @@ jobs:
               and (.parents | type == "array" and all(type == "string"))
               and ((.kids // []) | type == "array" and all(.[]; type == "object"
                 and (.name | type == "string" and test("\\S") and length <= 60)
-                and (.born | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))))
+                and (.born | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+                and ((.artist // null) | . == null or (type == "string" and test("^[^@\\s]+@[^@\\s]+$"))))))
             and ([.[].id | gsub("^\\s+|\\s+$"; "")] | length == (unique | length))
             and ([.[] | (.kids // [])[] | .name | gsub("^\\s+|\\s+$"; "") | ascii_downcase] | length == (unique | length))' > /dev/null 2>&1; then
-            echo "::error::The FAMILIES secret isn't a list of families, each with a unique id, a name, a list of parents' emails and its kids, each with a name used once and a birthday. Fix fridge_people.auto.tfvars in mwarkentin/infra."
+            echo "::error::The FAMILIES secret isn't a list of families, each with a unique id, a name, a list of parents' emails and its kids, each with a name used once, a birthday and, for a kid who adds their own art, an email. Fix fridge_people.auto.tfvars in mwarkentin/infra."
             exit 1
           fi
           jq -n --arg p "$PARENT_EMAILS" --arg f "$families" '{PARENT_EMAILS: $p, FAMILIES: $f}' > "$RUNNER_TEMP/secrets.json"
