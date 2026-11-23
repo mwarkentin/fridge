@@ -451,11 +451,18 @@ textarea { resize: vertical; }
 .a-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 14px; align-items: start; }
 .a-card { display: grid; gap: 12px; min-width: 0; padding: 12px; border-radius: 18px; background: var(--bg-soft); border: 2px solid transparent; }
 .a-card.in { background: var(--surface); border-color: var(--line); box-shadow: 0 2px 0 var(--line); }
-.a-top { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; align-items: start; }
-.a-thumb { display: block; width: 80px; height: 80px; object-fit: contain; padding: 3px; background: var(--paper); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15), 0 6px 10px -6px rgba(0, 0, 0, 0.35); transform: rotate(-2deg); }
-.a-card:nth-child(even) .a-thumb { transform: rotate(1.5deg); }
+/* The picture is big enough to tell pieces apart while filling them in, and opens bigger still. */
+.a-top { display: grid; grid-template-columns: clamp(112px, 40%, 168px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.a-card:not(.in) .a-top { grid-template-columns: clamp(84px, 28%, 112px) minmax(0, 1fr); }
+.a-look { all: unset; box-sizing: border-box; position: relative; display: block; cursor: zoom-in; -webkit-tap-highlight-color: transparent; }
+.a-look:focus-visible { outline: 3px solid var(--cr-blue); outline-offset: 5px; }
+.a-thumb { display: block; width: 100%; height: auto; max-height: 190px; object-fit: contain; padding: 4px; background: var(--paper); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15), 0 6px 10px -6px rgba(0, 0, 0, 0.35); transform: rotate(-1.5deg); }
+.a-card:nth-child(even) .a-thumb { transform: rotate(1.2deg); }
 .a-card:not(.in) .a-thumb { opacity: 0.55; }
-.a-none { display: grid; place-items: center; color: var(--muted); background: var(--surface); box-shadow: none; border: 2px dashed var(--line); }
+.a-zoom { position: absolute; right: -8px; bottom: -8px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--surface); color: var(--ink); box-shadow: 0 0 0 2px var(--btn-line), 0 3px 6px rgba(0, 0, 0, 0.25); }
+.a-zoom .i { width: 18px; height: 18px; stroke-width: 2.4; }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) { .a-look:hover .a-thumb { transform: rotate(0deg) scale(1.03); transition: transform 0.2s ease; } }
+.a-none { display: grid; place-items: center; aspect-ratio: 1; color: var(--muted); background: var(--surface); box-shadow: none; border: 2px dashed var(--line); }
 .a-none .i { width: 30px; height: 30px; }
 .a-what { display: grid; gap: 4px; min-width: 0; justify-items: start; }
 .a-name { margin: 0; font-weight: 800; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
@@ -486,6 +493,19 @@ textarea { resize: vertical; }
 .up-failed.in { border-color: var(--accent); }
 .a-card.up-done { background: var(--bg-soft); border-color: transparent; box-shadow: none; }
 .a-card.up-done .a-fields { display: none; }
+
+/* A piece from Add art on its own, as big as the screen allows: fit to it, or full size to scroll around. */
+.a-view { position: fixed; inset: 0; z-index: 27; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg); padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+.a-view-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px 10px; box-shadow: 0 1px 0 var(--line); }
+.a-view-top .count { margin-right: 4px; padding: 6px 12px; border-radius: 999px; background: var(--chip); color: var(--ink); }
+.a-view-top .count:empty { display: none; }
+.a-view-name { flex-basis: 100%; margin: 0; display: flex; flex-wrap: wrap; gap: 2px 10px; font-weight: 800; overflow-wrap: anywhere; }
+.a-view-hint { color: var(--muted); font-weight: 700; font-size: 14px; }
+.a-view-art { min-height: 0; overflow: auto; overscroll-behavior: contain; display: flex; align-items: center; justify-content: center; padding: clamp(14px, 3vw, 40px); }
+.a-view-art img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; padding: 8px; background: var(--paper); box-shadow: var(--lift-shadow); object-fit: contain; cursor: zoom-in; }
+.a-view.zoomed .a-view-art { align-items: flex-start; justify-content: flex-start; }
+.a-view.zoomed .a-view-art img { max-width: none; max-height: none; cursor: zoom-out; }
+.a-view.drawing .a-view-art img { filter: blur(1px); opacity: 0.85; }
 
 /* The buttons stay in reach at the bottom while the pieces scroll. */
 .a-foot { position: sticky; bottom: 0; z-index: 1; display: grid; gap: 10px; margin: 0 -22px; padding: 12px 22px calc(14px + env(safe-area-inset-bottom, 0px)); background: var(--surface); box-shadow: 0 -1px 0 var(--line), 0 -12px 20px -18px rgba(0, 0, 0, 0.5); }

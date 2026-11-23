@@ -147,3 +147,15 @@ test('Add art takes several pictures and PDFs at once', () => {
   assert.match(input, /\bmultiple\b/);
   assert.match(input, /accept="image\/\*,application\/pdf,\.pdf"/);
 });
+
+test('a piece can be seen bigger, in a dialog that says what it is', () => {
+  const html = readFileSync('public/index.html', 'utf8');
+  const view = html.match(/<div id="a-view"[^]*?<\/div>\s*<\/div>/)[0];
+  assert.match(view, /role="dialog" aria-modal="true" aria-labelledby="a-view-name"/);
+  assert.match(view, /\bhidden\b/);
+  for (const id of ['a-view-close', 'a-view-prev', 'a-view-next', 'a-view-img']) assert.match(view, new RegExp(`id="${id}"`), id);
+  assert.match(view, /id="a-view-prev"[^>]*aria-label="Previous piece"/);
+  assert.match(view, /id="a-view-next"[^>]*aria-label="Next piece"/);
+  // The card's picture opens it, as a button with a name.
+  assert.match(readFileSync('public/add/sheet.js', 'utf8'), /<button class="a-look" type="button" data-look aria-label="See /);
+});

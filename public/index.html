@@ -140,6 +140,18 @@
       </div>
     </section>
   </div>
+  <!-- A piece from Add art as big as the screen allows: tap a card's picture. -->
+  <div id="a-view" class="a-view" role="dialog" aria-modal="true" aria-labelledby="a-view-name" hidden>
+    <div class="a-view-top">
+      <button class="btn" id="a-view-close" type="button"><svg class="i" aria-hidden="true"><use href="#i-close"/></svg>Close</button>
+      <span class="spacer"></span>
+      <span class="count" id="a-view-count"></span>
+      <button class="btn round" id="a-view-prev" type="button" aria-label="Previous piece"><svg class="i" aria-hidden="true"><use href="#i-left"/></svg></button>
+      <button class="btn round" id="a-view-next" type="button" aria-label="Next piece"><svg class="i" aria-hidden="true"><use href="#i-right"/></svg></button>
+      <p class="a-view-name"><span id="a-view-name"></span><span class="a-view-hint" id="a-view-hint">Tap the picture to see it full size.</span></p>
+    </div>
+    <div class="a-view-art" id="a-view-art"><img id="a-view-img" alt=""></div>
+  </div>
 
   <div id="toast" class="toast" role="status" hidden></div>
 </body>

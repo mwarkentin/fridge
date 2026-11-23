@@ -77,6 +77,7 @@ export function open(context) {
 }
 
 export function close() {
+  if (closeViewer()) return; // Escape closes the big picture first
   if (wrap.hidden) return;
   wrap.hidden = true;
   ctx.lock(false);
@@ -260,6 +261,8 @@ function guessWhen(entry, taken) {
 
 function forget(p) {
   if (p.thumb) URL.revokeObjectURL(p.thumb);
+  if (bigs.has(p.key)) URL.revokeObjectURL(bigs.get(p.key));
+  bigs.delete(p.key);
 }
 
 // ---- Pictures ----
@@ -416,7 +419,7 @@ function card(p) {
   const classes = ['a-card', `st-${p.state}`, can && p.include ? 'in' : '', p.up ? `up-${p.up}` : ''].filter(Boolean).join(' ');
   return `<li class="${classes}" data-key="${p.key}">
     <div class="a-top">
-      ${p.thumb ? `<img class="a-thumb" src="${p.thumb}" alt="">` : `<span class="a-thumb a-none" aria-hidden="true">${icon('picture')}</span>`}
+      ${p.thumb ? `<button class="a-look" type="button" data-look aria-label="See ${esc(p.file.name)}${where ? `, ${where.toLowerCase()}` : ''} bigger"><img class="a-thumb" src="${p.thumb}" alt=""><span class="a-zoom" aria-hidden="true">${icon('expand')}</span></button>` : `<span class="a-thumb a-none" aria-hidden="true">${icon('picture')}</span>`}
       <div class="a-what">
         <p class="a-name" id="${id}">${esc(p.file.name)}${where ? ` <span>${where}</span>` : ''}</p>
         ${b ? `<p class="a-badge b-${b[0]}">${esc(b[1])}</p>` : ''}
@@ -461,6 +464,10 @@ function retitle(p, el = cardOf(p)) {
   if (field) field.value = p.title;
 }
 
+list.addEventListener('click', (e) => {
+  const look = e.target.closest('[data-look]');
+  if (look) openViewer(pieceOf(look));
+});
 list.addEventListener('input', (e) => {
   const p = pieceOf(e.target);
   if (!p) return;
@@ -541,6 +548,7 @@ $('#a-restart').onclick = () => {
   input.focus({ preventScroll: true });
 };
 function startOver() {
+  closeViewer();
   batch.pieces.forEach(forget);
   batch = fresh(batch.kidId);
   draw();
@@ -759,3 +767,119 @@ async function closeDoc() {
   openDoc = null;
   (await pdfjs()).close(doc);
 }
+
+// ---- Looking closer: a piece as big as the screen allows ----
+// A card's picture is small, so tapping it shows the piece on its own: a
+// photo's own file, or a PDF's page drawn at the size of its screen-sized
+// copy. Tapping that picture shows it full size, to scroll around. Previous
+// and next go through the batch. It only looks: nothing is uploaded.
+const viewer = $('#a-view');
+const viewArt = $('#a-view-art');
+const viewImg = $('#a-view-img');
+const bigs = new Map(); // a PDF page's big picture, by piece key, kept until the batch goes
+let viewing = null;
+let viewToken = 0;
+let viewFile = null; // { entry, url }: the photo on show, as its own file
+let viewDoc = null; // { entry, doc }: the PDF whose pages are on show
+
+const lookable = () => batch.pieces.filter((p) => p.thumb);
+
+function openViewer(p) {
+  if (!p) return;
+  viewer.hidden = false;
+  show(p);
+  $('#a-view-close').focus({ preventScroll: true });
+}
+
+function closeViewer() {
+  if (viewer.hidden) return false;
+  viewer.hidden = true;
+  viewToken++;
+  viewImg.removeAttribute('src');
+  if (viewFile) URL.revokeObjectURL(viewFile.url);
+  viewFile = null;
+  closeViewDoc();
+  const back = viewing && cardOf(viewing)?.querySelector('[data-look]');
+  viewing = null;
+  back?.focus({ preventScroll: true });
+  return true;
+}
+
+async function show(p) {
+  viewing = p;
+  const token = ++viewToken;
+  const all = lookable();
+  const i = all.indexOf(p);
+  $('#a-view-count').textContent = all.length > 1 ? `${i + 1} of ${all.length}` : '';
+  $('#a-view-prev').hidden = $('#a-view-next').hidden = all.length < 2;
+  $('#a-view-name').textContent = `${p.file.name}${p.count > 1 ? `, page ${p.page} of ${p.count}` : ''}`;
+  viewer.classList.remove('zoomed');
+  viewArt.scrollTo(0, 0);
+  // The card's picture at once, then the big one when it's ready.
+  viewImg.alt = `${p.title || 'Untitled'}, from ${p.file.name}${p.count > 1 ? `, page ${p.page}` : ''}`;
+  viewImg.src = bigs.get(p.key) || p.thumb;
+  viewer.classList.toggle('drawing', !bigs.has(p.key) && p.file.type === PDF);
+  try {
+    const url = await bigPicture(p);
+    if (token === viewToken) viewImg.src = url;
+  } catch {
+    // The small picture stays.
+  } finally {
+    if (token === viewToken) viewer.classList.remove('drawing');
+  }
+}
+
+async function bigPicture(p) {
+  const entry = p.file;
+  if (entry.type !== PDF) {
+    if (viewFile?.entry !== entry) {
+      if (viewFile) URL.revokeObjectURL(viewFile.url);
+      viewFile = { entry, url: URL.createObjectURL(entry.file) };
+    }
+    return viewFile.url;
+  }
+  if (bigs.has(p.key)) return bigs.get(p.key);
+  const lib = await pdfjs();
+  if (viewDoc?.entry !== entry) {
+    closeViewDoc();
+    viewDoc = { entry, doc: entry.file.arrayBuffer().then((b) => lib.open(new Uint8Array(b))) };
+  }
+  const canvas = await lib.render(await viewDoc.doc, p.page, lib.DISPLAY);
+  try {
+    const url = await jpegUrl(canvas, 0.9);
+    bigs.set(p.key, url);
+    return url;
+  } finally {
+    free(canvas);
+  }
+}
+
+function closeViewDoc() {
+  if (!viewDoc) return;
+  const { doc } = viewDoc;
+  viewDoc = null;
+  Promise.all([pdfjs(), doc]).then(([lib, d]) => lib.close(d)).catch(() => {});
+}
+
+function step(n) {
+  const all = lookable();
+  if (all.length < 2 || !viewing) return;
+  show(all[(all.indexOf(viewing) + n + all.length) % all.length]);
+}
+
+$('#a-view-close').onclick = () => closeViewer();
+$('#a-view-prev').onclick = () => step(-1);
+$('#a-view-next').onclick = () => step(1);
+document.addEventListener('keydown', (e) => {
+  if (viewer.hidden) return;
+  if (e.key === 'ArrowLeft') step(-1);
+  else if (e.key === 'ArrowRight') step(1);
+});
+// Fit to the screen, or full size around where it was tapped.
+viewImg.addEventListener('click', (e) => {
+  const box = viewImg.getBoundingClientRect();
+  const fx = (e.clientX - box.left) / box.width;
+  const fy = (e.clientY - box.top) / box.height;
+  const zoomed = viewer.classList.toggle('zoomed');
+  if (zoomed) viewArt.scrollTo(fx * viewImg.offsetWidth - viewArt.clientWidth / 2, fy * viewImg.offsetHeight - viewArt.clientHeight / 2);
+});
