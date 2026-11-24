@@ -784,7 +784,7 @@ function talkSection(p) {
   const as = speaking();
   const who =
     names.length > 1
-      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${names.map((n, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(n)}"${n === as ? ' checked' : ''}><span class="as-card">${whoMagnet({ by: n, kid_id: null })}${esc(n)}</span></label>`).join('')}</div></fieldset>`
+      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${names.map((n, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(n)}"${n === as ? ' checked' : ''}><span class="as-card">${icon('check')}${esc(n)}</span></label>`).join('')}</div></fieldset>`
       : !names.length && !TALK.me.kid
         ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>'
         : '';
