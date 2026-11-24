@@ -121,11 +121,12 @@ function gallery(today) {
 }
 
 // ---- Made-up comments and stickers ----
-// In the real Worker's shapes (talk() in src/worker.js). The visitor hasn't
-// chosen a name yet, so the page asks, and has read up to comment 9, so the
-// three after it are new. As a parent in the first family, they could
-// remove comments on its kids' art. The page keeps what the visitor adds
-// to itself: the Worker above refuses every change.
+// In the real Worker's shapes (talk() in src/worker.js). The visitor's
+// sign-in is shared by two parents in the first family, so the page asks
+// which of them is commenting, and has read up to comment 9, so the three
+// after it are new. As parents in the first family, they could remove
+// comments on its kids' art. The page keeps what the visitor adds to
+// itself: the Worker above refuses every change.
 const VISITOR_FAMILY = 'oaks';
 // [id, piece, who, the kid it is (or none), minutes ago, what they said]
 const COMMENTS = [
@@ -159,7 +160,7 @@ function comment(today, c) {
   const kid = KIDS.find((k) => k.id === PIECES.find((p) => p.id === c.piece_id).kid_id);
   return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: stamp(new Date(today.getTime() - c.ago * 6e4)), edited: false, by: c.by, kid_id: c.kid_id, mine: false, can_remove: kid.family === VISITOR_FAMILY };
 }
-const stickersOn = (id) => STICKERS.map((kind) => ({ kind, count: (GIVEN[id]?.[kind] || []).length, mine: false, by: GIVEN[id]?.[kind] || [] }));
+const stickersOn = (id) => STICKERS.map((kind) => ({ kind, count: (GIVEN[id]?.[kind] || []).length, mine: [], by: GIVEN[id]?.[kind] || [] }));
 function talkSummary(today) {
   const counts = {};
   for (const p of PIECES) {
@@ -168,7 +169,7 @@ function talkSummary(today) {
     if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: Math.max(0, ...on.map((c) => c.id)) };
   }
   const latest = [...COMMENTS].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, c));
-  return { me: { name: null, kid_id: null, seen: 9 }, newest: Math.max(...COMMENTS.map((c) => c.id)), counts, latest };
+  return { me: { names: ['Oak Mum', 'Oak Dad'], kid: null, kid_id: null, seen: 9 }, newest: Math.max(...COMMENTS.map((c) => c.id)), counts, latest };
 }
 const pieceTalk = (today, id) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, c)), stickers: stickersOn(id) });
 

@@ -13,8 +13,7 @@ old iPad on the counter. Only family can see it.
 - **D1** holds the kids (name and birthday, kept in step with infra's list
   of them) and each piece's details: when it was made, title, what they
   said, medium, tags, favourite. It also holds the comments and stickers on
-  each piece, and what people asked to be called (see
-  [Comments and stickers](#comments-and-stickers)).
+  each piece (see [Comments and stickers](#comments-and-stickers)).
 - **R2** holds three copies of each piece: the original, a screen-sized JPEG
   and a thumbnail. The copies are made before upload, by the import script or
   the page, so there's no paid image resizing.
@@ -59,9 +58,10 @@ each parent only what they can change, and the Worker refuses the rest.
 Everything about who's who is in one place: infra's
 `fridge_people.auto.tfvars`, which lists each family once, with its name,
 its parents and its kids, and each kid with their birthday. Infra hands
-this repo `PARENT_EMAILS` (every family's parents) and `FAMILIES` (each
-family with its parents and kids) as Actions secrets, and the Deploy
-workflow gives them to the Worker.
+this repo `PARENT_EMAILS` (every family's parents), `FAMILIES` (each
+family with its parents and kids) and `NAMES` (what everyone but the kids
+is called beside comments, by sign-in address) as Actions secrets, and the
+Deploy workflow gives them to the Worker.
 
 - **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
   doesn't have yet, and copies over a changed birthday or spelling, the
@@ -99,15 +99,17 @@ on either family's art.
   handwriting-style bubble, in their colour, and the artist's own say so.
   What the artist said about a piece (set with **Edit details**) stays at
   the top; comments never change it.
-- **Names.** The first time someone gives a sticker or comments, the page
-  asks what everyone should call them ("Grandma", "Auntie Jo"). It's kept in
-  D1 by their sign-in address, and the page only ever gets the name. Two
-  people can't share a name, and nobody can take a kid's. A kid's own
-  addresses are that kid without asking: their artist address, and any
-  `devices` listed for them in `FAMILIES` (see [Families](#families)), such
-  as their iPad's. Until someone chooses a name, they show as the part of
-  their address before the @.
-- **Who can change what.** People edit and delete their own comments.
+- **Names** come from infra's file, like everything else about who's who.
+  `NAMES` gives each sign-in address its name ("Grandma", "Auntie Jo"), and
+  a sign-in two people share, like grandparents with one email, a name for
+  each: the page then asks which of them is commenting, and remembers it on
+  that device. A kid's own addresses are that kid: their artist address, and
+  any `devices` listed for them in `FAMILIES` (see [Families](#families)),
+  such as their iPad's. The page only ever gets names, never addresses.
+  Nobody can have a kid's name, and no two people share one. Someone `NAMES`
+  doesn't list shows as the part of their address before the @.
+- **Who can change what.** People edit and delete their own comments (on a
+  shared sign-in, either of them can: the fridge can't tell them apart).
   Parents can also remove anyone's comment on art they could change (their
   own family's kids', and kids' in no family), but never reword it. Only
   whoever gave a sticker takes it back. Someone can post 10 comments in 10
@@ -255,6 +257,12 @@ families and kids:
 
 ```sh
 FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":[{"name":"Ada","born":"2019-04-02","devices":["ada.ipad@example.com"]},{"name":"Bo","born":"2021-07-02"}]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"],"kids":[{"name":"Cy","born":"2020-02-02"}]}]'
+```
+
+and, to see names beside comments (a list for a shared sign-in):
+
+```sh
+NAMES='{"you@example.com":"Pine Mum","gran@example.com":["Grandma","Pop"]}'
 ```
 
 Then:

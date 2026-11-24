@@ -37,8 +37,10 @@ history on `main` is permanent.
   in no family (`canChangeKid`), and a kid who's an artist can add their own
   art and change only the pieces they added (`isArtistOf`). A kid's own
   addresses (their artist address and `devices`) are that kid's for comments
-  and stickers (`kid`, `kidAddresses`). It fails closed: with no Access
-  settings, or a `FAMILIES` it can't read, nobody gets in.
+  and stickers (`kid`, `kidAddresses`); everyone else's names come from the
+  `NAMES` Worker secret (`readNames`), one or more per sign-in address. It
+  fails closed: with no Access settings, or a `FAMILIES` it can't read,
+  nobody gets in; with a `NAMES` it can't read, comments are off.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -76,8 +78,8 @@ mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 `fridge-art` bucket, the `fridge` database, the Access application and its
 policies, the custom domain, the deploy token, and this repo's Actions
 secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
-`KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `ACCESS_AUD`,
-`ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
+`NAMES`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
+`ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
 since Access doesn't guard those addresses. The previews are public on
 workers.dev only because they're a separate Worker with nothing real on it.
@@ -108,10 +110,13 @@ workers.dev only because they're a separate Worker with nothing real on it.
 - Comments and stickers (`talk()` in `worker.js`) are for everyone signed
   in, on any piece. Authors edit and delete their own comments; a parent can
   also remove (never reword) any comment on art they could change
-  (`canChangeKid`); a sticker is taken back only by whoever gave it. The
-  Worker tells the page what each person may do (`mine`, `can_remove`), and
-  sends names (`namesFor`), never addresses. They're deleted with their
-  piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
+  (`canChangeKid`); a sticker is taken back only by whoever gave it. On a
+  sign-in two people share, each comment and sticker says which of them
+  it's from (`as`, one of its `NAMES`), and either can do what the other
+  can. The Worker tells the page what each person may do (`mine`,
+  `can_remove`), and sends names (`namesFor`), never addresses. Names come
+  only from infra (`NAMES`, `FAMILIES`): don't add a route that sets them.
+  Comments and stickers are deleted with their piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
   piece) in the Worker.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`), comments and names included.

@@ -100,7 +100,7 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
   // The same keys as the real Worker's (tests/worker.test.js, COMMENT_KEYS).
   const KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
   assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me', 'newest']);
-  assert.deepEqual(s.me, { name: null, kid_id: null, seen: 9 }, 'not named yet, so the page asks');
+  assert.deepEqual(s.me, { names: ['Oak Mum', 'Oak Dad'], kid: null, kid_id: null, seen: 9 }, 'a shared sign-in, so the page asks which of them it is');
   assert.equal(s.latest.length, 8);
   assert.deepEqual(s.latest.map((c) => c.id), [...s.latest.map((c) => c.id)].sort((a, b) => b - a), 'newest first');
   assert.ok(s.latest.filter((c) => c.id > s.me.seen).length >= 2, 'some are new');
@@ -111,7 +111,7 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
     assert.equal(res.status, 200);
     const { comments, stickers } = await res.json();
     assert.deepEqual(stickers.map((x) => x.kind), ['heart', 'star', 'wow', 'smile', 'rainbow']);
-    for (const x of stickers) assert.deepEqual([x.count, x.mine], [x.by.length, false]);
+    for (const x of stickers) assert.deepEqual([x.count, x.mine], [x.by.length, []]);
     const counted = s.counts[p.id] || { comments: 0, stickers: 0, newest: 0 };
     assert.deepEqual(counted, { comments: comments.length, stickers: stickers.reduce((n, x) => n + x.count, 0), newest: Math.max(0, ...comments.map((c) => c.id)) }, `piece ${p.id}`);
     const kid = kids.find((k) => k.id === p.kid_id);

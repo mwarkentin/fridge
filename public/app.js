@@ -682,8 +682,10 @@ $('#f-delete').onclick = async () => {
 // has the rules (talk() in worker.js) and says what each person may do
 // (`mine`, `can_remove`); the page only shows what it would allow. TALK is
 // /api/comments: each piece's counts, the latest comments, and who's looking
-// (`me`: their name, or their kid's, and how far they'd read). The preview
-// saves nothing, so there what's added lives in the page until a reload.
+// (`me`: their names from infra, or their kid, and how far they'd read). On
+// a sign-in two people share, they pick which of them is commenting, and the
+// page remembers it on this device. The preview saves nothing, so there
+// what's added lives in the page until a reload.
 const STICKERS = [
   { kind: 'heart', label: 'Love it' },
   { kind: 'star', label: 'Gold star' },
@@ -699,6 +701,20 @@ const drafts = new Map(); // what someone was writing, by piece
 let talking = null; // the open piece's { id, comments, stickers }, once loaded
 let editing = null; // the id of the comment being reworded
 let previewIds = 1e6;
+const AS_KEY = 'fridge-as';
+
+// Which of a shared sign-in's names is commenting, or '' for anyone else's.
+function speaking() {
+  const names = TALK?.me.names || [];
+  if (names.length < 2) return '';
+  let saved = null;
+  try {
+    saved = localStorage.getItem(AS_KEY);
+  } catch {}
+  return names.includes(saved) ? saved : names[0];
+}
+// What the preview shows for what its visitor adds.
+const myName = () => speaking() || TALK.me.kid || TALK.me.names[0] || 'You';
 
 const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
 const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
@@ -764,12 +780,16 @@ function noteCard(c) {
 function talkSection(p) {
   const kid = kidOf(p);
   const own = TALK.me.kid_id != null && TALK.me.kid_id === kid.id;
+  const names = TALK.me.names;
+  const as = speaking();
+  const who =
+    names.length > 1
+      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${names.map((n, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(n)}"${n === as ? ' checked' : ''}><span class="as-card">${whoMagnet({ by: n, kid_id: null })}${esc(n)}</span></label>`).join('')}</div></fieldset>`
+      : !names.length && !TALK.me.kid
+        ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>'
+        : '';
   return `<section class="talk" id="talk" aria-labelledby="talk-h">
-    <form class="c-name" id="t-name"${TALK.me.name ? ' hidden' : ''}>
-      <label class="field" for="t-name-in">What should we call you?</label>
-      <div class="c-name-row"><input id="t-name-in" maxlength="30" autocomplete="nickname" autocapitalize="words" enterkeyhint="done" placeholder="Grandma"><button class="btn" type="submit">${icon('check')}OK</button></div>
-      <p class="hint">Everyone on the fridge sees it beside your stickers and comments.</p>
-    </form>
+    ${who}
     <h3 class="talk-h" id="talk-h">Stickers</h3>
     <div class="stickers" id="t-stickers" role="group" aria-label="Stickers: tap one to give it, and again to take it back"></div>
     <p class="st-from" id="t-from"></p>
@@ -816,9 +836,10 @@ function drawStickers() {
   const box = $('#t-stickers');
   if (!box || !talking) return;
   const loaded = Boolean(talking.stickers);
+  const as = speaking();
   box.innerHTML = STICKERS.map((s) => {
-    const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: false };
-    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
+    const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] };
+    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
   }).join('');
   const givers = (talking.stickers || []).flatMap((s) => s.by);
   $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet. Tap one to give it.';
@@ -867,43 +888,18 @@ function counted(id, change) {
   render();
 }
 
-// Asked once, the first time someone gives a sticker or comments. Kids are
-// named already: their own addresses are theirs.
-async function named() {
-  if (TALK.me.name) return true;
-  const input = $('#t-name-in');
-  const name = input.value.replace(/\s+/g, ' ').trim();
-  // The question in sight, not just its box.
-  const ask = () => {
-    input.focus({ preventScroll: true });
-    $('#t-name').scrollIntoView({ block: 'nearest' });
-  };
-  if (!name) {
-    ask();
-    toast('First, write what everyone should call you.');
-    return false;
-  }
-  try {
-    TALK.me = PREVIEW ? { ...TALK.me, name } : (await api('/api/me', { method: 'PATCH', json: { name } })).me;
-  } catch (e) {
-    toast(e.message);
-    ask();
-    return false;
-  }
-  $('#t-name').hidden = true;
-  return true;
-}
-
 async function giveSticker(kind) {
   const id = talking?.id;
   const st = talking?.stickers?.find((s) => s.kind === kind);
-  if (!st || !(await named())) return;
-  const on = !st.mine;
+  if (!st) return;
+  const as = speaking();
+  const on = !st.mine.includes(as);
   let stickers;
   try {
     if (PREVIEW) {
-      stickers = talking.stickers.map((s) => (s.kind !== kind ? s : { ...s, mine: on, count: s.count + (on ? 1 : -1), by: on ? [...s.by, TALK.me.name] : s.by.filter((n) => n !== TALK.me.name) }));
-    } else stickers = (await api(`/api/pieces/${id}/stickers/${kind}`, { method: on ? 'POST' : 'DELETE' })).stickers;
+      const name = myName();
+      stickers = talking.stickers.map((s) => (s.kind !== kind ? s : { ...s, mine: on ? [...s.mine, as] : s.mine.filter((n) => n !== as), count: s.count + (on ? 1 : -1), by: on ? [...s.by, name] : s.by.filter((n) => n !== name) }));
+    } else stickers = (await api(`/api/pieces/${id}/stickers/${kind}${as ? `?as=${encodeURIComponent(as)}` : ''}`, { method: on ? 'POST' : 'DELETE' })).stickers;
   } catch (e) {
     toast(e.message);
     return;
@@ -925,14 +921,15 @@ async function sendComment() {
     $('#t-text').focus();
     return;
   }
-  if (!talking?.comments || !(await named())) return;
+  if (!talking?.comments) return;
   const send = $('#t-send');
   send.disabled = true;
+  const as = speaking();
   let comment;
   try {
     comment = PREVIEW
-      ? { id: ++previewIds, piece_id: id, body: text, created_at: stamp(), edited: false, by: TALK.me.name, kid_id: TALK.me.kid_id, mine: true, can_remove: true, unsaved: true }
-      : (await api(`/api/pieces/${id}/comments`, { method: 'POST', json: { body: text } })).comment;
+      ? { id: ++previewIds, piece_id: id, body: text, created_at: stamp(), edited: false, by: myName(), kid_id: TALK.me.kid_id, mine: true, can_remove: true, unsaved: true }
+      : (await api(`/api/pieces/${id}/comments`, { method: 'POST', json: as ? { body: text, as } : { body: text } })).comment;
   } catch (e) {
     toast(e.message);
     return;
@@ -1006,13 +1003,20 @@ $('#d-read').addEventListener('click', (e) => {
 $('#d-read').addEventListener('submit', (e) => {
   e.preventDefault();
   if (e.target.id === 't-form') sendComment();
-  else if (e.target.id === 't-name') named().then((ok) => ok && toast(`Hello, ${TALK.me.name}!`));
   else if (e.target.dataset.cSave) saveComment(Number(e.target.dataset.cSave), e.target.querySelector('textarea').value);
 });
 $('#d-read').addEventListener('input', (e) => {
   if (e.target.id !== 't-text' || !talking) return;
   drafts.set(talking.id, e.target.value);
   showLeft();
+});
+// Who's commenting, on a shared sign-in: remembered on this device.
+$('#d-read').addEventListener('change', (e) => {
+  if (e.target.name !== 't-as') return;
+  try {
+    localStorage.setItem(AS_KEY, e.target.value);
+  } catch {}
+  drawStickers();
 });
 $('#d-read').addEventListener('animationend', (e) => e.target.closest?.('.stk')?.classList.remove('popped'));
 

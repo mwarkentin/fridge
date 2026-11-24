@@ -107,6 +107,54 @@ export function readFamilies(env) {
   });
 }
 
+// Everyone's names but the kids', from NAMES: a Worker secret infra hands to
+// the deploy, JSON like
+//   { "gran@example.com": ["Grandma", "Pop"], "pine@example.com": "Pine Mum" }
+// keyed by the address someone signs in with. A sign-in two people share,
+// like grandparents with one email, has a name for each, and they pick which
+// of them is commenting. Kids aren't in it: their own addresses are theirs
+// (FAMILIES). The names show beside comments and stickers and give nobody
+// any rights. Missing or empty means nobody has a name yet, and comments
+// show the part of an address before the @. One that can't be read throws,
+// and comments are off until it's fixed (worker.js, talk).
+export const NAMES_MAX = 6; // on one shared sign-in
+export function readNames(env) {
+  const raw = (env.NAMES || '').trim();
+  const out = new Map();
+  if (!raw) return out;
+  let map;
+  try {
+    map = JSON.parse(raw);
+  } catch {
+    throw new Error('NAMES isn’t valid JSON.');
+  }
+  if (!map || typeof map !== 'object' || Array.isArray(map)) throw new Error('NAMES must be a JSON object of addresses to names.');
+  const kids = readFamilies(env).flatMap((f) => f.kids);
+  const kidAddresses = new Set(kids.flatMap((k) => [k.artist, ...k.devices]).filter(Boolean));
+  const taken = [];
+  for (const [key, value] of Object.entries(map)) {
+    if (!isEmail(key)) throw new Error('NAMES has a key that isn’t an email.');
+    const email = key.trim().toLowerCase();
+    if (out.has(email)) throw new Error('NAMES lists an address twice.');
+    if (kidAddresses.has(email)) throw new Error('NAMES names a kid’s own address: FAMILIES names kids.');
+    const list = typeof value === 'string' ? [value] : value;
+    if (!Array.isArray(list) || !list.length || list.length > NAMES_MAX) throw new Error(`Each address in NAMES needs 1 to ${NAMES_MAX} names.`);
+    out.set(
+      email,
+      list.map((n) => {
+        const name = typeof n === 'string' ? n.replace(/\s+/g, ' ').trim() : '';
+        if (!name || [...name].length > 30 || name.includes('@')) throw new Error('Each name in NAMES needs 1 to 30 characters, and no @.');
+        // One Grandma, and nobody passes for a kid.
+        if (taken.some((t) => sameName(t, name))) throw new Error('NAMES gives two people the same name.');
+        if (kids.some((k) => sameName(k.name, name))) throw new Error('NAMES gives someone a kid’s name.');
+        taken.push(name);
+        return name;
+      }),
+    );
+  }
+  return out;
+}
+
 // { email, canEdit, families, artist, kid } for a signed-in person, or null.
 // Parents (PARENT_EMAILS, a Worker secret infra hands to the deploy) can
 // change things; everyone else Access lets in can look. `families` are the
