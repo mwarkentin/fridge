@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, identify, isArtistOf, readFamilies, sameName } from './auth.js';
+import { canChangeKid, identify, isArtistOf, kidAddresses, readFamilies, sameName } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -83,6 +83,9 @@ async function api(request, env, who, url) {
   }
   if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit, families: who.families, artist: who.artist });
   if (method === 'GET' && path === '/api/gallery') return json(await gallery(env, who));
+  // Comments and stickers are for everyone signed in, with their own rules.
+  const talked = await talk(request, env, who, path);
+  if (talked) return talked;
 
   if (!who.canEdit && !who.artist) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
   let m;
@@ -349,10 +352,235 @@ async function recordSkipped(env, who, b) {
   return { added: lists.add.length, removed: lists.remove.length };
 }
 
+// Its comments and stickers go with it.
 async function deletePiece(env, id) {
-  const res = await env.DB.prepare('DELETE FROM pieces WHERE id = ?').bind(id).run();
+  const [, , res] = await env.DB.batch([
+    env.DB.prepare('DELETE FROM comments WHERE piece_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM stickers WHERE piece_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM pieces WHERE id = ?').bind(id),
+  ]);
   if (!res.meta.changes) throw new HttpError(404, 'That isn’t on the fridge.');
   await env.ART.delete(['original', 'display', 'thumb'].map((v) => keyFor(id, v)));
+}
+
+// ---- Comments and stickers ----
+// Everyone signed in can comment on any piece and give it stickers, in
+// either family: grandparents, the kids' iPads, the kids and the parents.
+// Authors edit and delete their own comments. A parent can also remove
+// anyone's comment on art they could change (canChangeKid: their family's
+// kids, and kids in no family), but not reword it. Stickers are only ever
+// taken back by whoever gave them. The page gets people's names (namesFor),
+// never their addresses.
+const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
+const COMMENT_MAX = 500; // characters: a few sentences
+const NAME_MAX = 30;
+const RATE_COUNT = 10; // comments per person...
+const RATE_MINUTES = 10; // ...in this many minutes
+const PIECE_MAX = 200; // comments a piece can hold
+const COMMENT_COLS = 'id, piece_id, author, body, created_at, edited_at';
+
+async function talk(request, env, who, path) {
+  const { method } = request;
+  let m;
+  if (path === '/api/comments') {
+    if (method === 'GET') return json(await talkSummary(env, who));
+  } else if (path === '/api/me') {
+    if (method === 'PATCH') return json(await changeMe(env, who, await body(request)));
+  } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/comments$/))) {
+    const id = Number(m[1]);
+    if (method === 'GET') return json(await pieceTalk(env, who, id));
+    if (method === 'POST') return json({ comment: await addComment(env, who, id, await body(request)) }, 201);
+  } else if ((m = path.match(/^\/api\/comments\/(\d+)$/))) {
+    const id = Number(m[1]);
+    if (method === 'PATCH') return json({ comment: await editComment(env, who, id, await body(request)) });
+    if (method === 'DELETE') {
+      await removeComment(env, who, id);
+      return new Response(null, { status: 204 });
+    }
+  } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/stickers\/([a-z]+)$/))) {
+    if (method === 'POST' || method === 'DELETE') return json({ stickers: await setSticker(env, who, Number(m[1]), m[2], method === 'POST') });
+  } else return null;
+  throw new HttpError(405, 'That can’t be done at that address.');
+}
+
+// What the page shows for the people behind comments and stickers: a kid's
+// own address is that kid (with their id, so the page draws their magnet);
+// everyone else is the name they chose, or else the part of their address
+// before the @.
+async function namesFor(env, emails) {
+  const list = [...new Set(emails)];
+  const out = new Map();
+  if (!list.length) return out;
+  const kidsByAddress = kidAddresses(env);
+  const [people, kids] = await env.DB.batch([
+    env.DB.prepare('SELECT email, name FROM people WHERE email IN (SELECT value FROM json_each(?))').bind(JSON.stringify(list)),
+    env.DB.prepare('SELECT id, name FROM kids'),
+  ]);
+  for (const email of list) {
+    const kidName = kidsByAddress.get(email);
+    const kid = kidName && kids.results.find((k) => sameName(k.name, kidName));
+    const chosen = people.results.find((p) => p.email === email)?.name;
+    out.set(email, kidName ? { name: kid?.name ?? kidName, kid_id: kid?.id ?? null } : { name: chosen || email.split('@')[0], kid_id: null });
+  }
+  return out;
+}
+
+// Comments as the page gets them. `kidFor` gives each one's piece's kid, for
+// whether this person may remove it.
+async function commentsOut(env, who, rows, kidFor) {
+  const names = await namesFor(env, rows.map((r) => r.author));
+  return rows.map((r) => {
+    const by = names.get(r.author);
+    const mine = r.author === who.email;
+    const kid = kidFor(r);
+    return { id: r.id, piece_id: r.piece_id, body: r.body, created_at: r.created_at, edited: r.edited_at != null, by: by.name, kid_id: by.kid_id, mine, can_remove: mine || Boolean(kid && canChangeKid(who, kid)) };
+  });
+}
+
+// Each kind of sticker on a piece: how many, whether one is this person's,
+// and who gave them, first first.
+async function stickersOut(env, who, pieceId) {
+  const rows = (await env.DB.prepare('SELECT sticker, author FROM stickers WHERE piece_id = ? ORDER BY created_at, rowid').bind(pieceId).all()).results;
+  const names = await namesFor(env, rows.map((r) => r.author));
+  return STICKERS.map((kind) => {
+    const given = rows.filter((r) => r.sticker === kind);
+    return { kind, count: given.length, mine: given.some((r) => r.author === who.email), by: given.map((r) => names.get(r.author).name) };
+  });
+}
+
+// The signed-in person: their name (null until they choose one, unless
+// they're a kid), their kid, and the newest comment the page has shown them.
+async function me(env, who) {
+  const row = await env.DB.prepare('SELECT name, seen FROM people WHERE email = ?').bind(who.email).first();
+  const by = (await namesFor(env, [who.email])).get(who.email);
+  return { name: who.kid ? by.name : (row?.name ?? null), kid_id: by.kid_id, seen: row?.seen ?? null };
+}
+
+async function kidsById(env) {
+  const families = readFamilies(env);
+  const rows = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
+  return new Map(rows.map((k) => [k.id, { ...k, family: familyOf(families, k) }]));
+}
+
+// For the whole page: comments and stickers on each piece (`newest` is the
+// id of its newest comment by someone else, for marking it new), the latest
+// comments anywhere, and the newest comment's id.
+async function talkSummary(env, who) {
+  const [counts, stickers, latest, newest] = await env.DB.batch([
+    env.DB.prepare('SELECT piece_id, COUNT(*) AS n, MAX(CASE WHEN author != ? THEN id END) AS other FROM comments GROUP BY piece_id').bind(who.email),
+    env.DB.prepare('SELECT piece_id, COUNT(*) AS n FROM stickers GROUP BY piece_id'),
+    env.DB.prepare(`SELECT ${COMMENT_COLS.split(', ').map((c) => `c.${c}`).join(', ')}, p.kid_id FROM comments c JOIN pieces p ON p.id = c.piece_id ORDER BY c.id DESC LIMIT 8`),
+    env.DB.prepare('SELECT MAX(id) AS id FROM comments'),
+  ]);
+  const byPiece = {};
+  for (const r of counts.results) byPiece[r.piece_id] = { comments: r.n, stickers: 0, newest: r.other ?? 0 };
+  for (const r of stickers.results) (byPiece[r.piece_id] ||= { comments: 0, stickers: 0, newest: 0 }).stickers = r.n;
+  const kids = await kidsById(env);
+  return { me: await me(env, who), newest: newest.results[0]?.id ?? 0, counts: byPiece, latest: await commentsOut(env, who, latest.results, (r) => kids.get(r.kid_id)) };
+}
+
+async function pieceTalk(env, who, pieceId) {
+  const { kid } = await pieceOwner(env, pieceId);
+  const rows = (await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE piece_id = ? ORDER BY id`).bind(pieceId).all()).results;
+  return { comments: await commentsOut(env, who, rows, () => kid), stickers: await stickersOut(env, who, pieceId) };
+}
+
+// Without the characters that can hide or reorder text, with tidy line
+// breaks, and not empty.
+const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g;
+function commentText(v) {
+  if (typeof v !== 'string') bad('A comment must be text.');
+  if (v.length > COMMENT_MAX * 4) bad(`A comment can be at most ${COMMENT_MAX} characters.`);
+  const text = v.replace(/\r\n?/g, '\n').replace(INVISIBLE, '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+  if (!text) bad('Write something first.');
+  if ([...text].length > COMMENT_MAX) bad(`A comment can be at most ${COMMENT_MAX} characters.`);
+  return text;
+}
+
+async function addComment(env, who, pieceId, b) {
+  const { kid } = await pieceOwner(env, pieceId);
+  const text = commentText(b.body);
+  // In one statement, so two at once can't both slip under a limit.
+  const row = await env.DB.prepare(
+    `INSERT INTO comments (piece_id, author, body)
+     SELECT ?1, ?2, ?3
+     WHERE (SELECT COUNT(*) FROM comments WHERE author = ?2 AND created_at > datetime('now', ?4)) < ?5
+       AND (SELECT COUNT(*) FROM comments WHERE piece_id = ?1) < ?6
+     RETURNING ${COMMENT_COLS}`,
+  )
+    .bind(pieceId, who.email, text, `-${RATE_MINUTES} minutes`, RATE_COUNT, PIECE_MAX)
+    .first();
+  if (!row) {
+    const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM comments WHERE piece_id = ?').bind(pieceId).first();
+    if (n >= PIECE_MAX) throw new HttpError(409, `This piece has ${PIECE_MAX} comments, as many as it can hold.`);
+    throw new HttpError(429, `That’s ${RATE_COUNT} comments in ${RATE_MINUTES} minutes. Have a little rest, then try again.`);
+  }
+  return (await commentsOut(env, who, [row], () => kid))[0];
+}
+
+async function commentRow(env, id) {
+  const row = await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE id = ?`).bind(id).first();
+  if (!row) throw new HttpError(404, 'That comment isn’t there any more.');
+  return row;
+}
+
+// Only its author can reword a comment: nobody puts words in anyone's mouth.
+async function editComment(env, who, id, b) {
+  const row = await commentRow(env, id);
+  if (row.author !== who.email) throw new HttpError(403, 'You can change only what you wrote yourself.');
+  const text = commentText(b.body);
+  if (text !== row.body) await env.DB.prepare("UPDATE comments SET body = ?, edited_at = datetime('now') WHERE id = ?").bind(text, id).run();
+  const { kid } = await pieceOwner(env, row.piece_id);
+  return (await commentsOut(env, who, [await commentRow(env, id)], () => kid))[0];
+}
+
+async function removeComment(env, who, id) {
+  const row = await commentRow(env, id);
+  if (row.author !== who.email) {
+    const { kid } = await pieceOwner(env, row.piece_id);
+    if (!canChangeKid(who, kid)) {
+      throw new HttpError(403, who.canEdit ? `Only ${kid.name}’s family’s parents can remove other people’s comments on ${kid.name}’s art.` : 'You can remove only what you wrote yourself.');
+    }
+  }
+  await env.DB.prepare('DELETE FROM comments WHERE id = ?').bind(id).run();
+}
+
+async function setSticker(env, who, pieceId, kind, on) {
+  if (!STICKERS.includes(kind)) bad('There’s no sticker like that.');
+  await pieceOwner(env, pieceId);
+  const sql = on ? 'INSERT OR IGNORE INTO stickers (piece_id, author, sticker) VALUES (?, ?, ?)' : 'DELETE FROM stickers WHERE piece_id = ? AND author = ? AND sticker = ?';
+  await env.DB.prepare(sql).bind(pieceId, who.email, kind).run();
+  return stickersOut(env, who, pieceId);
+}
+
+// { name } to choose what everyone sees you called, { seen } for the newest
+// comment the page has shown you. A kid's name is theirs from FAMILIES.
+async function changeMe(env, who, b) {
+  if (!('name' in b) && !('seen' in b)) bad('Nothing to change.');
+  if ('name' in b) {
+    if (who.kid) throw new HttpError(403, `You’re ${who.kid} on the fridge. Your family set that up.`);
+    if (typeof b.name !== 'string') bad('Your name must be text.');
+    const name = b.name.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+    if (!name) bad('Write what everyone should call you.');
+    if ([...name].length > NAME_MAX) bad(`A name can be at most ${NAME_MAX} characters.`);
+    if (name.includes('@')) bad('Pick a name, not an email address: everyone on the fridge sees it.');
+    const kids = [...(await env.DB.prepare('SELECT name FROM kids').all()).results.map((k) => k.name), ...readFamilies(env).flatMap((f) => f.kids.map((k) => k.name))];
+    if (kids.some((k) => sameName(k, name))) throw new HttpError(409, `${name} is one of the artists, so pick another name.`);
+    const taken = `Someone on the fridge is already called ${name}. Try another, like ${name} and a letter.`;
+    if (await env.DB.prepare('SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND email != ?').bind(name, who.email).first()) throw new HttpError(409, taken);
+    try {
+      await env.DB.prepare("INSERT INTO people (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET name = excluded.name, updated_at = datetime('now')").bind(who.email, name).run();
+    } catch (e) {
+      if (/UNIQUE/i.test(String(e?.message))) throw new HttpError(409, taken);
+      throw e;
+    }
+  }
+  if ('seen' in b) {
+    const seen = Number(b.seen);
+    if (!Number.isInteger(seen) || seen < 0 || typeof b.seen !== 'number') bad('seen must be a comment’s id.');
+    await env.DB.prepare("INSERT INTO people (email, seen) VALUES (?1, ?2) ON CONFLICT (email) DO UPDATE SET seen = max(coalesce(seen, 0), ?2), updated_at = datetime('now')").bind(who.email, seen).run();
+  }
+  return { me: await me(env, who) };
 }
 
 async function image(env, id, variant) {

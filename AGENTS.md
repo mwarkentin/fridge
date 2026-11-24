@@ -35,8 +35,10 @@ history on `main` is permanent.
   lets in can only look. With families (the `FAMILIES` Worker secret), a
   parent can change only the art of the kids in their own families and kids
   in no family (`canChangeKid`), and a kid who's an artist can add their own
-  art and change only the pieces they added (`isArtistOf`). It fails closed:
-  with no Access settings, or a `FAMILIES` it can't read, nobody gets in.
+  art and change only the pieces they added (`isArtistOf`). A kid's own
+  addresses (their artist address and `devices`) are that kid's for comments
+  and stickers (`kid`, `kidAddresses`). It fails closed: with no Access
+  settings, or a `FAMILIES` it can't read, nobody gets in.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -53,7 +55,8 @@ history on `main` is permanent.
 - `public/pdfjs/`: a pinned copy of pdf.js, for PDFs in Add art. See "pdf.js"
   below.
 - `preview/`: a public preview of the page for pull requests. `worker.js`
-  makes up the kids, the art and its drawings, and refuses every change;
+  makes up the kids, the art, its drawings, comments and stickers, and
+  refuses every change (the page keeps what's added there to itself);
   `wrangler.toml` gives it no bindings. `.github/workflows/preview.yml`
   deploys one per pull request and deletes it when the pull request closes.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
@@ -102,8 +105,16 @@ workers.dev only because they're a separate Worker with nothing real on it.
   the Worker decides. The importer's routes are for parents only.
   Skips (`/api/skipped`) are fingerprints only, so any parent can record
   them.
+- Comments and stickers (`talk()` in `worker.js`) are for everyone signed
+  in, on any piece. Authors edit and delete their own comments; a parent can
+  also remove (never reword) any comment on art they could change
+  (`canChangeKid`); a sticker is taken back only by whoever gave it. The
+  Worker tells the page what each person may do (`mine`, `can_remove`), and
+  sends names (`namesFor`), never addresses. They're deleted with their
+  piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
+  piece) in the Worker.
 - Escape everything that came from the database before putting it in HTML
-  (`esc()` in `app.js`).
+  (`esc()` in `app.js`), comments and names included.
 - The preview Worker never gets a binding, a sign-in or anything real:
   everything on it is made up in `preview/worker.js`. Its workflow holds the
   deploy token, so it runs from main (`pull_request_target`) and copies a
