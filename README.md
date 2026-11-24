@@ -3,8 +3,8 @@
 A private gallery for the kids' art: every scan hung on one page, sorted by
 kid and age, with what they said about each piece, a timeline, "this time of
 year", tags to browse by (tap one to see every piece with it, from every
-kid), and a slideshow for an old iPad on the counter. Only family can see
-it.
+kid), stickers and comments from the whole family, and a slideshow for an
+old iPad on the counter. Only family can see it.
 
 ## How it works
 
@@ -12,7 +12,8 @@ it.
   page is plain HTML, CSS and JavaScript, with no build step.
 - **D1** holds the kids (name and birthday, kept in step with infra's list
   of them) and each piece's details: when it was made, title, what they
-  said, medium, tags, favourite.
+  said, medium, tags, favourite. It also holds the comments and stickers on
+  each piece (see [Comments and stickers](#comments-and-stickers)).
 - **R2** holds three copies of each piece: the original, a screen-sized JPEG
   and a thumbnail. The copies are made before upload, by the import script or
   the page, so there's no paid image resizing.
@@ -57,9 +58,10 @@ each parent only what they can change, and the Worker refuses the rest.
 Everything about who's who is in one place: infra's
 `fridge_people.auto.tfvars`, which lists each family once, with its name,
 its parents and its kids, and each kid with their birthday. Infra hands
-this repo `PARENT_EMAILS` (every family's parents) and `FAMILIES` (each
-family with its parents and kids) as Actions secrets, and the Deploy
-workflow gives them to the Worker.
+this repo `PARENT_EMAILS` (every family's parents), `FAMILIES` (each
+family with its parents and kids) and `NAMES` (what everyone but the kids
+is called beside comments, by sign-in address) as Actions secrets, and the
+Deploy workflow gives them to the Worker.
 
 - **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
   doesn't have yet, and copies over a changed birthday or spelling, the
@@ -72,12 +74,52 @@ workflow gives them to the Worker.
   email) signs in to add their own art, and can edit, favourite or remove
   only the pieces they added. Their parents still look after all of their
   art, including what they add.
+- **A kid's devices** (optional, `devices` in `FAMILIES`: the addresses
+  their own iPad or tablet signs in with) only look at the art, but their
+  stickers and comments are the kid's, with the kid's name and magnet.
+  Without them, a kid's iPad is like a grandparent: it picks a name the
+  first time it comments, and can't pick the kid's.
 
 To add a kid, change a name or birthday, or move someone between
 families, edit infra's file in a pull request, merge it, then run this
 repo's Deploy workflow. Without `FAMILIES` there are no families, and
 every parent can change everything. Taking a family out of infra's file
 does the same for its kids.
+
+## Comments and stickers
+
+Everyone signed in can give a piece stickers and comment on it, from the
+piece's own page: grandparents, the kids' iPads, the kids and the parents,
+on either family's art.
+
+- **Stickers** are for kids who can't write yet, and anyone in a hurry: a
+  heart, a gold star, a sparkly wow, a smiley and a rainbow. One tap gives
+  one, another takes it back. Each person can give each kind once.
+- **Comments** are up to 500 characters. A kid's comment is in their own
+  handwriting-style bubble, in their colour, and the artist's own say so.
+  What the artist said about a piece (set with **Edit details**) stays at
+  the top; comments never change it.
+- **Names** come from infra's file, like everything else about who's who.
+  `NAMES` gives each sign-in address its person ("Grandma"), and a sign-in
+  two people share, like grandparents with one email, a person for each:
+  the page then asks which of them is commenting, and remembers it on that
+  device. A parent can have two names: the one their own family sees
+  ("Mom") and the one everyone else sees ("Aunt Pine"). A kid's own addresses are that kid: their artist address, and
+  any `devices` listed for them in `FAMILIES` (see [Families](#families)),
+  such as their iPad's. The page only ever gets names, never addresses.
+  Nobody can have a kid's name, and no two people share one. Someone `NAMES`
+  doesn't list shows as the part of their address before the @.
+- **Who can change what.** People edit and delete their own comments (on a
+  shared sign-in, either of them can: the fridge can't tell them apart).
+  Parents can also remove anyone's comment on art they could change (their
+  own family's kids', and kids' in no family), but never reword it. Only
+  whoever gave a sticker takes it back. Someone can post 10 comments in 10
+  minutes, and a piece holds 200.
+- **What's new.** Home's **Latest comments** shows the most recent, marking
+  the ones that came in since you last opened the fridge, and each piece on
+  the walls shows its comments and stickers, with **New** when someone else
+  has commented since then. Frame shows none of it. There are no emails.
+- Taking a piece off the fridge takes its comments and stickers with it.
 
 ## Setting it up
 
@@ -215,7 +257,13 @@ To run it locally, create `.dev.vars` (git ignores it) with
 families and kids:
 
 ```sh
-FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":[{"name":"Ada","born":"2019-04-02"},{"name":"Bo","born":"2021-07-02"}]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"],"kids":[{"name":"Cy","born":"2020-02-02"}]}]'
+FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":[{"name":"Ada","born":"2019-04-02","devices":["ada.ipad@example.com"]},{"name":"Bo","born":"2021-07-02"}]},{"id":"oak","name":"The Oaks","parents":["someone@example.com"],"kids":[{"name":"Cy","born":"2020-02-02"}]}]'
+```
+
+and, to see names beside comments (a list for a shared sign-in):
+
+```sh
+NAMES='{"you@example.com":{"name":"Aunt Pine","family":"Mom"},"gran@example.com":["Grandma","Pop"]}'
 ```
 
 Then:
@@ -226,15 +274,18 @@ npm run dev
 uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/pictures
 ```
 
-`DEV_EMAIL` counts only on localhost and is never deployed.
+`DEV_EMAIL` counts only on localhost and is never deployed. To try the page
+as someone else (a grandparent, or Ada's iPad above), start it as them:
+`npm run dev -- --var DEV_EMAIL:gran@example.com`.
 
 ## Previews
 
 Each pull request from a branch in this repo gets a public preview at
 `fridge-preview-pr-<number>.<subdomain>.workers.dev`, linked from a comment
 on the pull request. It's the branch's page with two made-up families, Ada
-and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings
-that `preview/worker.js` makes up. It has no database,
+and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings,
+comments and stickers that `preview/worker.js` makes up. Stickers and
+comments added there stay in the page until it's reloaded. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request
 closes. To make one for a pull request opened before previews existed, run

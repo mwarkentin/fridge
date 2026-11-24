@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, identify, isArtistOf, readFamilies, sameName } from './auth.js';
+import { canChangeKid, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -83,6 +83,9 @@ async function api(request, env, who, url) {
   }
   if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit, families: who.families, artist: who.artist });
   if (method === 'GET' && path === '/api/gallery') return json(await gallery(env, who));
+  // Comments and stickers are for everyone signed in, with their own rules.
+  const talked = await talk(request, env, who, url);
+  if (talked) return talked;
 
   if (!who.canEdit && !who.artist) throw new HttpError(403, 'Only parents can change what’s on the fridge.');
   let m;
@@ -349,10 +352,266 @@ async function recordSkipped(env, who, b) {
   return { added: lists.add.length, removed: lists.remove.length };
 }
 
+// Its comments and stickers go with it.
 async function deletePiece(env, id) {
-  const res = await env.DB.prepare('DELETE FROM pieces WHERE id = ?').bind(id).run();
+  const [, , res] = await env.DB.batch([
+    env.DB.prepare('DELETE FROM comments WHERE piece_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM stickers WHERE piece_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM pieces WHERE id = ?').bind(id),
+  ]);
   if (!res.meta.changes) throw new HttpError(404, 'That isn’t on the fridge.');
   await env.ART.delete(['original', 'display', 'thumb'].map((v) => keyFor(id, v)));
+}
+
+// ---- Comments and stickers ----
+// Everyone signed in can comment on any piece and give it stickers, in
+// either family: grandparents, the kids' iPads, the kids and the parents.
+// Authors edit and delete their own comments. A parent can also remove
+// anyone's comment on art they could change (canChangeKid: their family's
+// kids, and kids in no family), but not reword it. Stickers are only ever
+// taken back by whoever gave them.
+//
+// Names come from infra, like everything else about who's who: a kid's own
+// addresses (FAMILIES' artist and devices) are that kid, and NAMES names
+// everyone else (auth.js, readNames), as whoever's looking knows them: a
+// parent's own family sees "Mom", everyone else "Aunt Pine". On a sign-in
+// two people share, every comment and sticker says which of them it's from
+// (`as`, the name everyone sees), and anything one of them can do, the
+// other can too: the fridge can't tell them apart. Someone NAMES doesn't
+// list shows as the part of their address before the @. The page gets
+// names, never addresses.
+const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
+const COMMENT_MAX = 500; // characters: a few sentences
+const RATE_COUNT = 10; // comments per sign-in...
+const RATE_MINUTES = 10; // ...in this many minutes
+const PIECE_MAX = 200; // comments a piece can hold
+const COMMENT_COLS = 'id, piece_id, author, name, body, created_at, edited_at';
+
+async function talk(request, env, who, url) {
+  const { method } = request;
+  const path = url.pathname;
+  if (!/^\/api\/(comments|me|pieces\/\d+\/(comments|stickers\/[a-z]+))(\/\d+)?$/.test(path)) return null;
+  try {
+    readNames(env);
+  } catch (e) {
+    console.error('NAMES', e);
+    throw new HttpError(503, 'The fridge’s list of names can’t be read, so comments are off until it’s fixed.');
+  }
+  let m;
+  if (path === '/api/comments') {
+    if (method === 'GET') return json(await talkSummary(env, who));
+  } else if (path === '/api/me') {
+    if (method === 'PATCH') return json(await changeMe(env, who, await body(request)));
+  } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/comments$/))) {
+    const id = Number(m[1]);
+    if (method === 'GET') return json(await pieceTalk(env, who, id));
+    if (method === 'POST') return json({ comment: await addComment(env, who, id, await body(request)) }, 201);
+  } else if ((m = path.match(/^\/api\/comments\/(\d+)$/))) {
+    const id = Number(m[1]);
+    if (method === 'PATCH') return json({ comment: await editComment(env, who, id, await body(request)) });
+    if (method === 'DELETE') {
+      await removeComment(env, who, id);
+      return new Response(null, { status: 204 });
+    }
+  } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/stickers\/([a-z]+)$/))) {
+    if (method === 'POST' || method === 'DELETE') return json({ stickers: await setSticker(env, who, Number(m[1]), m[2], method === 'POST', url.searchParams.get('as')) });
+  } else return null;
+  throw new HttpError(405, 'That can’t be done at that address.');
+}
+
+// Which person on a shared sign-in is speaking (`as`, their name everyone
+// sees), kept with what they say. Anyone else is just their sign-in, kept as
+// '', so a name changed in NAMES shows everywhere: a kid (their address is
+// theirs), someone with one name, or someone NAMES doesn't list.
+function speaker(env, who, as) {
+  const people = who.kid ? [] : readNames(env).get(who.email) || [];
+  const given = as == null || as === '' ? null : String(as);
+  if (given !== null && !who.kid && !people.some((p) => sameName(p.name, given))) throw new HttpError(403, 'That isn’t one of the names on your sign-in.');
+  if (people.length < 2) return '';
+  if (given === null) bad(`Say which of you this is: ${people.map((p) => p.name).join(' or ')}.`);
+  return people.find((p) => sameName(p.name, given)).name;
+}
+
+// The families someone looks from: a parent's own, or a kid's.
+function familiesOf(env, who) {
+  const families = readFamilies(env);
+  const kids = who.kid ? families.filter((f) => f.kids.some((k) => sameName(k.name, who.kid))).map((f) => f.id) : [];
+  return [...who.families, ...kids];
+}
+
+// What `who` sees for the person behind a comment or sticker: a kid's own
+// address is that kid (with their id, so the page draws their magnet); a
+// parent is their family name to their own family ("Mom") and their name to
+// everyone else; someone with a name has it; and anyone else is the part of
+// their address before the @. On a shared sign-in, it's the person who
+// spoke, or, for what was said before NAMES listed them, all of them.
+async function namesFor(env, who) {
+  const kidsByAddress = kidAddresses(env);
+  const names = readNames(env);
+  const families = readFamilies(env);
+  const mine = familiesOf(env, who);
+  const kids = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
+  const seen = (author) => {
+    const own = families.some((f) => f.parents.includes(author) && mine.includes(f.id));
+    return (p) => (own && p.family) || p.name;
+  };
+  return (r) => {
+    const kidName = kidsByAddress.get(r.author);
+    if (kidName) {
+      const kid = kids.find((k) => sameName(k.name, kidName));
+      return { name: kid?.name ?? kidName, kid_id: kid?.id ?? null };
+    }
+    const people = names.get(r.author) || [];
+    const shown = seen(r.author);
+    const spoke = r.name && people.find((p) => sameName(p.name, r.name));
+    return { name: spoke ? shown(spoke) : r.name || people.map(shown).join(' & ') || r.author.split('@')[0], kid_id: null };
+  };
+}
+
+// Comments as the page gets them. `kidFor` gives each one's piece's kid, for
+// whether this person may remove it.
+async function commentsOut(env, who, rows, kidFor) {
+  const label = await namesFor(env, who);
+  return rows.map((r) => {
+    const by = label(r);
+    const mine = r.author === who.email;
+    const kid = kidFor(r);
+    return { id: r.id, piece_id: r.piece_id, body: r.body, created_at: r.created_at, edited: r.edited_at != null, by: by.name, kid_id: by.kid_id, mine, can_remove: mine || Boolean(kid && canChangeKid(who, kid)) };
+  });
+}
+
+// Each kind of sticker on a piece: how many, who gave them (first first),
+// and `mine`: which people on a shared sign-in gave one (their `as`), or ''
+// for anyone else's sign-in.
+async function stickersOut(env, who, pieceId) {
+  const rows = (await env.DB.prepare('SELECT sticker, author, name FROM stickers WHERE piece_id = ? ORDER BY created_at, rowid').bind(pieceId).all()).results;
+  const label = await namesFor(env, who);
+  return STICKERS.map((kind) => {
+    const given = rows.filter((r) => r.sticker === kind);
+    return { kind, count: given.length, mine: given.filter((r) => r.author === who.email).map((r) => r.name), by: given.map((r) => label(r).name) };
+  });
+}
+
+// The signed-in person: the people on their sign-in, each as they'd see
+// themselves (`name`) with what to send as `as` (a kid has their kid
+// instead), and the newest comment the page has shown them.
+async function me(env, who) {
+  const row = await env.DB.prepare('SELECT seen FROM people WHERE email = ?').bind(who.email).first();
+  const label = await namesFor(env, who);
+  const by = label({ author: who.email, name: '' });
+  const people = who.kid ? [] : readNames(env).get(who.email) || [];
+  return { names: people.map((p) => ({ as: p.name, name: label({ author: who.email, name: p.name }).name })), kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
+}
+
+async function kidsById(env) {
+  const families = readFamilies(env);
+  const rows = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
+  return new Map(rows.map((k) => [k.id, { ...k, family: familyOf(families, k) }]));
+}
+
+// For the whole page: comments and stickers on each piece (`newest` is the
+// id of its newest comment from another sign-in, for marking it new), the
+// latest comments anywhere, and the newest comment's id.
+async function talkSummary(env, who) {
+  const [counts, stickers, latest, newest] = await env.DB.batch([
+    env.DB.prepare('SELECT piece_id, COUNT(*) AS n, MAX(CASE WHEN author != ? THEN id END) AS other FROM comments GROUP BY piece_id').bind(who.email),
+    env.DB.prepare('SELECT piece_id, COUNT(*) AS n FROM stickers GROUP BY piece_id'),
+    env.DB.prepare(`SELECT ${COMMENT_COLS.split(', ').map((c) => `c.${c}`).join(', ')}, p.kid_id FROM comments c JOIN pieces p ON p.id = c.piece_id ORDER BY c.id DESC LIMIT 8`),
+    env.DB.prepare('SELECT MAX(id) AS id FROM comments'),
+  ]);
+  const byPiece = {};
+  for (const r of counts.results) byPiece[r.piece_id] = { comments: r.n, stickers: 0, newest: r.other ?? 0 };
+  for (const r of stickers.results) (byPiece[r.piece_id] ||= { comments: 0, stickers: 0, newest: 0 }).stickers = r.n;
+  const kids = await kidsById(env);
+  return { me: await me(env, who), newest: newest.results[0]?.id ?? 0, counts: byPiece, latest: await commentsOut(env, who, latest.results, (r) => kids.get(r.kid_id)) };
+}
+
+async function pieceTalk(env, who, pieceId) {
+  const { kid } = await pieceOwner(env, pieceId);
+  const rows = (await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE piece_id = ? ORDER BY id`).bind(pieceId).all()).results;
+  return { comments: await commentsOut(env, who, rows, () => kid), stickers: await stickersOut(env, who, pieceId) };
+}
+
+// Without the characters that can hide or reorder text, with tidy line
+// breaks, and not empty.
+const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f‪-‮⁦-⁩]/g;
+function commentText(v) {
+  if (typeof v !== 'string') bad('A comment must be text.');
+  if (v.length > COMMENT_MAX * 4) bad(`A comment can be at most ${COMMENT_MAX} characters.`);
+  const text = v.replace(/\r\n?/g, '\n').replace(INVISIBLE, '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+  if (!text) bad('Write something first.');
+  if ([...text].length > COMMENT_MAX) bad(`A comment can be at most ${COMMENT_MAX} characters.`);
+  return text;
+}
+
+async function addComment(env, who, pieceId, b) {
+  const { kid } = await pieceOwner(env, pieceId);
+  const text = commentText(b.body);
+  const name = speaker(env, who, b.as);
+  // In one statement, so two at once can't both slip under a limit. The
+  // rate is per sign-in, shared or not.
+  const row = await env.DB.prepare(
+    `INSERT INTO comments (piece_id, author, name, body)
+     SELECT ?1, ?2, ?7, ?3
+     WHERE (SELECT COUNT(*) FROM comments WHERE author = ?2 AND created_at > datetime('now', ?4)) < ?5
+       AND (SELECT COUNT(*) FROM comments WHERE piece_id = ?1) < ?6
+     RETURNING ${COMMENT_COLS}`,
+  )
+    .bind(pieceId, who.email, text, `-${RATE_MINUTES} minutes`, RATE_COUNT, PIECE_MAX, name)
+    .first();
+  if (!row) {
+    const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM comments WHERE piece_id = ?').bind(pieceId).first();
+    if (n >= PIECE_MAX) throw new HttpError(409, `This piece has ${PIECE_MAX} comments, as many as it can hold.`);
+    throw new HttpError(429, `That’s ${RATE_COUNT} comments in ${RATE_MINUTES} minutes. Have a little rest, then try again.`);
+  }
+  return (await commentsOut(env, who, [row], () => kid))[0];
+}
+
+async function commentRow(env, id) {
+  const row = await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE id = ?`).bind(id).first();
+  if (!row) throw new HttpError(404, 'That comment isn’t there any more.');
+  return row;
+}
+
+// Only its author can reword a comment: nobody puts words in anyone's mouth.
+// On a shared sign-in, that's either of them.
+async function editComment(env, who, id, b) {
+  const row = await commentRow(env, id);
+  if (row.author !== who.email) throw new HttpError(403, 'You can change only what you wrote yourself.');
+  const text = commentText(b.body);
+  if (text !== row.body) await env.DB.prepare("UPDATE comments SET body = ?, edited_at = datetime('now') WHERE id = ?").bind(text, id).run();
+  const { kid } = await pieceOwner(env, row.piece_id);
+  return (await commentsOut(env, who, [await commentRow(env, id)], () => kid))[0];
+}
+
+async function removeComment(env, who, id) {
+  const row = await commentRow(env, id);
+  if (row.author !== who.email) {
+    const { kid } = await pieceOwner(env, row.piece_id);
+    if (!canChangeKid(who, kid)) {
+      throw new HttpError(403, who.canEdit ? `Only ${kid.name}’s family’s parents can remove other people’s comments on ${kid.name}’s art.` : 'You can remove only what you wrote yourself.');
+    }
+  }
+  await env.DB.prepare('DELETE FROM comments WHERE id = ?').bind(id).run();
+}
+
+async function setSticker(env, who, pieceId, kind, on, as) {
+  if (!STICKERS.includes(kind)) bad('There’s no sticker like that.');
+  await pieceOwner(env, pieceId);
+  const name = speaker(env, who, as);
+  const sql = on ? 'INSERT OR IGNORE INTO stickers (piece_id, author, name, sticker) VALUES (?, ?, ?, ?)' : 'DELETE FROM stickers WHERE piece_id = ? AND author = ? AND name = ? AND sticker = ?';
+  await env.DB.prepare(sql).bind(pieceId, who.email, name, kind).run();
+  return stickersOut(env, who, pieceId);
+}
+
+// { seen }: the newest comment the page has shown this sign-in. Names are
+// infra's (NAMES), so there's nothing else to change here.
+async function changeMe(env, who, b) {
+  if (!('seen' in b)) bad('Nothing to change. Names come from the fridge’s settings in infra.');
+  const seen = Number(b.seen);
+  if (!Number.isInteger(seen) || seen < 0 || typeof b.seen !== 'number') bad('seen must be a comment’s id.');
+  await env.DB.prepare("INSERT INTO people (email, seen) VALUES (?1, ?2) ON CONFLICT (email) DO UPDATE SET seen = max(coalesce(seen, 0), ?2), updated_at = datetime('now')").bind(who.email, seen).run();
+  return { me: await me(env, who) };
 }
 
 async function image(env, id, variant) {

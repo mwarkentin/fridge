@@ -86,11 +86,47 @@ test('draws every piece, at its size', async () => {
 });
 
 test('refuses every change', async () => {
-  for (const [method, path] of [['POST', '/api/pieces'], ['PATCH', '/api/pieces/1'], ['DELETE', '/api/pieces/1'], ['POST', '/api/kids'], ['POST', '/api/skipped'], ['PUT', '/']]) {
+  const talk = [['POST', '/api/pieces/4/comments'], ['PATCH', '/api/comments/1'], ['DELETE', '/api/comments/1'], ['POST', '/api/pieces/4/stickers/star'], ['DELETE', '/api/pieces/4/stickers/star'], ['PATCH', '/api/me']];
+  for (const [method, path] of [['POST', '/api/pieces'], ['PATCH', '/api/pieces/1'], ['DELETE', '/api/pieces/1'], ['POST', '/api/kids'], ['POST', '/api/skipped'], ['PUT', '/'], ...talk]) {
     const res = await call(path, { method, headers: { 'X-Requested-With': 'fridge' } });
     assert.equal(res.status, 403, `${method} ${path}`);
     assert.match((await res.json()).error, /preview/, `${method} ${path}`);
   }
+});
+
+test('serves made-up comments and stickers, in the real Worker’s shapes', async () => {
+  const { kids, pieces } = await (await call('/api/gallery')).json();
+  const s = await (await call('/api/comments')).json();
+  // The same keys as the real Worker's (tests/worker.test.js, COMMENT_KEYS).
+  const KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
+  assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me', 'newest']);
+  assert.deepEqual(s.me, { names: [{ as: 'Aunt Oak', name: 'Mum' }, { as: 'Uncle Oak', name: 'Dad' }], kid: null, kid_id: null, seen: 9 }, 'a shared sign-in, so the page asks which of them it is');
+  assert.equal(s.latest.length, 8);
+  assert.deepEqual(s.latest.map((c) => c.id), [...s.latest.map((c) => c.id)].sort((a, b) => b - a), 'newest first');
+  assert.ok(s.latest.filter((c) => c.id > s.me.seen).length >= 2, 'some are new');
+  const visitorFamily = (await (await call('/api/session')).json()).families[0];
+  let all = [];
+  for (const p of pieces) {
+    const res = await call(`/api/pieces/${p.id}/comments`);
+    assert.equal(res.status, 200);
+    const { comments, stickers } = await res.json();
+    assert.deepEqual(stickers.map((x) => x.kind), ['heart', 'star', 'wow', 'smile', 'rainbow']);
+    for (const x of stickers) assert.deepEqual([x.count, x.mine], [x.by.length, []]);
+    const counted = s.counts[p.id] || { comments: 0, stickers: 0, newest: 0 };
+    assert.deepEqual(counted, { comments: comments.length, stickers: stickers.reduce((n, x) => n + x.count, 0), newest: Math.max(0, ...comments.map((c) => c.id)) }, `piece ${p.id}`);
+    const kid = kids.find((k) => k.id === p.kid_id);
+    for (const c of comments) {
+      assert.deepEqual(Object.keys(c).sort(), KEYS);
+      assert.match(c.created_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      assert.equal(c.can_remove, kid.family === visitorFamily, 'a parent removes comments only on their family’s art');
+      if (c.kid_id != null) assert.equal(kids.find((k) => k.id === c.kid_id).name, c.by, 'a kid is named as the kid');
+    }
+    all = all.concat(comments);
+  }
+  assert.ok(all.some((c) => c.kid_id != null && c.kid_id === pieces.find((p) => p.id === c.piece_id).kid_id), 'an artist answers on their own art');
+  assert.ok(all.some((c) => c.kid_id != null && c.kid_id !== pieces.find((p) => p.id === c.piece_id).kid_id), 'and a kid on someone else’s');
+  assert.doesNotMatch(JSON.stringify({ s, all }), /@/, 'no addresses, even made up');
+  assert.equal((await call('/api/pieces/999/comments')).status, 404);
 });
 
 test('says it’s a preview, with the real Worker’s security headers', async () => {

@@ -1,7 +1,8 @@
 // The fridge's page: reads the gallery from /api/gallery, draws it, and lets
 // parents edit details, mark favourites and add new pieces, for the kids in
 // their own families (and kids in none), and lets a kid who's an artist add
-// their own art and change the pieces they added.
+// their own art and change the pieces they added. Everyone can give a piece
+// stickers and comment on it.
 
 import { arrange } from './families.js';
 
@@ -190,7 +191,7 @@ function tile(p, opts = {}) {
   const kid = kidOf(p);
   const meta = opts.own ? `${ageLabel(kid.born, p.made)} · ${madeShort(p)}` : `${kid.name} · ${ageLabel(kid.born, p.made)}`;
   const fav = p.favourite ? icon('heart', 'filled fav-mark') : '';
-  return `<figure>${pieceButton(p)}<figcaption><span class="t${p.title ? '' : ' untitled'}">${esc(titleOf(p))}${fav}</span><span class="m">${opts.own ? '' : avatar(kid)}<span>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></span></figcaption></figure>`;
+  return `<figure>${pieceButton(p)}<figcaption><span class="t${p.title ? '' : ' untitled'}">${esc(titleOf(p))}${fav}</span><span class="m">${opts.own ? '' : avatar(kid)}<span>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></span>${talkLine(p)}</figcaption></figure>`;
 }
 const wall = (list, opts) => `<div class="wall">${list.map((p) => tile(p, opts)).join('')}</div>`;
 // A filter button, with a kid's magnet or an icon beside the word.
@@ -270,6 +271,7 @@ function viewHome() {
     </section>
     ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year${squiggle()}</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
     <section data-scope><div class="sec-head"><h2>Just added${squiggle()}</h2><a href="#timeline">See everything${icon('right')}</a></div>${wall(newest)}</section>
+    ${latestComments()}
     ${tags.length ? `<section class="tag-sec" aria-labelledby="tags-h"><div class="sec-head"><h2 id="tags-h">Tags${squiggle()}</h2><span class="count">${plural(tags.length, 'tag')}, tap one to see them all</span></div>${tagCloud(tags)}</section>` : ''}
     <p class="footnote"><svg class="doodle" aria-hidden="true"><use href="#i-heart"/></svg>Only family can see the fridge. <a href="/cdn-cgi/access/logout">${icon('door')}Sign out</a></p>`;
 }
@@ -520,7 +522,10 @@ function buildChrome() {
 }
 
 async function load() {
-  const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
+  // Without comments (a database from before them), the page is as it was.
+  const [session, data, talk] = await Promise.all([api('/api/session'), api('/api/gallery'), api('/api/comments').catch(() => null)]);
+  TALK = talk;
+  if (TALK && SEEN === null) SEEN = TALK.me.seen ?? Infinity;
   CAN_EDIT = session.canEdit;
   PREVIEW = Boolean(session.preview);
   MY_FAMILIES = session.families || [];
@@ -532,6 +537,11 @@ async function load() {
   PIECES = data.pieces;
   buildChrome();
   render();
+  // What's on the page now has been seen: next time, only newer comments are new.
+  if (TALK && !PREVIEW && TALK.newest > (TALK.me.seen ?? 0)) {
+    const seen = TALK.newest;
+    api('/api/me', { method: 'PATCH', json: { seen } }).then(() => (TALK.me.seen = seen), () => {});
+  }
 }
 
 // ---- Piece view ----
@@ -540,18 +550,24 @@ const form = $('#d-form');
 const lock = (on) => {
   document.documentElement.style.overflow = on ? 'hidden' : '';
 };
-function openDetail(id, list) {
+function openDetail(id, list, { toTalk = false } = {}) {
   listCtx = list;
   opener = document.activeElement;
   showPiece(id);
   detail.hidden = false;
   lock(true);
   $('#d-close').focus();
+  if (toTalk) $('#talk')?.scrollIntoView({ block: 'start' });
 }
 function closeDetail({ refocus = true } = {}) {
   detail.hidden = true;
   lock(false);
-  if (refocus) opener?.focus?.();
+  editing = null;
+  if (!refocus || !opener) return;
+  // The wall may have been drawn again behind the piece: find its button anew.
+  const id = opener.dataset?.id || opener.dataset?.open;
+  const again = opener.isConnected ? opener : id && $(`#view [data-id="${id}"], #view [data-open="${id}"]`);
+  again?.focus?.();
 }
 function showPiece(id) {
   const p = (current = PIECES.find((x) => x.id === id));
@@ -576,9 +592,11 @@ function showPiece(id) {
       <button class="btn" type="button" id="d-edit">${icon('pencil')}Edit details</button>` : ''}
       <a class="btn" href="${img(p, 'original')}" download>${icon('download')}Save full scan</a>
     </div>
+    ${TALK ? talkSection(p) : ''}
     ${p.source_name ? `<p class="d-source">From ${esc(p.source_name)}</p>` : ''}</div>`;
   $('#d-read').hidden = false;
   form.hidden = true;
+  if (TALK) loadPieceTalk(p);
 }
 function step(n) {
   const i = listCtx.indexOf(current.id);
@@ -658,6 +676,351 @@ $('#f-delete').onclick = async () => {
   render();
   toast('Removed');
 };
+
+// ---- Stickers and comments ----
+// Everyone signed in can give a piece stickers and comment on it. The Worker
+// has the rules (talk() in worker.js) and says what each person may do
+// (`mine`, `can_remove`); the page only shows what it would allow. TALK is
+// /api/comments: each piece's counts, the latest comments, and who's looking
+// (`me`: their names from infra, or their kid, and how far they'd read). On
+// a sign-in two people share, they pick which of them is commenting, and the
+// page remembers it on this device. The preview saves nothing, so there
+// what's added lives in the page until a reload.
+const STICKERS = [
+  { kind: 'heart', label: 'Love it' },
+  { kind: 'star', label: 'Gold star' },
+  { kind: 'wow', label: 'Wow!' },
+  { kind: 'smile', label: 'Smiley' },
+  { kind: 'rainbow', label: 'Colours' },
+];
+const COMMENT_MAX = 500;
+let TALK = null;
+let SEEN = null; // the newest comment seen before this visit: newer ones are new
+const opened = new Set(); // pieces looked at this visit, so no longer new
+const drafts = new Map(); // what someone was writing, by piece
+let talking = null; // the open piece's { id, comments, stickers }, once loaded
+let editing = null; // the id of the comment being reworded
+let previewIds = 1e6;
+const AS_KEY = 'fridge-as';
+
+// Which person on a shared sign-in is commenting (their `as`), or '' for
+// anyone else's. Each of TALK.me.names is { as, name }: what to send, and
+// how they see themselves ("Mom").
+function speaking() {
+  const people = TALK?.me.names || [];
+  if (people.length < 2) return '';
+  let saved = null;
+  try {
+    saved = localStorage.getItem(AS_KEY);
+  } catch {}
+  return (people.find((p) => p.as === saved) || people[0]).as;
+}
+// What the preview shows for what its visitor adds.
+const myName = () => TALK.me.names.find((p) => p.as === speaking())?.name || TALK.me.kid || TALK.me.names[0]?.name || 'You';
+
+const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
+const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
+const commentIsNew = (c) => c.id > SEEN && !c.mine && !opened.has(c.piece_id);
+const stamp = (d = new Date()) => d.toISOString().slice(0, 19).replace('T', ' ');
+const when = (s) => new Date(`${s.replace(' ', 'T')}Z`);
+function ago(s) {
+  const d = when(s);
+  const mins = Math.round((Date.now() - d) / 6e4);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${plural(hours, 'hour')} ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+}
+const timeTag = (s) => `<time datetime="${esc(when(s).toISOString())}">${esc(ago(s))}</time>`;
+// "Gran", "Gran and Pop", "Gran, Pop and 2 more".
+function names(list) {
+  const all = [...new Set(list)];
+  if (all.length <= 3) return all.length > 1 ? `${all.slice(0, -1).join(', ')} and ${all.at(-1)}` : (all[0] ?? '');
+  return `${all.slice(0, 2).join(', ')} and ${all.length - 2} more`;
+}
+// A kid's own magnet, or for a grown-up a plain one with their initial.
+const commenterKid = (c) => (c.kid_id == null ? null : KIDS.find((k) => k.id === c.kid_id) || null);
+const whoMagnet = (c) => {
+  const kid = commenterKid(c);
+  return kid ? avatar(kid) : `<i class="av av-grown" aria-hidden="true">${esc((Array.from(c.by.trim())[0] || '?').toLocaleUpperCase())}</i>`;
+};
+
+// Under a piece on the walls: how many comments and stickers, and whether
+// there's something new.
+function talkLine(p) {
+  if (!TALK) return '';
+  const { comments, stickers } = countsOf(p.id);
+  if (!comments && !stickers) return '';
+  const fresh = isNew(p);
+  const words = [comments && plural(comments, 'comment'), stickers && plural(stickers, 'sticker'), fresh && 'new'].filter(Boolean).join(', ');
+  return `<span class="talk-n"><span class="sr">${words}</span><span class="talk-c" aria-hidden="true">${comments ? `<span>${icon('bubble')}${comments}</span>` : ''}${stickers ? `<span>${icon('star')}${stickers}</span>` : ''}${fresh ? '<b class="new">New</b>' : ''}</span></span>`;
+}
+
+// Home: the latest comments anywhere on the fridge. Each opens its piece.
+function latestComments() {
+  const all = (TALK?.latest || []).filter((c) => PIECES.some((p) => p.id === c.piece_id));
+  // Four, or up to six when that many are new: on a phone they stack.
+  const fresh = all.slice(0, 6).filter(commentIsNew).length;
+  const list = all.slice(0, Math.max(4, fresh));
+  if (!list.length) return '';
+  return `<section class="latest-sec" data-scope aria-labelledby="latest-h"><div class="sec-head"><h2 id="latest-h">Latest comments${squiggle()}</h2>${fresh ? `<span class="count">${fresh} new since you last looked</span>` : ''}</div><ul class="latest">${list.map(noteCard).join('')}</ul></section>`;
+}
+function noteCard(c) {
+  const p = PIECES.find((x) => x.id === c.piece_id);
+  const kid = kidOf(p);
+  const fresh = commentIsNew(c);
+  return `<li style="${kidStyle(kid)}"><button class="note${commenterKid(c) ? ' by-kid' : ''}${fresh ? ' is-new' : ''}" type="button" data-id="${p.id}"><img src="${img(p, 'thumb')}" alt="" loading="lazy"><span class="note-copy"><span class="note-by">${whoMagnet(c)}<span><b>${esc(c.by)}</b> on ${esc(titleOf(p))}</span></span><span class="note-body">${esc(c.body)}</span><span class="note-meta">${timeTag(c.created_at)}${fresh ? '<b class="new">New</b>' : ''}</span></span></button></li>`;
+}
+
+// The piece view's part: stickers, then comments, then somewhere to write.
+// Drawn once per piece, then its parts are drawn again as things change, so
+// what's being written stays put.
+function talkSection(p) {
+  const kid = kidOf(p);
+  const own = TALK.me.kid_id != null && TALK.me.kid_id === kid.id;
+  const people = TALK.me.names;
+  const as = speaking();
+  const who =
+    people.length > 1
+      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${people.map((p, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(p.as)}"${p.as === as ? ' checked' : ''}><span class="as-card">${icon('check')}${esc(p.name)}</span></label>`).join('')}</div></fieldset>`
+      : !people.length && !TALK.me.kid
+        ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>'
+        : '';
+  return `<section class="talk" id="talk" aria-labelledby="talk-h">
+    ${who}
+    <h3 class="talk-h" id="talk-h">Stickers</h3>
+    <div class="stickers" id="t-stickers" role="group" aria-label="Stickers: tap one to give it, and again to take it back"></div>
+    <p class="st-from" id="t-from"></p>
+    <h3 class="talk-h">Comments<span class="count" id="t-count"></span></h3>
+    <ol class="c-list" id="t-list" aria-label="Comments"></ol>
+    <form class="c-form" id="t-form">
+      ${PREVIEW ? '<p class="hint">This is a preview with a made-up family, so stickers and comments you add aren’t saved. They’re gone when you reload.</p>' : ''}
+      <label class="sr" for="t-text">Write a comment</label>
+      <textarea id="t-text" rows="2" maxlength="${COMMENT_MAX}" placeholder="${esc(own ? 'Tell everyone about it' : `Tell ${kid.name} what you like about it`)}"></textarea>
+      <div class="c-send"><span class="c-left" id="t-left" aria-live="polite"></span><button class="btn primary" type="submit" id="t-send">${icon('bubble')}Send</button></div>
+    </form>
+  </section>`;
+}
+
+async function loadPieceTalk(p) {
+  const id = p.id;
+  $('#t-text').value = drafts.get(id) || '';
+  showLeft();
+  editing = null;
+  if (talking?.id !== id) talking = { id, comments: null, stickers: null };
+  drawTalk();
+  try {
+    const data = await api(`/api/pieces/${id}/comments`);
+    if (current?.id !== id) return;
+    talking = { id, ...data };
+  } catch (e) {
+    if (current?.id !== id) return;
+    if (!talking.comments) talking.error = e.message;
+  }
+  drawTalk();
+  // Looked at: its comments aren't new any more, here or on the walls.
+  if (!opened.has(id) && isNew(p)) {
+    opened.add(id);
+    render();
+  }
+  opened.add(id);
+}
+
+function drawTalk() {
+  drawStickers();
+  drawComments();
+}
+function drawStickers() {
+  const box = $('#t-stickers');
+  if (!box || !talking) return;
+  const loaded = Boolean(talking.stickers);
+  const as = speaking();
+  box.innerHTML = STICKERS.map((s) => {
+    const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] };
+    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
+  }).join('');
+  const givers = (talking.stickers || []).flatMap((s) => s.by);
+  $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet. Tap one to give it.';
+}
+function drawComments() {
+  const list = $('#t-list');
+  if (!list || !talking) return;
+  const p = PIECES.find((x) => x.id === talking.id);
+  if (!p) return;
+  const comments = talking.comments;
+  $('#t-count').textContent = comments?.length ? String(comments.length) : '';
+  if (!comments) {
+    list.innerHTML = `<li class="c-empty">${talking.error ? esc(talking.error) : 'Getting the comments…'}</li>`;
+    return;
+  }
+  list.innerHTML = comments.length ? comments.map((c) => commentHtml(c, p)).join('') : `<li class="c-empty">${doodle('heart')}Nobody’s said anything yet. Be the first!</li>`;
+}
+function commentHtml(c, p) {
+  const kid = commenterKid(c);
+  const artist = kid && kid.id === p.kid_id;
+  const actions = c.mine
+    ? `<button type="button" data-c-edit="${c.id}">${icon('pencil')}Edit</button><button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Delete</button>`
+    : c.can_remove
+      ? `<button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Remove</button>`
+      : '';
+  const body =
+    editing === c.id
+      ? `<form class="c-edit" data-c-save="${c.id}"><label class="sr" for="c-edit-${c.id}">Change your comment</label><textarea id="c-edit-${c.id}" rows="3" maxlength="${COMMENT_MAX}">${esc(c.body)}</textarea><div class="row"><button class="btn primary" type="submit">${icon('check')}Save</button><button class="btn" type="button" data-c-cancel>Cancel</button></div></form>`
+      : `<p class="c-body">${esc(c.body)}</p>`;
+  return `<li class="c-item${kid ? ' c-kid' : ''}${artist ? ' c-artist' : ''}"${kid ? ` style="${kidStyle(kid)}"` : ''}>
+    <p class="c-top">${whoMagnet(c)}<b class="c-by">${esc(c.by)}</b>${artist ? '<span class="c-badge">the artist</span>' : ''}${timeTag(c.created_at)}${c.unsaved ? '<span class="c-note">not saved</span>' : c.edited ? '<span class="c-note">edited</span>' : ''}</p>
+    ${body}
+    ${actions && editing !== c.id ? `<p class="c-act">${actions}</p>` : ''}
+  </li>`;
+}
+function showLeft() {
+  const n = [...($('#t-text')?.value || '')].length;
+  const left = $('#t-left');
+  if (left) left.textContent = n > COMMENT_MAX - 100 ? `${Math.max(0, COMMENT_MAX - n)} letters left` : '';
+}
+
+// Keep the walls' counts and Home's latest comments up with a change here.
+function counted(id, change) {
+  const c = (TALK.counts[id] ||= { comments: 0, stickers: 0, newest: 0 });
+  change(c);
+  render();
+}
+
+async function giveSticker(kind) {
+  const id = talking?.id;
+  const st = talking?.stickers?.find((s) => s.kind === kind);
+  if (!st) return;
+  const as = speaking();
+  const on = !st.mine.includes(as);
+  let stickers;
+  try {
+    if (PREVIEW) {
+      const name = myName();
+      stickers = talking.stickers.map((s) => (s.kind !== kind ? s : { ...s, mine: on ? [...s.mine, as] : s.mine.filter((n) => n !== as), count: s.count + (on ? 1 : -1), by: on ? [...s.by, name] : s.by.filter((n) => n !== name) }));
+    } else stickers = (await api(`/api/pieces/${id}/stickers/${kind}${as ? `?as=${encodeURIComponent(as)}` : ''}`, { method: on ? 'POST' : 'DELETE' })).stickers;
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (talking?.id !== id) return;
+  talking.stickers = stickers;
+  drawStickers();
+  const b = $(`#t-stickers [data-sticker="${kind}"]`);
+  b?.focus();
+  if (on) b?.classList.add('popped');
+  counted(id, (c) => (c.stickers = stickers.reduce((n, s) => n + s.count, 0)));
+  if (PREVIEW) toast('Stuck on here only: the preview doesn’t save it');
+}
+
+async function sendComment() {
+  const id = talking?.id;
+  const text = $('#t-text').value.trim();
+  if (!text) {
+    $('#t-text').focus();
+    return;
+  }
+  if (!talking?.comments) return;
+  const send = $('#t-send');
+  send.disabled = true;
+  const as = speaking();
+  let comment;
+  try {
+    comment = PREVIEW
+      ? { id: ++previewIds, piece_id: id, body: text, created_at: stamp(), edited: false, by: myName(), kid_id: TALK.me.kid_id, mine: true, can_remove: true, unsaved: true }
+      : (await api(`/api/pieces/${id}/comments`, { method: 'POST', json: as ? { body: text, as } : { body: text } })).comment;
+  } catch (e) {
+    toast(e.message);
+    return;
+  } finally {
+    send.disabled = false;
+  }
+  drafts.delete(id);
+  TALK.latest = [comment, ...TALK.latest].slice(0, 8);
+  if (talking?.id === id) {
+    talking.comments.push(comment);
+    $('#t-text').value = '';
+    showLeft();
+    drawComments();
+  }
+  counted(id, (c) => c.comments++);
+  toast(PREVIEW ? 'Added here only: the preview doesn’t save it' : 'Sent');
+}
+
+async function saveComment(cid, text) {
+  const c = talking.comments.find((x) => x.id === cid);
+  if (!c) return;
+  let changed;
+  try {
+    changed = PREVIEW ? { ...c, body: text.trim(), edited: c.edited || text.trim() !== c.body } : (await api(`/api/comments/${cid}`, { method: 'PATCH', json: { body: text } })).comment;
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  Object.assign(c, changed);
+  TALK.latest = TALK.latest.map((x) => (x.id === cid ? { ...x, ...changed } : x));
+  editing = null;
+  drawComments();
+  render();
+  toast('Saved');
+}
+
+async function removeComment(cid) {
+  const id = talking.id;
+  const c = talking.comments.find((x) => x.id === cid);
+  if (!c || !confirm(c.mine ? 'Delete your comment?' : `Remove ${c.by}’s comment? It can’t be brought back.`)) return;
+  try {
+    if (!PREVIEW) await api(`/api/comments/${cid}`, { method: 'DELETE' });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (talking?.id === id) talking.comments = talking.comments.filter((x) => x.id !== cid);
+  TALK.latest = TALK.latest.filter((x) => x.id !== cid);
+  drawComments();
+  $('#t-text').focus({ preventScroll: true });
+  counted(id, (n) => n.comments--);
+  toast(c.mine ? 'Deleted' : 'Removed');
+}
+
+$('#d-read').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-sticker], [data-c-edit], [data-c-remove], [data-c-cancel]');
+  if (!b || !talking) return;
+  if (b.dataset.sticker) giveSticker(b.dataset.sticker);
+  else if (b.dataset.cEdit) {
+    editing = Number(b.dataset.cEdit);
+    drawComments();
+    const area = $(`#c-edit-${editing}`);
+    area?.focus();
+    area?.setSelectionRange(area.value.length, area.value.length);
+  } else if (b.dataset.cRemove) removeComment(Number(b.dataset.cRemove));
+  else if (b.matches('[data-c-cancel]')) {
+    editing = null;
+    drawComments();
+  }
+});
+$('#d-read').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.target.id === 't-form') sendComment();
+  else if (e.target.dataset.cSave) saveComment(Number(e.target.dataset.cSave), e.target.querySelector('textarea').value);
+});
+$('#d-read').addEventListener('input', (e) => {
+  if (e.target.id !== 't-text' || !talking) return;
+  drafts.set(talking.id, e.target.value);
+  showLeft();
+});
+// Who's commenting, on a shared sign-in: remembered on this device.
+$('#d-read').addEventListener('change', (e) => {
+  if (e.target.name !== 't-as') return;
+  try {
+    localStorage.setItem(AS_KEY, e.target.value);
+  } catch {}
+  drawStickers();
+});
+$('#d-read').addEventListener('animationend', (e) => e.target.closest?.('.stk')?.classList.remove('popped'));
 
 // ---- Frame mode ----
 const frame = $('#frame');
@@ -786,7 +1149,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 3200);
 }
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('#view .piece, #view [data-open], #view [data-filter], #view [data-frame], #view [data-add]');
+  const b = e.target.closest('#view .piece, #view .note, #view [data-open], #view [data-filter], #view [data-frame], #view [data-add]');
   if (!b) return;
   if (b.matches('[data-filter]')) {
     filter = b.dataset.filter;
@@ -804,10 +1167,11 @@ document.addEventListener('click', (e) => {
   const id = Number(b.dataset.id || b.dataset.open);
   const scope = b.closest('[data-scope]');
   let list = scope
-    ? [...new Set([...scope.querySelectorAll('.piece')].map((x) => Number(x.dataset.id)))]
+    ? [...new Set([...scope.querySelectorAll('.piece, .note')].map((x) => Number(x.dataset.id)))]
     : PIECES.filter((p) => p.favourite).sort(byMadeDesc).map((p) => p.id);
   if (!list.includes(id)) list = [...PIECES].sort(byMadeDesc).map((p) => p.id);
-  openDetail(id, list);
+  // From a comment on Home, straight to what's being said.
+  openDetail(id, list, { toTalk: b.matches('.note') });
 });
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
@@ -823,7 +1187,10 @@ document.addEventListener('keydown', (e) => {
   } else if (!detail.hidden) {
     if (e.key === 'Escape') {
       if (!form.hidden) $('#f-cancel').click();
-      else closeDetail();
+      else if (editing) {
+        editing = null;
+        drawComments();
+      } else closeDetail();
     } else if (!typing && e.key === 'ArrowLeft') step(-1);
     else if (!typing && e.key === 'ArrowRight') step(1);
   }

@@ -548,3 +548,422 @@ test('a kid who’s an artist adds their own art, and changes only the pieces th
   const alsoParent = { ...familyEnv(), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${DEE}` };
   assert.deepEqual(await (await call('/api/session', { as: DEE, localEnv: alsoParent })).json(), { email: DEE, canEdit: true, families: [], artist: null });
 });
+
+// ---- Comments and stickers ----
+// Everyone signed in comments and gives stickers, on either family's art:
+// the parents above, Gran (a grandparent, who only looks), Grandma and Pop
+// (two grandparents who share a sign-in), Nana (whom NAMES doesn't list),
+// Dee (an artist) and Ada's iPad (one of Ada's devices: it only looks, but
+// it's Ada). Names come from NAMES, as infra writes it.
+const GRAN = 'gran@example.com';
+const SHARED = 'grandparents@example.com';
+const NANA = 'nana@example.com';
+const ADA_IPAD = 'ada.ipad@example.com';
+const TALK_FAMILIES = [{ ...PINES, kids: [{ ...PINES.kids[0], devices: ['Ada.iPad@Example.com '] }, PINES.kids[1]] }, OAKS];
+const NAMES = { [GRAN]: 'Gran', 'Grandparents@Example.com': ['Grandma', ' Pop '], [PINE]: 'Pine Mum', [OAK]: ['Oak Dad'] };
+const talkEnv = (names = NAMES) => ({ ...familyEnv(TALK_FAMILIES), NAMES: JSON.stringify(names) });
+const t = (path, opts = {}) => call(path, { localEnv: talkEnv(), ...opts });
+const COMMENT_KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
+const tp = {}; // a piece of each kid's, for these tests
+const say = (as, piece, body) => t(`/api/pieces/${piece}/comments`, { as, method: 'POST', json: { body } });
+const said = async (as, piece, body) => {
+  const res = await say(as, piece, body);
+  assert.equal(res.status, 201, `${as} on ${piece}: ${body}`);
+  return (await res.json()).comment;
+};
+const talkOf = async (piece, as = GRAN) => (await t(`/api/pieces/${piece}/comments`, { as })).json();
+const commentOf = async (id, piece, as = GRAN, localEnv = talkEnv()) => (await (await call(`/api/pieces/${piece}/comments`, { as, localEnv })).json()).comments.find((c) => c.id === id);
+const summary = async (as = GRAN, localEnv = talkEnv()) => (await call('/api/comments', { as, localEnv })).json();
+const sticker = (as, piece, kind, method = 'POST', name) => t(`/api/pieces/${piece}/stickers/${kind}${name ? `?as=${encodeURIComponent(name)}` : ''}`, { as, method });
+// Each test starts with no comments, stickers or reading.
+const clean = () => env.DB.batch(['comments', 'stickers', 'people'].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+
+test('everyone signed in comments on any kid’s art, and gives it stickers', async () => {
+  await clean();
+  for (const kid of ['Ada', 'Bo', 'Cy', 'Dee', 'Di']) {
+    const res = await t('/api/pieces', { as: kid === 'Cy' || kid === 'Dee' ? OAK : PINE, method: 'POST', form: pieceForm({ kid_id: fk[kid], made: '2025-09-01', title: `${kid}’s talk piece` }) });
+    assert.equal(res.status, 201, kid);
+    tp[kid] = (await res.json()).id;
+  }
+  const everyone = [PINE, OAK, BOTH, LONER, GRAN, NANA, DEE, ADA_IPAD];
+  for (const as of everyone) {
+    for (const kid of ['Ada', 'Cy', 'Di']) {
+      const c = await said(as, tp[kid], `From ${as} to ${kid}`);
+      assert.deepEqual(Object.keys(c).sort(), COMMENT_KEYS);
+      assert.equal(c.piece_id, tp[kid]);
+      assert.equal(c.mine, true);
+      assert.equal(c.edited, false);
+      assert.equal(c.can_remove, true, 'their own');
+    }
+    const res = await sticker(as, tp.Cy, 'star');
+    assert.equal(res.status, 200, as);
+  }
+  const { comments, stickers } = await talkOf(tp.Cy);
+  assert.deepEqual(comments.map((c) => c.body), everyone.map((as) => `From ${as} to Cy`), 'oldest first');
+  assert.deepEqual(stickers.map((s) => s.kind), ['heart', 'star', 'wow', 'smile', 'rainbow']);
+  assert.equal(stickers.find((s) => s.kind === 'star').count, everyone.length);
+  // Signing in is still needed, to look and to say anything.
+  assert.equal((await call('/api/comments', { as: null, localEnv: talkEnv() })).status, 403);
+  assert.equal((await call(`/api/pieces/${tp.Cy}/comments`, { as: null, localEnv: talkEnv() })).status, 403);
+  assert.equal((await call(`/api/pieces/${tp.Cy}/comments`, { as: null, method: 'POST', json: { body: 'Hi' }, localEnv: talkEnv() })).status, 403);
+  // A kid's device only looks at the art: it can't add any.
+  assert.deepEqual(await (await t('/api/session', { as: ADA_IPAD })).json(), { email: ADA_IPAD, canEdit: false, families: [], artist: null });
+  assert.equal((await t('/api/pieces', { as: ADA_IPAD, method: 'POST', form: pieceForm({ kid_id: fk.Ada, made: '2025-09-01' }) })).status, 403);
+  assert.equal((await t(`/api/pieces/${tp.Ada}`, { as: ADA_IPAD, method: 'PATCH', json: { favourite: true } })).status, 403);
+});
+
+test('names: from NAMES, a kid by their own addresses, and never an address', async () => {
+  await clean();
+  const gran = await said(GRAN, tp.Ada, 'Lovely!');
+  assert.equal(gran.by, 'Gran');
+  assert.deepEqual((await summary(GRAN)).me, { names: [{ as: 'Gran', name: 'Gran' }], kid: null, kid_id: null, seen: null });
+  // Someone NAMES doesn't list shows as the part of their address before the @.
+  assert.equal((await said(NANA, tp.Ada, 'Gorgeous')).by, 'nana');
+  assert.deepEqual((await summary(NANA)).me, { names: [], kid: null, kid_id: null, seen: null });
+  // NAMES changes in infra show everywhere, even on what was said before.
+  assert.equal((await commentOf(gran.id, tp.Ada, PINE, talkEnv({ ...NAMES, [GRAN]: 'Granny' }))).by, 'Granny');
+
+  // Kids are named by their own addresses, whatever they send.
+  assert.deepEqual((await summary(DEE)).me, { names: [], kid: 'Dee', kid_id: fk.Dee, seen: null });
+  assert.deepEqual((await summary(ADA_IPAD)).me, { names: [], kid: 'Ada', kid_id: fk.Ada, seen: null });
+  const fromIpad = await said(ADA_IPAD, tp.Ada, 'I made it!');
+  assert.deepEqual([fromIpad.by, fromIpad.kid_id], ['Ada', fk.Ada]);
+  const fromDee = await t(`/api/pieces/${tp.Ada}/comments`, { as: DEE, method: 'POST', json: { body: 'Cool rocket', as: 'Gran' } });
+  assert.deepEqual(await fromDee.json().then((r) => [r.comment.by, r.comment.kid_id]), ['Dee', fk.Dee]);
+  // Without its address in FAMILIES, the iPad is someone NAMES doesn't list.
+  const plain = { ...familyEnv(), NAMES: JSON.stringify(NAMES) };
+  assert.deepEqual((await summary(ADA_IPAD, plain)).me, { names: [], kid: null, kid_id: null, seen: null });
+  assert.equal((await commentOf(fromIpad.id, tp.Ada, GRAN, plain)).by, 'ada.ipad');
+  // And without NAMES, everyone but the kids shows as their address's first part.
+  assert.equal((await commentOf(gran.id, tp.Ada, PINE, familyEnv(TALK_FAMILIES))).by, 'gran');
+
+  // Names are infra's: nothing here changes them.
+  assert.equal((await t('/api/me', { as: GRAN, method: 'PATCH', json: { name: 'Queen Gran' } })).status, 400);
+  assert.equal((await t('/api/me', { as: GRAN, method: 'PATCH', json: { seen: 1 }, headers: { 'X-Requested-With': 'elsewhere' } })).status, 403);
+
+  // The page never gets anyone's address.
+  await sticker(GRAN, tp.Ada, 'heart');
+  for (const as of [GRAN, PINE, DEE, NANA]) {
+    for (const path of ['/api/comments', `/api/pieces/${tp.Ada}/comments`]) assert.doesNotMatch(await (await t(path, { as })).text(), /@/, `${path} as ${as}`);
+  }
+});
+
+test('a shared sign-in: each comment and sticker says which of them it’s from', async () => {
+  await clean();
+  assert.deepEqual((await summary(SHARED)).me.names, [{ as: 'Grandma', name: 'Grandma' }, { as: 'Pop', name: 'Pop' }], 'as NAMES lists them, tidied');
+  let res = await say(SHARED, tp.Bo, 'Who am I?');
+  assert.equal(res.status, 400, 'two names: say which');
+  assert.equal(await errorOf(res), 'Say which of you this is: Grandma or Pop.');
+  const ask = (as, body, name) => t(`/api/pieces/${tp.Bo}/comments`, { as, method: 'POST', json: { body, as: name } });
+  const pop = (await (await ask(SHARED, 'From Pop', 'pop')).json()).comment;
+  const grandma = (await (await ask(SHARED, 'From Grandma', 'Grandma')).json()).comment;
+  assert.deepEqual([pop.by, grandma.by], ['Pop', 'Grandma']);
+  assert.equal((await ask(SHARED, 'Not me', 'Gran')).status, 403, 'only their own names');
+  assert.equal((await ask(GRAN, 'Not me either', 'Pop')).status, 403);
+  assert.equal((await ask(GRAN, 'Just me', 'gran')).status, 201, 'a single name may be said');
+  // Either of them can change what the other said: the fridge can't tell them apart.
+  assert.deepEqual([(await commentOf(pop.id, tp.Bo, SHARED)).mine, (await commentOf(pop.id, tp.Bo, SHARED)).can_remove], [true, true]);
+  assert.equal((await t(`/api/comments/${pop.id}`, { as: SHARED, method: 'PATCH', json: { body: 'From Pop, edited' } })).status, 200);
+  assert.equal((await commentOf(pop.id, tp.Bo)).by, 'Pop', 'still Pop’s');
+
+  // A sticker each.
+  assert.equal((await sticker(SHARED, tp.Bo, 'star')).status, 400, 'say which');
+  let st = (await (await sticker(SHARED, tp.Bo, 'star', 'POST', 'Grandma')).json()).stickers.find((x) => x.kind === 'star');
+  assert.deepEqual(st, { kind: 'star', count: 1, mine: ['Grandma'], by: ['Grandma'] });
+  st = (await (await sticker(SHARED, tp.Bo, 'star', 'POST', 'Pop')).json()).stickers.find((x) => x.kind === 'star');
+  assert.deepEqual(st, { kind: 'star', count: 2, mine: ['Grandma', 'Pop'], by: ['Grandma', 'Pop'] });
+  st = (await (await sticker(SHARED, tp.Bo, 'star', 'DELETE', 'Grandma')).json()).stickers.find((x) => x.kind === 'star');
+  assert.deepEqual(st, { kind: 'star', count: 1, mine: ['Pop'], by: ['Pop'] });
+  assert.equal((await sticker(SHARED, tp.Bo, 'star', 'POST', 'Gran')).status, 403);
+  assert.deepEqual((await talkOf(tp.Bo, GRAN)).stickers.find((x) => x.kind === 'star').mine, [], 'nobody else’s');
+
+  // Said before NAMES listed them: shown as both, until they say which.
+  const before = (await (await call(`/api/pieces/${tp.Bo}/comments`, { as: SHARED, method: 'POST', json: { body: 'Early' }, localEnv: familyEnv(TALK_FAMILIES) })).json()).comment;
+  assert.equal(before.by, 'grandparents');
+  assert.equal((await commentOf(before.id, tp.Bo)).by, 'Grandma & Pop');
+});
+
+test('a parent is their family name to their own family, and their name to everyone else', async () => {
+  await clean();
+  const names = { ...NAMES, [PINE]: [{ name: 'Aunt Pine', family: 'Mom' }], [OAK]: [{ name: 'Aunt Oak', family: 'Mom' }, { name: 'Uncle Oak', family: 'Dad' }] };
+  const localEnv = talkEnv(names);
+  const sees = async (as, id, piece) => (await commentOf(id, piece, as, localEnv)).by;
+  const fromPine = (await (await call(`/api/pieces/${tp.Cy}/comments`, { as: PINE, method: 'POST', json: { body: 'Lovely, Cy' }, localEnv })).json()).comment;
+  // Mom to the Pines (both parents, Ada's iPad, a parent in both families), Aunt Pine to everyone else.
+  for (const as of [PINE, PINE_TOO, ADA_IPAD, BOTH]) assert.equal(await sees(as, fromPine.id, tp.Cy), 'Mom', as);
+  for (const as of [OAK, DEE, GRAN, NANA, LONER]) assert.equal(await sees(as, fromPine.id, tp.Cy), 'Aunt Pine', as);
+
+  // A shared sign-in: each person as their own family knows them, and as everyone else does.
+  assert.deepEqual((await (await call('/api/comments', { as: OAK, localEnv })).json()).me.names, [{ as: 'Aunt Oak', name: 'Mom' }, { as: 'Uncle Oak', name: 'Dad' }]);
+  let res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad' }, localEnv });
+  assert.equal(res.status, 400, 'say which');
+  res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad', as: 'Dad' }, localEnv });
+  assert.equal(res.status, 403, '`as` is the name everyone sees');
+  const fromDad = (await (await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad', as: 'uncle oak' }, localEnv })).json()).comment;
+  assert.equal(fromDad.by, 'Dad', 'to himself');
+  assert.equal(await sees(DEE, fromDad.id, tp.Dee), 'Dad');
+  for (const as of [PINE, ADA_IPAD, GRAN]) assert.equal(await sees(as, fromDad.id, tp.Dee), 'Uncle Oak', as);
+  const star = async (as, method, name) => (await (await call(`/api/pieces/${tp.Dee}/stickers/star${name ? `?as=${encodeURIComponent(name)}` : ''}`, { as, method, localEnv })).json()).stickers.find((x) => x.kind === 'star');
+  assert.deepEqual(await star(OAK, 'POST', 'Uncle Oak'), { kind: 'star', count: 1, mine: ['Uncle Oak'], by: ['Dad'] });
+  assert.deepEqual((await star(PINE, 'POST')).by, ['Uncle Oak', 'Mom'], 'Pine Mum sees herself as Mom');
+  assert.deepEqual((await (await call(`/api/pieces/${tp.Dee}/comments`, { as: GRAN, localEnv })).json()).stickers.find((x) => x.kind === 'star').by, ['Uncle Oak', 'Aunt Pine']);
+  // Said before NAMES listed them: all of them, as this person knows them.
+  const before = (await (await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'Early' }, localEnv: familyEnv(TALK_FAMILIES) })).json()).comment;
+  assert.equal(await sees(DEE, before.id, tp.Dee), 'Mom & Dad');
+  assert.equal(await sees(GRAN, before.id, tp.Dee), 'Aunt Oak & Uncle Oak');
+});
+
+test('a NAMES that can’t be read turns comments off, and only comments', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const broken = [
+    '{',
+    '["Gran"]',
+    JSON.stringify({ 'not an address': 'Gran' }),
+    JSON.stringify({ [GRAN]: [] }),
+    JSON.stringify({ [GRAN]: ['1', '2', '3', '4', '5', '6', '7'] }),
+    JSON.stringify({ [GRAN]: 'Gr@n' }),
+    JSON.stringify({ [GRAN]: 'x'.repeat(31) }),
+    JSON.stringify({ [GRAN]: 7 }),
+    JSON.stringify({ [GRAN]: 'Gran', [NANA]: 'gran ' }),
+    JSON.stringify({ [GRAN]: 'Gran', 'GRAN@example.com': 'Granny' }),
+    JSON.stringify({ [GRAN]: 'ada' }),
+    JSON.stringify({ [DEE]: 'Dee two' }),
+    JSON.stringify({ [GRAN]: [{ name: 'Gran', family: 'Nan' }] }), // a family name for someone in no family
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Mom' }], [PINE_TOO]: [{ name: 'Uncle Pine', family: 'mom' }] }), // two Moms in one family
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Bo' }] }), // a kid's name
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Gran' }], [GRAN]: 'Gran' }), // someone else's name
+    JSON.stringify({ [PINE]: [{ family: 'Mom' }] }),
+  ];
+  for (const NAMES of broken) {
+    const localEnv = { ...familyEnv(TALK_FAMILIES), NAMES };
+    const res = await call('/api/comments', { as: GRAN, localEnv });
+    assert.equal(res.status, 503, NAMES);
+    assert.match(await errorOf(res), /names can’t be read/);
+    assert.equal((await call(`/api/pieces/${tp.Ada}/comments`, { as: GRAN, method: 'POST', json: { body: 'Hi' }, localEnv })).status, 503, NAMES);
+    assert.equal((await call('/api/gallery', { as: GRAN, localEnv })).status, 200, 'the fridge still opens');
+  }
+  for (const NAMES of [undefined, '', ' ', '{}']) assert.equal((await call('/api/comments', { as: GRAN, localEnv: { ...familyEnv(TALK_FAMILIES), NAMES } })).status, 200, String(NAMES));
+});
+
+test('authors edit and delete their own comments, and nobody rewords anyone else’s', async () => {
+  await clean();
+  const c = await said(GRAN, tp.Ada, 'Lovely');
+  const edit = (as, id, body) => t(`/api/comments/${id}`, { as, method: 'PATCH', json: { body } });
+  let res = await edit(GRAN, c.id, ' Lovely colours ');
+  assert.equal(res.status, 200);
+  const edited = (await res.json()).comment;
+  assert.deepEqual([edited.body, edited.edited, edited.mine], ['Lovely colours', true, true]);
+  assert.equal((await commentOf(c.id, tp.Ada)).body, 'Lovely colours');
+  const same = await said(GRAN, tp.Ada, 'Same');
+  assert.equal((await (await edit(GRAN, same.id, 'Same')).json()).comment.edited, false, 'unchanged words aren’t an edit');
+
+  // Not even the parents who look after the art can put words in Gran's mouth.
+  for (const as of [PINE, BOTH, OAK, NANA, DEE, ADA_IPAD]) {
+    res = await edit(as, c.id, 'Changed');
+    assert.equal(res.status, 403, as);
+  }
+  assert.equal(await errorOf(res), 'You can change only what you wrote yourself.');
+  assert.equal((await commentOf(c.id, tp.Ada)).body, 'Lovely colours');
+  assert.equal((await commentOf(c.id, tp.Ada, PINE)).mine, false);
+  assert.equal((await edit(GRAN, c.id, '   ')).status, 400);
+
+  assert.equal((await t(`/api/comments/${c.id}`, { as: GRAN, method: 'DELETE' })).status, 204);
+  assert.equal(await commentOf(c.id, tp.Ada), undefined);
+  assert.equal((await t(`/api/comments/${c.id}`, { as: GRAN, method: 'DELETE' })).status, 404);
+  assert.equal((await edit(GRAN, c.id, 'Back')).status, 404);
+  // A kid edits and deletes their own too.
+  const mine = await said(DEE, tp.Dee, 'I did the sky first');
+  assert.equal((await edit(DEE, mine.id, 'I did the sky last')).status, 200);
+  assert.equal((await t(`/api/comments/${mine.id}`, { as: DEE, method: 'DELETE' })).status, 204);
+});
+
+test('parents remove comments on their own family’s kids’ art, and kids’ in no family, but nobody else’s', async () => {
+  await clean();
+  const on = {};
+  for (const kid of ['Ada', 'Cy', 'Di']) on[kid] = await said(GRAN, tp[kid], `For ${kid}`);
+  const may = async (as) => Object.fromEntries(await Promise.all(Object.entries(on).map(async ([kid, c]) => [kid, (await commentOf(c.id, tp[kid], as)).can_remove])));
+  assert.deepEqual(await may(PINE), { Ada: true, Cy: false, Di: true });
+  assert.deepEqual(await may(OAK), { Ada: false, Cy: true, Di: true });
+  assert.deepEqual(await may(BOTH), { Ada: true, Cy: true, Di: true });
+  assert.deepEqual(await may(LONER), { Ada: false, Cy: false, Di: true });
+  for (const as of [NANA, DEE, ADA_IPAD]) assert.deepEqual(await may(as), { Ada: false, Cy: false, Di: false }, as);
+
+  const remove = (as, kid) => t(`/api/comments/${on[kid].id}`, { as, method: 'DELETE' });
+  let res = await remove(OAK, 'Ada');
+  assert.equal(res.status, 403);
+  assert.equal(await errorOf(res), 'Only Ada’s family’s parents can remove other people’s comments on Ada’s art.');
+  assert.equal((await remove(LONER, 'Cy')).status, 403);
+  assert.ok(await commentOf(on.Ada.id, tp.Ada), 'still there');
+  assert.equal((await remove(PINE, 'Ada')).status, 204);
+  assert.equal(await commentOf(on.Ada.id, tp.Ada), undefined);
+  assert.equal((await remove(OAK, 'Cy')).status, 204);
+  assert.equal((await remove(LONER, 'Di')).status, 204);
+
+  // Without families, every parent looks after every kid's comments, as with their art.
+  const none = { ...familyEnv(), FAMILIES: undefined };
+  on.Cy = await said(GRAN, tp.Cy, 'Again');
+  assert.equal((await call(`/api/comments/${on.Cy.id}`, { as: LONER, method: 'DELETE', localEnv: none })).status, 204);
+});
+
+test('someone who only looks, a kid and a kid’s iPad remove only what they wrote', async () => {
+  await clean();
+  const fromParent = await said(OAK, tp.Dee, 'Dee did this at school');
+  for (const as of [GRAN, DEE, ADA_IPAD]) {
+    const res = await t(`/api/comments/${fromParent.id}`, { as, method: 'DELETE' });
+    assert.equal(res.status, 403, as);
+    assert.equal(await errorOf(res), 'You can remove only what you wrote yourself.');
+  }
+  assert.equal((await commentOf(fromParent.id, tp.Dee, DEE)).can_remove, false, 'not even on her own art');
+  assert.ok(await commentOf(fromParent.id, tp.Dee));
+  for (const as of [GRAN, DEE, ADA_IPAD]) {
+    const own = await said(as, tp.Dee, 'Mine to take back');
+    assert.equal((await t(`/api/comments/${own.id}`, { as, method: 'DELETE' })).status, 204, as);
+  }
+});
+
+test('across families: anyone comments, and the art’s own family looks after what’s said', async () => {
+  await clean();
+  const fromPine = await said(PINE, tp.Cy, 'Cy, that’s brilliant');
+  const fromGran = await said(GRAN, tp.Cy, 'Gorgeous');
+  assert.equal((await t(`/api/comments/${fromPine.id}`, { as: PINE, method: 'PATCH', json: { body: 'Cy, that’s amazing' } })).status, 200, 'their own, on the other family’s art');
+  const res = await t(`/api/comments/${fromGran.id}`, { as: PINE, method: 'DELETE' });
+  assert.equal(res.status, 403);
+  assert.match(await errorOf(res), /^Only Cy’s family’s parents/);
+  assert.equal((await t(`/api/comments/${fromPine.id}`, { as: OAK, method: 'DELETE' })).status, 204, 'the Oaks remove a Pine’s comment on their art');
+  assert.equal((await t(`/api/comments/${fromGran.id}`, { as: OAK, method: 'PATCH', json: { body: 'Changed' } })).status, 403, 'but not reword it');
+  const own = await said(PINE, tp.Cy, 'Again');
+  assert.equal((await t(`/api/comments/${own.id}`, { as: PINE, method: 'DELETE' })).status, 204);
+});
+
+test('stickers: one of each kind per person, taken back only by whoever gave it', async () => {
+  await clean();
+  const kind = async (res, k) => {
+    assert.equal(res.status, 200);
+    return (await res.json()).stickers.find((s) => s.kind === k);
+  };
+  assert.deepEqual(await kind(await sticker(GRAN, tp.Bo, 'star'), 'star'), { kind: 'star', count: 1, mine: [''], by: ['Gran'] });
+  assert.equal((await kind(await sticker(GRAN, tp.Bo, 'star'), 'star')).count, 1, 'giving it twice is still one');
+  assert.deepEqual(await kind(await sticker(DEE, tp.Bo, 'star'), 'star'), { kind: 'star', count: 2, mine: [''], by: ['Gran', 'Dee'] });
+  await sticker(GRAN, tp.Bo, 'heart');
+  const forPine = (await talkOf(tp.Bo, PINE)).stickers;
+  assert.deepEqual(forPine.map((s) => [s.kind, s.count, s.mine]), [['heart', 1, []], ['star', 2, []], ['wow', 0, []], ['smile', 0, []], ['rainbow', 0, []]]);
+
+  // A parent can't take anyone else's back, even on their own family's art.
+  assert.equal((await kind(await sticker(PINE, tp.Bo, 'star', 'DELETE'), 'star')).count, 2);
+  assert.deepEqual(await kind(await sticker(GRAN, tp.Bo, 'star', 'DELETE'), 'star'), { kind: 'star', count: 1, mine: [], by: ['Dee'] });
+  assert.equal((await kind(await sticker(GRAN, tp.Bo, 'star', 'DELETE'), 'star')).count, 1, 'taking it back twice is fine');
+
+  for (const bad of ['poop', 'hearts']) assert.equal((await sticker(GRAN, tp.Bo, bad)).status, 400, bad);
+  assert.equal((await sticker(GRAN, 99999, 'star')).status, 404);
+  assert.equal((await t(`/api/pieces/${tp.Bo}/stickers/star`, { as: GRAN, method: 'PATCH', json: {} })).status, 405);
+  assert.equal((await t(`/api/pieces/${tp.Bo}/stickers/star`, { as: GRAN, method: 'POST', headers: { 'X-Requested-With': 'elsewhere' } })).status, 403);
+  assert.equal((await summary(GRAN)).counts[tp.Bo].stickers, 2);
+});
+
+test('comments and stickers go with their piece', async () => {
+  await clean();
+  const id = (await (await t('/api/pieces', { as: PINE, method: 'POST', form: pieceForm({ kid_id: fk.Bo, made: '2025-09-02' }) })).json()).id;
+  const c = await said(GRAN, id, 'Going, going');
+  await sticker(GRAN, id, 'wow');
+  assert.equal((await summary()).counts[id].comments, 1);
+  assert.equal((await t(`/api/pieces/${id}`, { as: PINE, method: 'DELETE' })).status, 204);
+
+  const left = await env.DB.batch([env.DB.prepare('SELECT COUNT(*) AS n FROM comments WHERE piece_id = ?').bind(id), env.DB.prepare('SELECT COUNT(*) AS n FROM stickers WHERE piece_id = ?').bind(id)]);
+  assert.deepEqual(left.map((r) => r.results[0].n), [0, 0]);
+  assert.equal((await t(`/api/pieces/${id}/comments`, { as: GRAN })).status, 404);
+  assert.equal((await say(GRAN, id, 'Hello?')).status, 404);
+  assert.equal((await sticker(GRAN, id, 'star')).status, 404);
+  assert.equal((await t(`/api/comments/${c.id}`, { as: GRAN, method: 'PATCH', json: { body: 'Hello?' } })).status, 404);
+  const after = await summary();
+  assert.equal(after.counts[id], undefined);
+  assert.ok(!after.latest.some((x) => x.piece_id === id));
+});
+
+test('comments are checked: text, length, and how many', async () => {
+  await clean();
+  for (const body of [undefined, 7, ['Hi'], '', '  \n\t ', 'x'.repeat(501), '🎨'.repeat(501)]) assert.equal((await say(GRAN, tp.Ada, body)).status, 400, JSON.stringify(body));
+  assert.equal((await say(GRAN, tp.Ada, 'x'.repeat(500))).status, 201);
+  assert.equal((await say(GRAN, tp.Ada, '🎨'.repeat(500))).status, 201, 'characters, not UTF-16 units');
+  const tidy = await said(GRAN, tp.Ada, '  Hi\u0000 there‮  \r\n\r\n\r\n\r\nLove, Gran⁦  ');
+  assert.equal(tidy.body, 'Hi there\n\nLove, Gran');
+  // As sent: escaping is the page's job (esc() in app.js), and the words stay as written.
+  assert.equal((await said(GRAN, tp.Ada, '<img src=x onerror=alert(1)> & “quotes”')).body, '<img src=x onerror=alert(1)> & “quotes”');
+  assert.equal((await t(`/api/pieces/${tp.Ada}/comments`, { as: GRAN, method: 'POST', headers: { 'Content-Type': 'text/plain' }, form: 'Hi' })).status, 400, 'JSON only');
+  for (const [method, path] of [['POST', `/api/pieces/${tp.Ada}/comments`], ['PATCH', `/api/comments/${tidy.id}`], ['DELETE', `/api/comments/${tidy.id}`]]) {
+    assert.equal((await t(path, { as: GRAN, method, json: { body: 'Hi' }, headers: { 'X-Requested-With': 'elsewhere' } })).status, 403, `${method} ${path}`);
+  }
+  assert.equal((await t(`/api/pieces/${tp.Ada}/comments`, { as: GRAN, method: 'PUT', json: { body: 'Hi' } })).status, 405);
+
+  // Ten in ten minutes each.
+  await clean();
+  for (let i = 0; i < 10; i++) await said(NANA, tp.Bo, `Number ${i + 1}`);
+  const res = await say(NANA, tp.Bo, 'Number 11');
+  assert.equal(res.status, 429);
+  assert.equal(await errorOf(res), 'That’s 10 comments in 10 minutes. Have a little rest, then try again.');
+  await said(GRAN, tp.Bo, 'Someone else still can');
+  await env.DB.prepare("UPDATE comments SET created_at = datetime('now', '-11 minutes') WHERE author = ?").bind(NANA).run();
+  await said(NANA, tp.Bo, 'Number 11, later');
+
+  // A piece holds 200.
+  await clean();
+  await env.DB.batch(Array.from({ length: 200 }, (_, i) => env.DB.prepare("INSERT INTO comments (piece_id, author, body, created_at) VALUES (?, ?, 'Hi', datetime('now', '-1 day'))").bind(tp.Cy, `someone${i}@example.com`)));
+  const full = await say(GRAN, tp.Cy, 'One more');
+  assert.equal(full.status, 409);
+  assert.match(await errorOf(full), /200 comments/);
+  await said(GRAN, tp.Dee, 'Another piece is fine');
+});
+
+test('what’s new: each piece’s newest comment by someone else, and how far someone has read', async () => {
+  await clean();
+  const a1 = await said(GRAN, tp.Ada, 'First');
+  const a2 = await said(PINE, tp.Ada, 'Second');
+  const c1 = await said(PINE, tp.Cy, 'Third');
+  await sticker(GRAN, tp.Ada, 'smile');
+
+  let s = await summary(GRAN);
+  assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me', 'newest']);
+  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: a2.id });
+  assert.deepEqual(s.counts[tp.Cy], { comments: 1, stickers: 0, newest: c1.id });
+  assert.equal(s.newest, c1.id);
+  assert.equal(s.me.seen, null);
+  assert.deepEqual(s.latest.map((c) => c.id), [c1.id, a2.id, a1.id], 'newest first');
+  for (const c of s.latest) assert.deepEqual(Object.keys(c).sort(), COMMENT_KEYS);
+  assert.deepEqual(s.latest.map((c) => c.can_remove), [false, false, true]);
+  s = await summary(PINE);
+  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: a1.id }, 'their own don’t count as new');
+  assert.equal(s.counts[tp.Cy].newest, 0);
+  assert.deepEqual(s.latest.map((c) => c.can_remove), [true, true, true]);
+
+  const seen = (as, value) => t('/api/me', { as, method: 'PATCH', json: { seen: value } });
+  let res = await seen(GRAN, a2.id);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).me.seen, a2.id);
+  await seen(GRAN, a1.id);
+  assert.equal((await summary(GRAN)).me.seen, a2.id, 'never goes back');
+  await seen(GRAN, c1.id);
+  assert.equal((await summary(GRAN)).me.seen, c1.id);
+  assert.deepEqual((await summary(GRAN)).me.names, [{ as: 'Gran', name: 'Gran' }], 'reading changes nothing else');
+  for (const bad of ['5', -1, 1.5, null]) assert.equal((await seen(GRAN, bad)).status, 400, String(bad));
+  assert.equal((await seen(DEE, c1.id)).status, 200);
+  assert.equal((await summary(DEE)).me.kid, 'Dee');
+
+  // Only the eight latest.
+  for (let i = 0; i < 9; i++) await said(OAK, tp.Dee, `More ${i}`);
+  assert.equal((await summary()).latest.length, 8);
+});
+
+test('a kid’s devices in FAMILIES are checked like the rest of it', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const withAda = (ada) => JSON.stringify([{ ...PINES, kids: [{ ...PINES.kids[0], ...ada }, PINES.kids[1]] }, OAKS]);
+  for (const FAMILIES of [withAda({ devices: 'ada.ipad@example.com' }), withAda({ devices: [7] }), withAda({ devices: ['not an address'] }), withAda({ devices: ['Dee@example.com'] }), withAda({ artist: 'ada@example.com', devices: ['dee@example.com'] })]) {
+    const res = await call('/api/gallery', { as: GRAN, localEnv: { ...familyEnv(), FAMILIES } });
+    assert.equal(res.status, 503, FAMILIES);
+  }
+  // Her own artist address listed again among her devices is just her.
+  const both = { ...familyEnv(), FAMILIES: withAda({ artist: 'ada@example.com', devices: ['ADA@example.com', 'ada.ipad@example.com'] }) };
+  assert.equal((await call('/api/session', { as: 'ada@example.com', localEnv: both }).then((r) => r.json())).artist, 'Ada');
+  assert.equal((await call('/api/comments', { as: 'ada.ipad@example.com', localEnv: both }).then((r) => r.json())).me.kid, 'Ada');
+  // And a parent's address is a parent's.
+  const parentToo = { ...familyEnv(TALK_FAMILIES), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${ADA_IPAD}` };
+  assert.deepEqual((await call('/api/comments', { as: ADA_IPAD, localEnv: parentToo }).then((r) => r.json())).me, { names: [], kid: null, kid_id: null, seen: null });
+});
