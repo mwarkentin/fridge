@@ -701,6 +701,7 @@ const drafts = new Map(); // what someone was writing, by piece
 let talking = null; // the open piece's { id, comments, stickers }, once loaded
 let editing = null; // the id of the comment being reworded
 let previewIds = 1e6;
+let choosingAs = false; // whether a shared sign-in's names are open to pick from
 const AS_KEY = 'fridge-as';
 
 // Which person on a shared sign-in is commenting (their `as`), or '' for
@@ -783,15 +784,16 @@ function talkSection(p) {
   const kid = kidOf(p);
   const own = TALK.me.kid_id != null && TALK.me.kid_id === kid.id;
   const people = TALK.me.names;
-  const as = speaking();
-  const who =
-    people.length > 1
-      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${people.map((p, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(p.as)}"${p.as === as ? ' checked' : ''}><span class="as-card">${icon('check')}${esc(p.name)}</span></label>`).join('')}</div></fieldset>`
-      : !people.length && !TALK.me.kid
-        ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>'
-        : '';
+  const shared = people.length > 1;
+  // On a shared sign-in, who's commenting, above the comment box, and their
+  // names to pick from once Change is tapped. Stickers go by the same choice.
+  const asLine = shared ? `<p class="as-line" id="t-as">Commenting as <b id="t-as-name"></b><span aria-hidden="true">·</span><button class="as-change" type="button" id="t-as-change" aria-expanded="false" aria-controls="t-as-pick">Change</button></p>` : '';
+  const asPick = shared
+    ? `<div class="as-pick" id="t-as-pick" role="group" aria-labelledby="t-as-h" hidden><p class="as-h" id="t-as-h">Who’s commenting?</p><div class="as-opts">${people.map((p) => `<button class="as-card" type="button" data-as="${esc(p.as)}" aria-pressed="false">${icon('check')}${esc(p.name)}</button>`).join('')}</div></div>`
+    : '';
+  const unnamed = !people.length && !TALK.me.kid ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>' : '';
   return `<section class="talk" id="talk" aria-labelledby="talk-h">
-    ${who}
+    ${unnamed}
     <h3 class="talk-h" id="talk-h">Stickers</h3>
     <div class="stickers" id="t-stickers" role="group" aria-label="Stickers: tap one to give it, and again to take it back"></div>
     <p class="st-from" id="t-from"></p>
@@ -799,6 +801,8 @@ function talkSection(p) {
     <ol class="c-list" id="t-list" aria-label="Comments"></ol>
     <form class="c-form" id="t-form">
       ${PREVIEW ? '<p class="hint">This is a preview with a made-up family, so stickers and comments you add aren’t saved. They’re gone when you reload.</p>' : ''}
+      ${asLine}
+      ${asPick}
       <label class="sr" for="t-text">Write a comment</label>
       <textarea id="t-text" rows="2" maxlength="${COMMENT_MAX}" placeholder="${esc(own ? 'Tell everyone about it' : `Tell ${kid.name} what you like about it`)}"></textarea>
       <div class="c-send"><span class="c-left" id="t-left" aria-live="polite"></span><button class="btn primary" type="submit" id="t-send">${icon('bubble')}Send</button></div>
@@ -811,6 +815,7 @@ async function loadPieceTalk(p) {
   $('#t-text').value = drafts.get(id) || '';
   showLeft();
   editing = null;
+  choosingAs = false;
   if (talking?.id !== id) talking = { id, comments: null, stickers: null };
   drawTalk();
   try {
@@ -831,8 +836,19 @@ async function loadPieceTalk(p) {
 }
 
 function drawTalk() {
+  drawAs();
   drawStickers();
   drawComments();
+}
+// "Commenting as Poppa", and which name is picked once Change is open.
+function drawAs() {
+  const name = $('#t-as-name');
+  if (!name) return;
+  const as = speaking();
+  name.textContent = TALK.me.names.find((p) => p.as === as)?.name || '';
+  $('#t-as-change').setAttribute('aria-expanded', String(choosingAs));
+  $('#t-as-pick').hidden = !choosingAs;
+  for (const b of $('#t-as-pick').querySelectorAll('[data-as]')) b.setAttribute('aria-pressed', String(b.dataset.as === as));
 }
 function drawStickers() {
   const box = $('#t-stickers');
@@ -1012,13 +1028,21 @@ $('#d-read').addEventListener('input', (e) => {
   drafts.set(talking.id, e.target.value);
   showLeft();
 });
-// Who's commenting, on a shared sign-in: remembered on this device.
-$('#d-read').addEventListener('change', (e) => {
-  if (e.target.name !== 't-as') return;
-  try {
-    localStorage.setItem(AS_KEY, e.target.value);
-  } catch {}
+// Who's commenting, on a shared sign-in: Change shows their names, and the
+// one picked is remembered on this device.
+$('#d-read').addEventListener('click', (e) => {
+  const b = e.target.closest('#t-as-change, [data-as]');
+  if (!b) return;
+  if (b.dataset.as != null) {
+    try {
+      localStorage.setItem(AS_KEY, b.dataset.as);
+    } catch {}
+    choosingAs = false;
+  } else choosingAs = !choosingAs;
+  drawAs();
   drawStickers();
+  if (b.dataset.as != null) $('#t-as-change').focus();
+  else if (choosingAs) $('#t-as-pick [aria-pressed="true"]')?.focus();
 });
 $('#d-read').addEventListener('animationend', (e) => e.target.closest?.('.stk')?.classList.remove('popped'));
 
