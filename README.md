@@ -101,10 +101,13 @@ on either family's art.
   the top; comments never change it.
 - **Names** come from infra's file, like everything else about who's who.
   `NAMES` gives each sign-in address its person ("Grandma"), and a sign-in
-  two people share, like grandparents with one email, a person for each:
-  the page then asks which of them is commenting, and remembers it on that
-  device. A parent can have two names: the one their own family sees
-  ("Mom") and the one everyone else sees ("Aunt Pine"). A kid's own addresses are that kid: their artist address, and
+  two people share, like grandparents with one email, a person for each.
+  On a shared sign-in, the page says who's commenting just above the
+  comment box ("Commenting as Grandma · Change"), starting with the first
+  person listed. Change picks another, and that device remembers the
+  choice; stickers go by it too. A parent can have two names: the one
+  their own family sees ("Mom") and the one everyone else sees ("Aunt
+  Pine"). A kid's own addresses are that kid: their artist address, and
   any `devices` listed for them in `FAMILIES` (see [Families](#families)),
   such as their iPad's. The page only ever gets names, never addresses.
   Nobody can have a kid's name, and no two people share one. Someone `NAMES`
