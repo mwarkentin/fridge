@@ -115,18 +115,42 @@
     <div class="fr-cap"><div class="t" id="fr-t"></div><div class="m" id="fr-m"></div><p class="fr-hint">A new one every few seconds. Tap for the next.</p></div>
   </div>
 
+  <!-- Add art: several pictures and PDFs at once, each looked over before it goes up. add/sheet.js runs it. -->
   <div id="add" class="sheet-wrap" hidden>
-    <form class="sheet" id="add-form" role="dialog" aria-modal="true" aria-labelledby="add-title">
+    <section class="sheet batch" id="add-sheet" role="dialog" aria-modal="true" aria-labelledby="add-title">
       <div class="sheet-head"><h2 id="add-title"><svg class="doodle" aria-hidden="true"><use href="#d-star"/></svg>Add art</h2><button class="btn round" type="button" id="add-close" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-      <label class="drop" for="a-file"><img id="a-preview" alt="" hidden><svg class="drop-icon" id="a-icon" aria-hidden="true"><use href="#i-picture"/></svg><span id="a-file-label">Take a photo or choose a scan</span><span class="drop-btn">Choose a picture</span><input id="a-file" class="sr" type="file" accept="image/*"></label>
-      <fieldset class="who" id="a-who"><legend>Who made it?</legend></fieldset>
-      <label class="field">Made on <input id="a-made" type="date"></label>
-      <label class="field">Title <input id="a-title" placeholder="Untitled" maxlength="200"></label>
-      <label class="field">What did they say about it? <textarea id="a-story" rows="2" maxlength="2000" placeholder="Write it down before it’s forgotten"></textarea></label>
-      <p class="hint">Scans already in Dropbox come in through the import script, so this is for new pieces.</p>
-      <p class="error" id="a-error" hidden></p>
-      <button class="btn primary wide" id="a-submit" type="submit">Add to the fridge</button>
-    </form>
+      <input id="a-file" class="sr" type="file" multiple accept="image/*,application/pdf,.pdf" aria-label="Choose pictures and PDFs">
+      <div id="a-choose" class="a-choose">
+        <label class="drop" for="a-file" id="a-drop"><svg class="drop-icon" aria-hidden="true"><use href="#i-pictures"/></svg><span>Take photos, or choose pictures and PDFs</span><span class="drop-sub">As many as you like. A PDF of several pages becomes a piece per page, without the blank ones.</span><span class="drop-btn">Choose pictures</span></label>
+        <p class="hint">Nothing goes up until you’ve looked over each piece. Whatever is on the fridge already, from here or the import script, is left out.</p>
+      </div>
+      <div id="a-review" class="a-review" hidden>
+        <fieldset class="who" id="a-who"><legend>Who made these?</legend></fieldset>
+        <p class="a-summary" id="a-summary" tabindex="-1"></p>
+        <ol class="a-list" id="a-list" aria-label="The pieces"></ol>
+      </div>
+      <div id="a-foot" class="a-foot" hidden>
+        <div class="a-progress" id="a-progress" hidden><progress id="a-bar" max="1" value="0"></progress><span id="a-status" role="status"></span></div>
+        <div class="a-said" id="a-said" role="status" hidden></div>
+        <div class="a-buttons">
+          <button class="btn primary" id="a-submit" type="button">Add to the fridge</button>
+          <button class="btn" id="a-more" type="button"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add more</button>
+          <button class="btn" id="a-restart" type="button">Start over</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <!-- A piece from Add art as big as the screen allows: tap a card's picture. -->
+  <div id="a-view" class="a-view" role="dialog" aria-modal="true" aria-labelledby="a-view-name" hidden>
+    <div class="a-view-top">
+      <button class="btn" id="a-view-close" type="button"><svg class="i" aria-hidden="true"><use href="#i-close"/></svg>Close</button>
+      <span class="spacer"></span>
+      <span class="count" id="a-view-count"></span>
+      <button class="btn round" id="a-view-prev" type="button" aria-label="Previous piece"><svg class="i" aria-hidden="true"><use href="#i-left"/></svg></button>
+      <button class="btn round" id="a-view-next" type="button" aria-label="Next piece"><svg class="i" aria-hidden="true"><use href="#i-right"/></svg></button>
+      <p class="a-view-name"><span id="a-view-name"></span><span class="a-view-hint" id="a-view-hint">Tap the picture to see it full size.</span></p>
+    </div>
+    <div class="a-view-art" id="a-view-art"><img id="a-view-img" alt=""></div>
   </div>
 
   <div id="toast" class="toast" role="status" hidden></div>

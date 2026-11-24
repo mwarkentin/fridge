@@ -30,6 +30,15 @@ it.
   computer, like the synced Dropbox folder, works out whose each piece is
   and when it was made from the folder and file names, and uploads it. It
   remembers files by their contents, so running it again adds only new ones.
+- **Add art**, on the page, is for parents on a phone or iPad, or any
+  computer without the import script. It takes several photos, scans and
+  PDFs at once, splits a PDF of several pages into a piece per page without
+  the blank ones, and guesses dates and titles from file names as the
+  import script does. You check a card for each piece before anything goes
+  up. It recognises pieces the same way as the import script, so neither
+  adds what the other already has. It offers only the kids you can add art
+  for (see [Families](#families)); a kid who's an artist uses it for their
+  own art.
 
 The bucket, database, sign-in, domain and deploy token are made by
 [mwarkentin/infra](https://github.com/mwarkentin/infra) (`fridge.tf`). This
@@ -93,14 +102,23 @@ does the same for its kids.
    uv run scripts/fridge.py login
    ```
 
-5. **Import the scans.** Survey a folder first. It works offline, uploads
-   nothing, and opens a report with a picture of every page, saying which
-   pages are blank, which look like art and which are plain (documents, or
-   pencil drawings). Each piece has a box to tick: pages that look like art
-   start ticked, plain and blank ones don't, and clicking a picture opens
-   the original. Press **Save my picks**, then import with the file it
-   saves (named after the folder's last three names). The survey prints the
-   exact command:
+5. **Import the scans.** On a phone or iPad, use **Add art** on the page
+   instead: choose photos, scans and PDFs, as many as you like, set whose
+   they are, check each piece's date and title, and press Add. They go up
+   one by one; if one fails, it says which and tries just those again.
+   Pieces already on the fridge (from either way in) are left out, and
+   pieces you untick are remembered as skipped, as in the survey below.
+   With no date in a file's name, it uses the day the photo was taken, or
+   else today, and says so.
+
+   On a computer with this repo, survey a folder first. It works offline,
+   uploads nothing, and opens a report with a picture of every page, saying
+   which pages are blank, which look like art and which are plain
+   (documents, or pencil drawings). Each piece has a box to tick: pages
+   that look like art start ticked, plain and blank ones don't, and
+   clicking a picture opens the original. Press **Save my picks**, then
+   import with the file it saves (named after the folder's last three
+   names). The survey prints the exact command:
 
    ```sh
    uv run scripts/fridge.py survey ~/Dropbox/Kids\ Art --kid Ada

@@ -93,6 +93,28 @@ test('sends security headers', async () => {
   assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
 });
 
+test('keeps the Content-Security-Policy strict, with pdf.js too', async () => {
+  // Add art's copy of pdf.js runs without WebAssembly or eval, so the policy
+  // needs nothing new: scripts, workers and fetches from this origin only.
+  const csp = (await call('/')).headers.get('Content-Security-Policy');
+  const directives = Object.fromEntries(csp.split(';').map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k, v.join(' ')]));
+  assert.equal(directives['default-src'], "'self'");
+  assert.equal(directives['script-src'], "'self'");
+  assert.equal(directives['connect-src'], "'self'");
+  assert.equal(directives['worker-src'], undefined, 'workers fall back to script-src');
+  assert.doesNotMatch(csp, /unsafe-eval|wasm-unsafe-eval|https?:/);
+});
+
+test('serves Add art’s modules and pdf.js as JavaScript, only to signed-in people', async () => {
+  for (const path of ['/add/sheet.js', '/add/pdf.js', '/pdfjs/pdf.min.mjs', '/pdfjs/pdf.worker.min.mjs', '/pdfjs/wasm/openjpeg_nowasm_fallback.js', '/pdfjs/wasm/jbig2_nowasm_fallback.js']) {
+    const res = await call(path, { as: VIEWER });
+    assert.equal(res.status, 200, path);
+    // Module scripts and workers need a JavaScript type: nosniff is on.
+    assert.match(res.headers.get('Content-Type'), /^(text|application)\/javascript/, path);
+    assert.equal((await call(path, { as: null })).status, 403, path);
+  }
+});
+
 test('serves the icons to anyone, and nothing else without a sign-in', async () => {
   // iOS fetches Home Screen icons without the sign-in cookie.
   for (const path of ['/icons/apple-touch-icon.png', '/icons/icon-512.png', '/icons/favicon.svg']) {
