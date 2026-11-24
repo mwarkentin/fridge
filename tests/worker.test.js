@@ -18,7 +18,10 @@ before(async () => {
   const jwk = { ...(await crypto.subtle.exportKey('jwk', keys.publicKey)), kid: 'test-key', alg: 'RS256' };
   const realFetch = globalThis.fetch;
   globalThis.fetch = (url, init) => (String(url) === `https://${TEAM}/cdn-cgi/access/certs` ? Promise.resolve(Response.json({ keys: [jwk] })) : realFetch(url, init));
-  env = { ...proxy.env, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, PARENT_EMAILS: `Someone@example.com, ${PARENT}` };
+  // Only the bindings from the proxy: it also loads a developer's .dev.vars
+  // (DEV_EMAIL, FAMILIES, ...), which would change what every test sees.
+  const { DB, ART, ASSETS } = proxy.env;
+  env = { DB, ART, ASSETS, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, PARENT_EMAILS: `Someone@example.com, ${PARENT}` };
   for (const file of readdirSync('migrations').sort()) {
     const statements = readFileSync(`migrations/${file}`, 'utf8').split(/;\s*$/m).filter((s) => s.replace(/--.*$/gm, '').trim());
     for (const s of statements) await env.DB.prepare(s).run();
