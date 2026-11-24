@@ -38,7 +38,8 @@ history on `main` is permanent.
   art and change only the pieces they added (`isArtistOf`). A kid's own
   addresses (their artist address and `devices`) are that kid's for comments
   and stickers (`kid`, `kidAddresses`); everyone else's names come from the
-  `NAMES` Worker secret (`readNames`), one or more per sign-in address. It
+  `NAMES` Worker secret (`readNames`), one or more people per sign-in
+  address, and a parent's own family can see them by another name ("Mom"). It
   fails closed: with no Access settings, or a `FAMILIES` it can't read,
   nobody gets in; with a `NAMES` it can't read, comments are off.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has

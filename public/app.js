@@ -703,18 +703,20 @@ let editing = null; // the id of the comment being reworded
 let previewIds = 1e6;
 const AS_KEY = 'fridge-as';
 
-// Which of a shared sign-in's names is commenting, or '' for anyone else's.
+// Which person on a shared sign-in is commenting (their `as`), or '' for
+// anyone else's. Each of TALK.me.names is { as, name }: what to send, and
+// how they see themselves ("Mom").
 function speaking() {
-  const names = TALK?.me.names || [];
-  if (names.length < 2) return '';
+  const people = TALK?.me.names || [];
+  if (people.length < 2) return '';
   let saved = null;
   try {
     saved = localStorage.getItem(AS_KEY);
   } catch {}
-  return names.includes(saved) ? saved : names[0];
+  return (people.find((p) => p.as === saved) || people[0]).as;
 }
 // What the preview shows for what its visitor adds.
-const myName = () => speaking() || TALK.me.kid || TALK.me.names[0] || 'You';
+const myName = () => TALK.me.names.find((p) => p.as === speaking())?.name || TALK.me.kid || TALK.me.names[0]?.name || 'You';
 
 const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
 const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
@@ -780,12 +782,12 @@ function noteCard(c) {
 function talkSection(p) {
   const kid = kidOf(p);
   const own = TALK.me.kid_id != null && TALK.me.kid_id === kid.id;
-  const names = TALK.me.names;
+  const people = TALK.me.names;
   const as = speaking();
   const who =
-    names.length > 1
-      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${names.map((n, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(n)}"${n === as ? ' checked' : ''}><span class="as-card">${icon('check')}${esc(n)}</span></label>`).join('')}</div></fieldset>`
-      : !names.length && !TALK.me.kid
+    people.length > 1
+      ? `<fieldset class="as-pick" id="t-as"><legend>Who’s this?</legend><div class="as-opts">${people.map((p, i) => `<label class="as-opt"><input type="radio" name="t-as" id="t-as-${i}" value="${esc(p.as)}"${p.as === as ? ' checked' : ''}><span class="as-card">${icon('check')}${esc(p.name)}</span></label>`).join('')}</div></fieldset>`
+      : !people.length && !TALK.me.kid
         ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>'
         : '';
   return `<section class="talk" id="talk" aria-labelledby="talk-h">

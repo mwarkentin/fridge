@@ -616,7 +616,7 @@ test('names: from NAMES, a kid by their own addresses, and never an address', as
   await clean();
   const gran = await said(GRAN, tp.Ada, 'Lovely!');
   assert.equal(gran.by, 'Gran');
-  assert.deepEqual((await summary(GRAN)).me, { names: ['Gran'], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await summary(GRAN)).me, { names: [{ as: 'Gran', name: 'Gran' }], kid: null, kid_id: null, seen: null });
   // Someone NAMES doesn't list shows as the part of their address before the @.
   assert.equal((await said(NANA, tp.Ada, 'Gorgeous')).by, 'nana');
   assert.deepEqual((await summary(NANA)).me, { names: [], kid: null, kid_id: null, seen: null });
@@ -650,7 +650,7 @@ test('names: from NAMES, a kid by their own addresses, and never an address', as
 
 test('a shared sign-in: each comment and sticker says which of them it’s from', async () => {
   await clean();
-  assert.deepEqual((await summary(SHARED)).me.names, ['Grandma', 'Pop'], 'as NAMES lists them, tidied');
+  assert.deepEqual((await summary(SHARED)).me.names, [{ as: 'Grandma', name: 'Grandma' }, { as: 'Pop', name: 'Pop' }], 'as NAMES lists them, tidied');
   let res = await say(SHARED, tp.Bo, 'Who am I?');
   assert.equal(res.status, 400, 'two names: say which');
   assert.equal(await errorOf(res), 'Say which of you this is: Grandma or Pop.');
@@ -683,6 +683,36 @@ test('a shared sign-in: each comment and sticker says which of them it’s from'
   assert.equal((await commentOf(before.id, tp.Bo)).by, 'Grandma & Pop');
 });
 
+test('a parent is their family name to their own family, and their name to everyone else', async () => {
+  await clean();
+  const names = { ...NAMES, [PINE]: [{ name: 'Aunt Pine', family: 'Mom' }], [OAK]: [{ name: 'Aunt Oak', family: 'Mom' }, { name: 'Uncle Oak', family: 'Dad' }] };
+  const localEnv = talkEnv(names);
+  const sees = async (as, id, piece) => (await commentOf(id, piece, as, localEnv)).by;
+  const fromPine = (await (await call(`/api/pieces/${tp.Cy}/comments`, { as: PINE, method: 'POST', json: { body: 'Lovely, Cy' }, localEnv })).json()).comment;
+  // Mom to the Pines (both parents, Ada's iPad, a parent in both families), Aunt Pine to everyone else.
+  for (const as of [PINE, PINE_TOO, ADA_IPAD, BOTH]) assert.equal(await sees(as, fromPine.id, tp.Cy), 'Mom', as);
+  for (const as of [OAK, DEE, GRAN, NANA, LONER]) assert.equal(await sees(as, fromPine.id, tp.Cy), 'Aunt Pine', as);
+
+  // A shared sign-in: each person as their own family knows them, and as everyone else does.
+  assert.deepEqual((await (await call('/api/comments', { as: OAK, localEnv })).json()).me.names, [{ as: 'Aunt Oak', name: 'Mom' }, { as: 'Uncle Oak', name: 'Dad' }]);
+  let res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad' }, localEnv });
+  assert.equal(res.status, 400, 'say which');
+  res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad', as: 'Dad' }, localEnv });
+  assert.equal(res.status, 403, '`as` is the name everyone sees');
+  const fromDad = (await (await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad', as: 'uncle oak' }, localEnv })).json()).comment;
+  assert.equal(fromDad.by, 'Dad', 'to himself');
+  assert.equal(await sees(DEE, fromDad.id, tp.Dee), 'Dad');
+  for (const as of [PINE, ADA_IPAD, GRAN]) assert.equal(await sees(as, fromDad.id, tp.Dee), 'Uncle Oak', as);
+  const star = async (as, method, name) => (await (await call(`/api/pieces/${tp.Dee}/stickers/star${name ? `?as=${encodeURIComponent(name)}` : ''}`, { as, method, localEnv })).json()).stickers.find((x) => x.kind === 'star');
+  assert.deepEqual(await star(OAK, 'POST', 'Uncle Oak'), { kind: 'star', count: 1, mine: ['Uncle Oak'], by: ['Dad'] });
+  assert.deepEqual((await star(PINE, 'POST')).by, ['Uncle Oak', 'Mom'], 'Pine Mum sees herself as Mom');
+  assert.deepEqual((await (await call(`/api/pieces/${tp.Dee}/comments`, { as: GRAN, localEnv })).json()).stickers.find((x) => x.kind === 'star').by, ['Uncle Oak', 'Aunt Pine']);
+  // Said before NAMES listed them: all of them, as this person knows them.
+  const before = (await (await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'Early' }, localEnv: familyEnv(TALK_FAMILIES) })).json()).comment;
+  assert.equal(await sees(DEE, before.id, tp.Dee), 'Mom & Dad');
+  assert.equal(await sees(GRAN, before.id, tp.Dee), 'Aunt Oak & Uncle Oak');
+});
+
 test('a NAMES that can’t be read turns comments off, and only comments', async (t) => {
   t.mock.method(console, 'error', () => {});
   const broken = [
@@ -698,6 +728,11 @@ test('a NAMES that can’t be read turns comments off, and only comments', async
     JSON.stringify({ [GRAN]: 'Gran', 'GRAN@example.com': 'Granny' }),
     JSON.stringify({ [GRAN]: 'ada' }),
     JSON.stringify({ [DEE]: 'Dee two' }),
+    JSON.stringify({ [GRAN]: [{ name: 'Gran', family: 'Nan' }] }), // a family name for someone in no family
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Mom' }], [PINE_TOO]: [{ name: 'Uncle Pine', family: 'mom' }] }), // two Moms in one family
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Bo' }] }), // a kid's name
+    JSON.stringify({ [PINE]: [{ name: 'Aunt Pine', family: 'Gran' }], [GRAN]: 'Gran' }), // someone else's name
+    JSON.stringify({ [PINE]: [{ family: 'Mom' }] }),
   ];
   for (const NAMES of broken) {
     const localEnv = { ...familyEnv(TALK_FAMILIES), NAMES };
@@ -907,7 +942,7 @@ test('what’s new: each piece’s newest comment by someone else, and how far s
   assert.equal((await summary(GRAN)).me.seen, a2.id, 'never goes back');
   await seen(GRAN, c1.id);
   assert.equal((await summary(GRAN)).me.seen, c1.id);
-  assert.deepEqual((await summary(GRAN)).me.names, ['Gran'], 'reading changes nothing else');
+  assert.deepEqual((await summary(GRAN)).me.names, [{ as: 'Gran', name: 'Gran' }], 'reading changes nothing else');
   for (const bad of ['5', -1, 1.5, null]) assert.equal((await seen(GRAN, bad)).status, 400, String(bad));
   assert.equal((await seen(DEE, c1.id)).status, 200);
   assert.equal((await summary(DEE)).me.kid, 'Dee');

@@ -373,11 +373,13 @@ async function deletePiece(env, id) {
 //
 // Names come from infra, like everything else about who's who: a kid's own
 // addresses (FAMILIES' artist and devices) are that kid, and NAMES names
-// everyone else (auth.js, readNames). On a sign-in two people share, every
-// comment and sticker says which of them it's from (`as`), and anything one
-// of them can do, the other can too: the fridge can't tell them apart.
-// Someone NAMES doesn't list shows as the part of their address before the
-// @. The page gets names, never addresses.
+// everyone else (auth.js, readNames), as whoever's looking knows them: a
+// parent's own family sees "Mom", everyone else "Aunt Pine". On a sign-in
+// two people share, every comment and sticker says which of them it's from
+// (`as`, the name everyone sees), and anything one of them can do, the
+// other can too: the fridge can't tell them apart. Someone NAMES doesn't
+// list shows as the part of their address before the @. The page gets
+// names, never addresses.
 const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
 const COMMENT_MAX = 500; // characters: a few sentences
 const RATE_COUNT = 10; // comments per sign-in...
@@ -417,41 +419,59 @@ async function talk(request, env, who, url) {
   throw new HttpError(405, 'That can’t be done at that address.');
 }
 
-// Which of a shared sign-in's names is speaking (`as`), kept with what they
-// say. Anyone else is just their sign-in, kept as '', so a name changed in
-// NAMES shows everywhere: a kid (their address is theirs), someone with one
-// name, or someone NAMES doesn't list.
+// Which person on a shared sign-in is speaking (`as`, their name everyone
+// sees), kept with what they say. Anyone else is just their sign-in, kept as
+// '', so a name changed in NAMES shows everywhere: a kid (their address is
+// theirs), someone with one name, or someone NAMES doesn't list.
 function speaker(env, who, as) {
-  const names = who.kid ? [] : readNames(env).get(who.email) || [];
+  const people = who.kid ? [] : readNames(env).get(who.email) || [];
   const given = as == null || as === '' ? null : String(as);
-  if (given !== null && !who.kid && !names.some((n) => sameName(n, given))) throw new HttpError(403, 'That isn’t one of the names on your sign-in.');
-  if (names.length < 2) return '';
-  if (given === null) bad(`Say which of you this is: ${names.join(' or ')}.`);
-  return names.find((n) => sameName(n, given));
+  if (given !== null && !who.kid && !people.some((p) => sameName(p.name, given))) throw new HttpError(403, 'That isn’t one of the names on your sign-in.');
+  if (people.length < 2) return '';
+  if (given === null) bad(`Say which of you this is: ${people.map((p) => p.name).join(' or ')}.`);
+  return people.find((p) => sameName(p.name, given)).name;
 }
 
-// What the page shows for the person behind a comment or sticker: a kid's
-// own address is that kid (with their id, so the page draws their magnet);
-// everyone else is the name they spoke as, or their sign-in's names, or else
-// the part of their address before the @.
-async function namesFor(env) {
+// The families someone looks from: a parent's own, or a kid's.
+function familiesOf(env, who) {
+  const families = readFamilies(env);
+  const kids = who.kid ? families.filter((f) => f.kids.some((k) => sameName(k.name, who.kid))).map((f) => f.id) : [];
+  return [...who.families, ...kids];
+}
+
+// What `who` sees for the person behind a comment or sticker: a kid's own
+// address is that kid (with their id, so the page draws their magnet); a
+// parent is their family name to their own family ("Mom") and their name to
+// everyone else; someone with a name has it; and anyone else is the part of
+// their address before the @. On a shared sign-in, it's the person who
+// spoke, or, for what was said before NAMES listed them, all of them.
+async function namesFor(env, who) {
   const kidsByAddress = kidAddresses(env);
   const names = readNames(env);
+  const families = readFamilies(env);
+  const mine = familiesOf(env, who);
   const kids = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
+  const seen = (author) => {
+    const own = families.some((f) => f.parents.includes(author) && mine.includes(f.id));
+    return (p) => (own && p.family) || p.name;
+  };
   return (r) => {
     const kidName = kidsByAddress.get(r.author);
     if (kidName) {
       const kid = kids.find((k) => sameName(k.name, kidName));
       return { name: kid?.name ?? kidName, kid_id: kid?.id ?? null };
     }
-    return { name: r.name || (names.get(r.author) || []).join(' & ') || r.author.split('@')[0], kid_id: null };
+    const people = names.get(r.author) || [];
+    const shown = seen(r.author);
+    const spoke = r.name && people.find((p) => sameName(p.name, r.name));
+    return { name: spoke ? shown(spoke) : r.name || people.map(shown).join(' & ') || r.author.split('@')[0], kid_id: null };
   };
 }
 
 // Comments as the page gets them. `kidFor` gives each one's piece's kid, for
 // whether this person may remove it.
 async function commentsOut(env, who, rows, kidFor) {
-  const label = await namesFor(env);
+  const label = await namesFor(env, who);
   return rows.map((r) => {
     const by = label(r);
     const mine = r.author === who.email;
@@ -461,23 +481,26 @@ async function commentsOut(env, who, rows, kidFor) {
 }
 
 // Each kind of sticker on a piece: how many, who gave them (first first),
-// and `mine`: which of a shared sign-in's names gave one ('' for anyone
-// else's sign-in).
+// and `mine`: which people on a shared sign-in gave one (their `as`), or ''
+// for anyone else's sign-in.
 async function stickersOut(env, who, pieceId) {
   const rows = (await env.DB.prepare('SELECT sticker, author, name FROM stickers WHERE piece_id = ? ORDER BY created_at, rowid').bind(pieceId).all()).results;
-  const label = await namesFor(env);
+  const label = await namesFor(env, who);
   return STICKERS.map((kind) => {
     const given = rows.filter((r) => r.sticker === kind);
     return { kind, count: given.length, mine: given.filter((r) => r.author === who.email).map((r) => r.name), by: given.map((r) => label(r).name) };
   });
 }
 
-// The signed-in person: their names (a kid has their kid instead), and the
-// newest comment the page has shown them.
+// The signed-in person: the people on their sign-in, each as they'd see
+// themselves (`name`) with what to send as `as` (a kid has their kid
+// instead), and the newest comment the page has shown them.
 async function me(env, who) {
   const row = await env.DB.prepare('SELECT seen FROM people WHERE email = ?').bind(who.email).first();
-  const by = (await namesFor(env))({ author: who.email, name: '' });
-  return { names: who.kid ? [] : readNames(env).get(who.email) || [], kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
+  const label = await namesFor(env, who);
+  const by = label({ author: who.email, name: '' });
+  const people = who.kid ? [] : readNames(env).get(who.email) || [];
+  return { names: people.map((p) => ({ as: p.name, name: label({ author: who.email, name: p.name }).name })), kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
 }
 
 async function kidsById(env) {

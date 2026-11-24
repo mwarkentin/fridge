@@ -100,10 +100,11 @@ on either family's art.
   What the artist said about a piece (set with **Edit details**) stays at
   the top; comments never change it.
 - **Names** come from infra's file, like everything else about who's who.
-  `NAMES` gives each sign-in address its name ("Grandma", "Auntie Jo"), and
-  a sign-in two people share, like grandparents with one email, a name for
-  each: the page then asks which of them is commenting, and remembers it on
-  that device. A kid's own addresses are that kid: their artist address, and
+  `NAMES` gives each sign-in address its person ("Grandma"), and a sign-in
+  two people share, like grandparents with one email, a person for each:
+  the page then asks which of them is commenting, and remembers it on that
+  device. A parent can have two names: the one their own family sees
+  ("Mom") and the one everyone else sees ("Aunt Pine"). A kid's own addresses are that kid: their artist address, and
   any `devices` listed for them in `FAMILIES` (see [Families](#families)),
   such as their iPad's. The page only ever gets names, never addresses.
   Nobody can have a kid's name, and no two people share one. Someone `NAMES`
@@ -262,7 +263,7 @@ FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":
 and, to see names beside comments (a list for a shared sign-in):
 
 ```sh
-NAMES='{"you@example.com":"Pine Mum","gran@example.com":["Grandma","Pop"]}'
+NAMES='{"you@example.com":{"name":"Aunt Pine","family":"Mom"},"gran@example.com":["Grandma","Pop"]}'
 ```
 
 Then:

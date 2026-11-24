@@ -109,14 +109,21 @@ export function readFamilies(env) {
 
 // Everyone's names but the kids', from NAMES: a Worker secret infra hands to
 // the deploy, JSON like
-//   { "gran@example.com": ["Grandma", "Pop"], "pine@example.com": "Pine Mum" }
-// keyed by the address someone signs in with. A sign-in two people share,
-// like grandparents with one email, has a name for each, and they pick which
-// of them is commenting. Kids aren't in it: their own addresses are theirs
-// (FAMILIES). The names show beside comments and stickers and give nobody
-// any rights. Missing or empty means nobody has a name yet, and comments
-// show the part of an address before the @. One that can't be read throws,
-// and comments are off until it's fixed (worker.js, talk).
+//   { "gran@example.com": ["Grandma", "Pop"],
+//     "pine@example.com": [{ "name": "Aunt Pine", "family": "Mom" }] }
+// keyed by the address someone signs in with, each with a person or a list
+// of them. A sign-in two people share, like grandparents with one email,
+// has one for each, and they pick which of them is commenting. A person is
+// a name everyone sees, or { name, family }: a parent's own family (FAMILIES)
+// sees them as `family` ("Mom"), and everyone else as `name` ("Aunt Pine").
+// Kids aren't in it: their own addresses are theirs (FAMILIES). The names
+// show beside comments and stickers and give nobody any rights. Missing or
+// empty means nobody has a name yet, and comments show the part of an
+// address before the @. One that can't be read throws, and comments are off
+// until it's fixed (worker.js, talk).
+//
+// Returns each address's people as [{ name, family }], family null for
+// one name everyone sees.
 export const NAMES_MAX = 6; // on one shared sign-in
 export function readNames(env) {
   const raw = (env.NAMES || '').trim();
@@ -129,28 +136,40 @@ export function readNames(env) {
     throw new Error('NAMES isn’t valid JSON.');
   }
   if (!map || typeof map !== 'object' || Array.isArray(map)) throw new Error('NAMES must be a JSON object of addresses to names.');
-  const kids = readFamilies(env).flatMap((f) => f.kids);
+  const families = readFamilies(env);
+  const kids = families.flatMap((f) => f.kids);
   const kidAddresses = new Set(kids.flatMap((k) => [k.artist, ...k.devices]).filter(Boolean));
-  const taken = [];
+  const tidy = (n) => (typeof n === 'string' ? n.replace(/\s+/g, ' ').trim() : '');
+  const ok = (n) => n && [...n].length <= 30 && !n.includes('@');
   for (const [key, value] of Object.entries(map)) {
     if (!isEmail(key)) throw new Error('NAMES has a key that isn’t an email.');
     const email = key.trim().toLowerCase();
     if (out.has(email)) throw new Error('NAMES lists an address twice.');
     if (kidAddresses.has(email)) throw new Error('NAMES names a kid’s own address: FAMILIES names kids.');
-    const list = typeof value === 'string' ? [value] : value;
-    if (!Array.isArray(list) || !list.length || list.length > NAMES_MAX) throw new Error(`Each address in NAMES needs 1 to ${NAMES_MAX} names.`);
+    const list = Array.isArray(value) ? value : [value];
+    if (!list.length || list.length > NAMES_MAX) throw new Error(`Each address in NAMES needs 1 to ${NAMES_MAX} people.`);
+    const parentOf = families.some((f) => f.parents.includes(email));
     out.set(
       email,
-      list.map((n) => {
-        const name = typeof n === 'string' ? n.replace(/\s+/g, ' ').trim() : '';
-        if (!name || [...name].length > 30 || name.includes('@')) throw new Error('Each name in NAMES needs 1 to 30 characters, and no @.');
-        // One Grandma, and nobody passes for a kid.
-        if (taken.some((t) => sameName(t, name))) throw new Error('NAMES gives two people the same name.');
-        if (kids.some((k) => sameName(k.name, name))) throw new Error('NAMES gives someone a kid’s name.');
-        taken.push(name);
-        return name;
+      list.map((p) => {
+        const person = typeof p === 'string' ? { name: tidy(p), family: null } : { name: tidy(p?.name), family: p?.family == null ? null : tidy(p.family) };
+        if (!ok(person.name) || (person.family !== null && !ok(person.family))) throw new Error('Each name in NAMES needs 1 to 30 characters, and no @.');
+        if (person.family !== null && !parentOf) throw new Error('NAMES gives a family name to someone who isn’t a parent in FAMILIES.');
+        return person;
       }),
     );
+  }
+  // What anyone sees is never two people with one name, nor a kid's name, so
+  // nobody passes for a kid: names everyone sees are all different, and each
+  // family's own names differ from each other and from those.
+  const everyone = [...out.values()].flat();
+  const names = everyone.map((p) => p.name);
+  const clash = (list) => list.some((n, i) => list.findIndex((m) => sameName(m, n)) !== i);
+  if (clash(names)) throw new Error('NAMES gives two people the same name.');
+  if ([...names, ...everyone.map((p) => p.family).filter(Boolean)].some((n) => kids.some((k) => sameName(k.name, n)))) throw new Error('NAMES gives someone a kid’s name.');
+  for (const f of families) {
+    const own = [...out].filter(([email]) => f.parents.includes(email)).flatMap(([, people]) => people.map((p) => p.family).filter(Boolean));
+    if (clash(own) || own.some((n) => everyone.some((p) => !own.includes(p.family) && sameName(p.name, n)))) throw new Error(`NAMES gives two people in ${f.name} the same name.`);
   }
   return out;
 }

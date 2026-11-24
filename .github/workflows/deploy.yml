@@ -86,14 +86,18 @@ jobs:
           fi
           names="${NAMES:-{\}}"
           # A bad NAMES turns comments off, so it stops here too.
+          # Each person is a name, or { name, family }: what everyone sees,
+          # and what their own family sees. The Worker checks the rest.
           if ! printf '%s' "$names" | jq -e '
+            def ok: type == "string" and test("\\S") and length <= 30 and (contains("@") | not);
+            def people: [.] | flatten;
             type == "object"
             and all(to_entries[];
               (.key | test("^[^@\\s]+@[^@\\s]+$"))
-              and (.value | (type == "string") or (type == "array" and length >= 1 and length <= 6 and all(type == "string")))
-              and ([.value] | flatten | all(test("\\S") and length <= 30 and (contains("@") | not))))
-            and ([.[] | [.] | flatten | .[] | gsub("^\\s+|\\s+$"; "") | ascii_downcase] | length == (unique | length))' > /dev/null 2>&1; then
-            echo "::error::The NAMES secret isn't an object of sign-in addresses to a name, or a list of up to 6 names for a shared sign-in, each name used once, with up to 30 characters and no @. Fix fridge_people.auto.tfvars in mwarkentin/infra."
+              and (.value | people | length >= 1 and length <= 6
+                and all(if type == "object" then (.name | ok) and ((.family // null) == null or (.family | ok)) else ok end)))
+            and ([.[] | people | .[] | if type == "object" then .name else . end | gsub("^\\s+|\\s+$"; "") | ascii_downcase] | length == (unique | length))' > /dev/null 2>&1; then
+            echo "::error::The NAMES secret isn't an object of sign-in addresses to a person, or a list of up to 6 for a shared sign-in. Each person is a name, or a name and a family name, each with up to 30 characters and no @, and no two people share a name. Fix fridge_people.auto.tfvars in mwarkentin/infra."
             exit 1
           fi
           jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n}' > "$RUNNER_TEMP/secrets.json"
