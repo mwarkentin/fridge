@@ -739,7 +739,7 @@ function talkLine(p) {
   if (!comments && !stickers) return '';
   const fresh = isNew(p);
   const words = [comments && plural(comments, 'comment'), stickers && plural(stickers, 'sticker'), fresh && 'new'].filter(Boolean).join(', ');
-  return `<span class="talk-n"><span class="sr">${words}</span><span class="talk-c" aria-hidden="true">${comments ? `<span>${icon('bubble')}${comments}</span>` : ''}${stickers ? `<span>${icon('sticker')}${stickers}</span>` : ''}${fresh ? '<b class="new">New</b>' : ''}</span></span>`;
+  return `<span class="talk-n"><span class="sr">${words}</span><span class="talk-c" aria-hidden="true">${comments ? `<span>${icon('bubble')}${comments}</span>` : ''}${stickers ? `<span>${icon('star')}${stickers}</span>` : ''}${fresh ? '<b class="new">New</b>' : ''}</span></span>`;
 }
 
 // Home: the latest comments anywhere on the fridge. Each opens its piece.
