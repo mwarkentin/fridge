@@ -122,9 +122,9 @@ function gallery(today) {
 
 // ---- Made-up comments and stickers ----
 // In the real Worker's shapes (talk() in src/worker.js). The visitor's
-// sign-in is shared by two parents in the first family, Mum and Dad to
-// their own family and Aunt Oak and Uncle Oak to the other, so the page
-// asks which of them is commenting. They've read up to comment 9, so the
+// sign-in is shared by two parents in the first family, Mum and Dad on its
+// kids' art and Aunt Oak and Uncle Oak on the other family's, so the page
+// says which of them is commenting. They've read up to comment 9, so the
 // three after it are new. As parents in the first family, they could remove
 // comments on its kids' art. The page keeps what the visitor adds to
 // itself: the Worker above refuses every change.
@@ -170,7 +170,7 @@ function talkSummary(today) {
     if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: Math.max(0, ...on.map((c) => c.id)) };
   }
   const latest = [...COMMENTS].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, c));
-  return { me: { names: [{ as: 'Aunt Oak', name: 'Mum' }, { as: 'Uncle Oak', name: 'Dad' }], kid: null, kid_id: null, seen: 9 }, newest: Math.max(...COMMENTS.map((c) => c.id)), counts, latest };
+  return { me: { names: [{ name: 'Aunt Oak', home: 'Mum' }, { name: 'Uncle Oak', home: 'Dad' }], families: [VISITOR_FAMILY], kid: null, kid_id: null, seen: 9 }, newest: Math.max(...COMMENTS.map((c) => c.id)), counts, latest };
 }
 const pieceTalk = (today, id) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, c)), stickers: stickersOn(id) });
 

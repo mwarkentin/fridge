@@ -100,7 +100,7 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
   // The same keys as the real Worker's (tests/worker.test.js, COMMENT_KEYS).
   const KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
   assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me', 'newest']);
-  assert.deepEqual(s.me, { names: [{ as: 'Aunt Oak', name: 'Mum' }, { as: 'Uncle Oak', name: 'Dad' }], kid: null, kid_id: null, seen: 9 }, 'a shared sign-in, so the page asks which of them it is');
+  assert.deepEqual(s.me, { names: [{ name: 'Aunt Oak', home: 'Mum' }, { name: 'Uncle Oak', home: 'Dad' }], families: ['oaks'], kid: null, kid_id: null, seen: 9 }, 'a shared sign-in, so the page says which of them it is');
   assert.equal(s.latest.length, 8);
   assert.deepEqual(s.latest.map((c) => c.id), [...s.latest.map((c) => c.id)].sort((a, b) => b - a), 'newest first');
   assert.ok(s.latest.filter((c) => c.id > s.me.seen).length >= 2, 'some are new');
