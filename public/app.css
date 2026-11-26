@@ -421,9 +421,10 @@ textarea { resize: vertical; }
 .stk:nth-child(even) .stk-art { --r: 6deg; }
 .stk-l { max-width: 100%; overflow-wrap: anywhere; }
 .stk-n { position: absolute; top: 1px; right: 3px; min-width: 22px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 2px var(--btn-line); font: 900 12.5px/1.45 var(--body); font-variant-numeric: tabular-nums; }
-.stk[aria-pressed="true"] { background: var(--kid-soft); color: var(--ink); box-shadow: inset 0 0 0 2.5px var(--kid); }
-.stk[aria-pressed="true"] .stk-art { --r: 0deg; }
-.stk[aria-pressed="true"] .stk-n { background: var(--kid); color: var(--on-kid); box-shadow: none; }
+.stk-static { cursor: default; }
+.stk[aria-pressed="true"], .stk.is-mine { background: var(--kid-soft); color: var(--ink); box-shadow: inset 0 0 0 2.5px var(--kid); }
+.stk[aria-pressed="true"] .stk-art, .stk.is-mine .stk-art { --r: 0deg; }
+.stk[aria-pressed="true"] .stk-n, .stk.is-mine .stk-n { background: var(--kid); color: var(--on-kid); box-shadow: none; }
 .stk:focus-visible { outline: 3px solid var(--cr-blue); outline-offset: 2px; }
 .stk:disabled { cursor: progress; opacity: 0.55; }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) { .stk-art { transition: transform 0.2s cubic-bezier(0.3, 0.7, 0.4, 1.5); } .stk:hover .stk-art { transform: rotate(0deg) scale(1.08); } }
@@ -626,11 +627,12 @@ textarea { resize: vertical; }
   .a-buttons .btn:not(#a-submit) { flex: 1 1 0; }
 }
 
-/* View as: an owner sees the fridge as someone else does. The strip stays at
-   the top, above the header, the piece view and the sheets, which move down
-   below it (--viewing-h, its height, set by app.js), so it's always in
-   sight. It's written on masking tape. */
-.viewing { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 35; background: var(--label); color: var(--label-ink); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+/* View as: an owner sees the fridge as someone else does. The strip is fixed
+   at the top, above the header, the piece view and the sheets, which move
+   down below it (--viewing-h, its height, set by app.js), so it's always in
+   sight and never covers anything. It's written on masking tape. */
+.viewing { position: fixed; top: env(safe-area-inset-top, 0px); left: 0; right: 0; z-index: 35; background: var(--label); color: var(--label-ink); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+body.viewing-as { padding-top: var(--viewing-h, 0px); }
 body.viewing-as .bar { top: calc(env(safe-area-inset-top, 0px) + var(--viewing-h, 0px)); }
 body.viewing-as :is(.overlay, .sheet-wrap, .a-view, .frame) { top: calc(env(safe-area-inset-top, 0px) + var(--viewing-h, 0px)); padding-top: 0; }
 body.viewing-as .sheet-wrap { padding-top: 16px; }

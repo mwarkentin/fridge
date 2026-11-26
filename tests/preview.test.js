@@ -135,7 +135,7 @@ test('says it’s a preview, with the real Worker’s security headers', async (
   const page = await call('/');
   const body = await page.text();
   assert.match(body, /<title>Preview · The Fridge<\/title>/);
-  assert.match(body, /<body[^>]*><div [^>]*>Preview with a made-up family\. <a href="\/\?as=nonna"[^>]*>See it as Nonna, who sees only the Pines<\/a><\/div>/);
+  assert.match(body, /<body[^>]*><div [^>]*>Preview with a made-up family\. <a href="\/\?view=nonna"[^>]*>View it as Nonna, who sees only the Pines<\/a><\/div>/);
   assert.equal(page.headers.get('Content-Length'), null);
   assert.equal(page.headers.get('X-Robots-Tag'), 'noindex, nofollow');
   const real = await worker.fetch(new Request('https://fridge.example.com/'), {});
@@ -247,4 +247,6 @@ test('view as: shows what that person sees, with changes still refused', async (
   assert.equal((await (await viewing('nobody', '/api/session')).json()).viewing, undefined);
   // Still nothing changes.
   for (const method of ['POST', 'DELETE']) assert.equal((await viewing('nonna', '/api/view-as', { method })).status, 403);
+  // Its strip doesn't offer another way to look as someone.
+  assert.doesNotMatch(await (await call('/?view=nonna')).text(), /\?as=nonna/);
 });

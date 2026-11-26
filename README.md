@@ -376,9 +376,10 @@ on the pull request. It's the branch's page with two made-up families, Ada
 and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings,
 comments and stickers that `preview/worker.js` makes up. To see it as
 Nonna, a grandparent who sees only the first family, follow the link in
-the strip at the top, or add `?as=nonna` to its address. The parent is an
-owner, so **View as** can be tried there too: it adds `?view=` to the
-address instead of setting anything. Stickers and
+the strip at the top: it's **View as**, with nothing to change, which the
+parent can use because they're an owner. It adds `?view=` to the address
+instead of setting anything. To try the page as Nonna herself, comments
+and all, add `?as=nonna` to its address. Stickers and
 comments added there stay in the page until it's reloaded. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request

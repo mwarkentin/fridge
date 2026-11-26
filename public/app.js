@@ -834,7 +834,7 @@ function talkViewing(kid, shared) {
   const as = shared ? `<p class="as-line as-fixed">They’d be commenting as <b>${esc(shownOn(TALK.me.names.find((p) => p.name === speaking()) || TALK.me.names[0], kid))}</b></p>` : '';
   return `<section class="talk" id="talk" aria-labelledby="talk-h">
     <h3 class="talk-h" id="talk-h">Stickers</h3>
-    <div class="stickers" id="t-stickers" role="group" aria-label="Stickers"></div>
+    <div class="stickers" id="t-stickers" role="list" aria-label="Stickers"></div>
     <p class="st-from" id="t-from"></p>
     <h3 class="talk-h">Comments<span class="count" id="t-count"></span></h3>
     <ol class="c-list" id="t-list" aria-label="Comments"></ol>
@@ -889,12 +889,22 @@ function drawStickers() {
   if (!box || !talking) return;
   const loaded = Boolean(talking.stickers);
   const as = speaking();
+  // Looking as someone, they're only shown: the ones given, with how many,
+  // and nothing that looks like it could be tapped.
+  if (VIEWING) {
+    const given = STICKERS.map((s) => ({ ...s, ...(talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] }) })).filter((s) => s.count);
+    box.innerHTML = given.map((s) => `<span class="stk stk-static${s.mine.includes(as) ? ' is-mine' : ''}" role="listitem" aria-label="${esc(s.label)}, ${s.count}${s.mine.includes(as) ? `, one from ${esc(VIEWING.name)}` : ''}"><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span><b class="stk-n" aria-hidden="true">${s.count}</b></span>`).join('');
+    box.hidden = !given.length;
+    const givers = (talking.stickers || []).flatMap((s) => s.by);
+    $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet.';
+    return;
+  }
   box.innerHTML = STICKERS.map((s) => {
     const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] };
-    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded && !VIEWING ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
+    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
   }).join('');
   const givers = (talking.stickers || []).flatMap((s) => s.by);
-  $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : VIEWING ? 'No stickers yet.' : 'No stickers yet. Tap one to give it.';
+  $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet. Tap one to give it.';
 }
 function drawComments() {
   const list = $('#t-list');

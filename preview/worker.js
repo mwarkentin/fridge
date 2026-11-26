@@ -119,7 +119,9 @@ const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
 // away under the header, so it covers nothing.
 async function markAsPreview(res, who) {
   const link = (href, words) => `<a href="${href}" style="display:inline-block;padding:4px 2px;color:inherit;text-decoration:underline;text-underline-offset:3px">${words}</a>`;
-  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : `Preview with a made-up family. ${link('/?as=nonna', 'See it as Nonna, who sees only the Pines')}`;
+  // Seeing it as someone else is View as, with nothing to change, like the
+  // real one. ?as=nonna, Nonna's own page, is still there to try as her.
+  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : who.viewing ? 'Preview with a made-up family.' : `Preview with a made-up family. ${link('/?view=nonna', 'View it as Nonna, who sees only the Pines')}`;
   const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">${words}</div>`;
   const html = (await res.text()).replace(/<title>([^<]*)<\/title>/, '<title>Preview · $1</title>').replace(/<body[^>]*>/, (body) => body + strip);
   const headers = new Headers(res.headers);
