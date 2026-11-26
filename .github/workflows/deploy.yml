@@ -48,7 +48,7 @@ jobs:
       - name: Apply database migrations
         run: npx wrangler d1 migrations apply fridge --remote
 
-      # PARENT_EMAILS, FAMILIES, NAMES and SEES go up as Worker secrets, in a
+      # PARENT_EMAILS, FAMILIES, NAMES, SEES and ADMINS go up as Worker secrets, in a
       # file so they're never on a command line. The Access settings aren't
       # secret. FAMILIES (the families, their parents and their kids, from
       # infra's fridge_people.auto.tfvars) can be missing, which means no
@@ -56,13 +56,16 @@ jobs:
       # are. NAMES (what everyone but the kids is called beside comments,
       # from the same file) can be missing too, which means nobody has a
       # name yet. So can SEES (who sees only some families, from the same
-      # file), which means everyone sees every family.
+      # file), which means everyone sees every family. So can ADMINS (the
+      # owners, who can view the fridge as someone else, from the same file),
+      # which means nobody can.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}
           FAMILIES: ${{ secrets.FAMILIES }}
           NAMES: ${{ secrets.NAMES }}
           SEES: ${{ secrets.SEES }}
+          ADMINS: ${{ secrets.ADMINS }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
         run: |
@@ -117,6 +120,15 @@ jobs:
             echo "::error::The SEES secret isn't an object of sign-in addresses to lists of one or more family ids from FAMILIES. Fix fridge_people.auto.tfvars in mwarkentin/infra."
             exit 1
           fi
-          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s}' > "$RUNNER_TEMP/secrets.json"
+          # A bad ADMINS turns view as off, so it stops here too: sign-in
+          # addresses separated by commas, each one of PARENT_EMAILS.
+          if ! jq -n -e --arg p "$PARENT_EMAILS" --arg a "${ADMINS:-}" '
+            def list: split(",") | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase);
+            ($p | list) as $parents
+            | $a | if test("^\\s*$") then true else list | all(test("^[^@\\s]+@[^@\\s]+$") and (. as $e | any($parents[]; . == $e))) end' > /dev/null 2>&1; then
+            echo "::error::The ADMINS secret isn't sign-in addresses separated by commas, each one of PARENT_EMAILS. Fix fridge_people.auto.tfvars in mwarkentin/infra."
+            exit 1
+          fi
+          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" --arg a "${ADMINS:-}" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s, ADMINS: $a}' > "$RUNNER_TEMP/secrets.json"
           npx wrangler deploy --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD" --secrets-file "$RUNNER_TEMP/secrets.json"
           rm "$RUNNER_TEMP/secrets.json"

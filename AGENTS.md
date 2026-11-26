@@ -42,9 +42,12 @@ history on `main` is permanent.
   address, and a parent can go by another name ("Mom") on their own
   family's kids' art, the same to everyone. Someone in no family can be
   shown only some families (the `SEES` Worker secret, `readSees`), and
-  `canSee` is the one rule for who sees which kids. It fails closed: with
+  `canSee` is the one rule for who sees which kids. The owners (the
+  `ADMINS` Worker secret, `readAdmins`, each one a parent) can view the
+  fridge as anyone else (`viewable`, `viewedAs`). It fails closed: with
   no Access settings, or a `FAMILIES` or `SEES` it can't read, nobody gets
-  in; with a `NAMES` it can't read, comments are off.
+  in; with a `NAMES` it can't read, comments are off; with an `ADMINS` it
+  can't read, nobody can view as anyone.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -66,7 +69,8 @@ history on `main` is permanent.
   `wrangler.toml` gives it no bindings. It's seen as a parent in the
   first family, or, from a page opened with `?as=nonna`, as Nonna, who
   sees only that family (the page's requests carry that address as their
-  Referer). `.github/workflows/preview.yml`
+  Referer). The parent is an owner, and `?view=` is them viewing as one of
+  its people, in place of the real Worker's cookie. `.github/workflows/preview.yml`
   deploys one per pull request and deletes it when the pull request closes.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
   computer. It signs in with `cloudflared` as that parent.
@@ -85,7 +89,7 @@ mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 `fridge-art` bucket, the `fridge` database, the Access application and its
 policies, the custom domain, the deploy token, and this repo's Actions
 secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
-`NAMES`, `SEES`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
+`NAMES`, `SEES`, `ADMINS`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
 `ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
 since Access doesn't guard those addresses. The previews are public on
@@ -138,6 +142,17 @@ workers.dev only because they're a separate Worker with nothing real on it.
   only from infra (`NAMES`, `FAMILIES`): don't add a route that sets them.
   Comments and stickers are deleted with their piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
   piece) in the Worker.
+- View as (`viewAs` in `worker.js`) is for the owners only (`isOwner`):
+  anyone else's cookie counts for nothing, and the list of people
+  (`/api/view-as`) goes to nobody else. The person viewed's `who` is the
+  one they'd get signing in themselves (`viewedAs`), so every route and
+  `canSee` treat it as theirs; never special-case it in a route. While
+  it's on, `readOnly` refuses every change before any route runs, and the
+  importer's routes, so nothing about the person viewed is written; the
+  only change that goes through is stopping (`DELETE /api/view-as`). A
+  new route that writes on a `GET` would break that: don't add one. The
+  page hides what would change things (`VIEWING` in `app.js`), and
+  doesn't mark anything seen.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`), comments and names included.
 - The preview Worker never gets a binding, a sign-in or anything real:

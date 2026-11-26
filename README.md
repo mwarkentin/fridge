@@ -24,7 +24,9 @@ old iPad on the counter. Only family can see it.
   way around the sign-in. Parents can change things (with families set up,
   only their own family's: see [Families](#families)); everyone else can
   look. Someone in no family can be shown only some families' art (see
-  [Who sees what](#who-sees-what)).
+  [Who sees what](#who-sees-what)). The fridge's owners can look at it as
+  anyone else would see it, with nothing to change (see
+  [View as](#view-as)).
   The one thing anyone can fetch is the app icons in `public/icons/`, since
   iOS fetches Home Screen icons without the sign-in. They're in this repo
   for anyone to see anyway.
@@ -62,9 +64,9 @@ Everything about who's who is in one place: infra's
 its parents and its kids, and each kid with their birthday. Infra hands
 this repo `PARENT_EMAILS` (every family's parents), `FAMILIES` (each
 family with its parents and kids), `NAMES` (what everyone but the kids
-is called beside comments, by sign-in address) and `SEES` (who sees only
-some families) as Actions secrets, and the Deploy workflow gives them to
-the Worker.
+is called beside comments, by sign-in address), `SEES` (who sees only
+some families) and `ADMINS` (the owners, who can view the fridge as someone
+else) as Actions secrets, and the Deploy workflow gives them to the Worker.
 
 - **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
   doesn't have yet, and copies over a changed birthday or spelling, the
@@ -164,6 +166,38 @@ on either family's art (any art they see: see
   the walls shows its comments and stickers, with **New** when someone else
   has commented since then. Frame shows none of it. There are no emails.
 - Taking a piece off the fridge takes its comments and stickers with it.
+
+## View as
+
+The fridge's owners can see it exactly as someone else would: a
+grandparent, a kid's iPad, an artist, a parent in the other family, or
+someone shown only some families. It's for checking a change ("what does
+Nonna see now?") without asking them to look.
+
+- **Who can.** The owners are in infra's file, and reach the Worker as
+  `ADMINS`: sign-in addresses separated by commas, each one a parent's.
+  Missing or empty, nobody can. One that can't be read (an address that
+  isn't a parent's, say) also means nobody can, and the Deploy workflow
+  stops on it. Nobody else can turn it on, whatever they send.
+- **Whom.** The eye button in the header lists everyone the fridge knows of
+  from infra's file, by name and grouped by family: each family's parents,
+  then its kids (an artist, and each of a kid's devices, which are the
+  kid), then everyone else, with what they see. On a sign-in two people
+  share, each of them is there, so their names come out right. An address
+  shows only where the name alone wouldn't tell two of them apart.
+- **What you see** is what they'd see if they signed in themselves: their
+  kids, art, pictures, comments, stickers, names and what's new for them,
+  through the same rules as everything else. A strip across the top says
+  whose eyes you're looking through, with **Switch** and **Stop**.
+- **Nothing changes.** While it's on, the Worker refuses every change
+  before anything else runs, and the page hides what would change things:
+  no comments, stickers, Add art, edits, favourites or the importer. So
+  nothing about them moves either: their last visit, what's new for them
+  and what they've read stay as they were. Stopping is the one thing that
+  goes through.
+- It's remembered in a cookie that only the fridge can read, for an hour,
+  so the pictures follow it too, and it counts only with an owner's own
+  sign-in.
 
 ## Setting it up
 
@@ -316,6 +350,12 @@ and, to show someone only one family:
 SEES='{"nonna@example.com":["pine"]}'
 ```
 
+and, to view the fridge as any of them (see [View as](#view-as)):
+
+```sh
+ADMINS=you@example.com
+```
+
 Then:
 
 ```sh
@@ -336,7 +376,10 @@ on the pull request. It's the branch's page with two made-up families, Ada
 and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings,
 comments and stickers that `preview/worker.js` makes up. To see it as
 Nonna, a grandparent who sees only the first family, follow the link in
-the strip at the top, or add `?as=nonna` to its address. Stickers and
+the strip at the top: it's **View as**, with nothing to change, which the
+parent can use because they're an owner. It adds `?view=` to the address
+instead of setting anything. To try the page as Nonna herself, comments
+and all, add `?as=nonna` to its address. Stickers and
 comments added there stay in the page until it's reloaded. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request

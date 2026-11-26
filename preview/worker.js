@@ -31,6 +31,7 @@ async function handle(request, env) {
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
   const who = visitor(request);
   if (pathname === '/api/session') return json(who.session);
+  if (pathname === '/api/view-as') return who.session.owner ? json(viewAsList(who)) : json({ error: 'Only the fridge’s owners can view it as someone else.' }, 403);
   if (pathname === '/api/gallery') return json(gallery(new Date(), who));
   if (pathname === '/api/comments') return json(talkSummary(new Date(), who));
   const talk = pathname.match(/^\/api\/pieces\/(\d+)\/comments$/);
@@ -52,16 +53,19 @@ async function handle(request, env) {
 }
 
 // Who's looking. Usually a parent in the first family: Aunt Pine and Uncle
-// Pine, who share a sign-in. With ?as=nonna on the page's address, it's
-// Nonna, a grandparent on their side who sees only the first family (as SEES
-// has it in the real Worker): not the other family, its kids, their art, nor
-// what's said about it. The page's own requests carry its address as their
-// Referer, so that's where the API and the pictures look; nothing is
-// remembered, and nothing signs anyone in.
+// Pine, who share a sign-in, and who own the fridge, so they can view it as
+// someone else. With ?as=nonna on the page's address, it's Nonna, a
+// grandparent on their side who sees only the first family (as SEES has it
+// in the real Worker): not the other family, its kids, their art, nor what's
+// said about it. With ?view=, it's the parent viewing it as one of the
+// people in VIEW, with changes off, as the real Worker's view as does with a
+// cookie. The page's own requests carry its address as their Referer, so
+// that's where the API and the pictures look; nothing is remembered, and
+// nothing signs anyone in.
 const PARENT = {
   name: null,
   sees: null,
-  session: { email: 'visitor@example.com', canEdit: true, preview: true, families: ['pines'] },
+  session: { email: 'visitor@example.com', canEdit: true, preview: true, families: ['pines'], owner: true },
   me: { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: 9 },
 };
 const NONNA = {
@@ -70,17 +74,43 @@ const NONNA = {
   session: { email: 'nonna@example.com', canEdit: false, preview: true, families: [], artist: null },
   me: { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: 10 },
 };
+// Ada's own iPad, which is Ada.
+const ADA_IPAD = {
+  name: 'Ada',
+  sees: null,
+  session: { email: 'ada.ipad@example.com', canEdit: false, preview: true, families: [], artist: null },
+  me: { names: [], families: [], kid: 'Ada', kid_id: 1, seen: 10 },
+};
+// Whom the parent can view it as, in the shape of the real /api/view-as.
+const VIEW = [
+  { key: 'aunt-pine', group: 'pines', who: PARENT, email: 'visitor@example.com', as: 'Aunt Pine', name: 'Aunt Pine', detail: 'Parent, “Mum” at home' },
+  { key: 'uncle-pine', group: 'pines', who: PARENT, email: 'visitor@example.com', as: 'Uncle Pine', name: 'Uncle Pine', detail: 'Parent, “Dad” at home' },
+  { key: 'ada-ipad', group: 'pines', who: ADA_IPAD, email: 'ada.ipad@example.com', as: null, name: 'Ada', detail: 'Their iPad' },
+  { key: 'nonna', group: null, who: NONNA, email: 'nonna@example.com', as: null, name: 'Nonna', detail: 'Sees only The Pines' },
+];
 function visitor(request) {
   const url = new URL(request.url);
   let from = url;
-  if (!url.searchParams.has('as')) {
+  if (!url.searchParams.has('as') && !url.searchParams.has('view')) {
     try {
       const referer = new URL(request.headers.get('Referer'));
       if (referer.origin === url.origin) from = referer;
     } catch {}
   }
+  const view = VIEW.find((v) => v.key === from.searchParams.get('view'));
+  if (view) {
+    const { name, detail, as } = view;
+    return { ...view.who, viewing: view, session: { ...view.who.session, owner: true, viewing: { name, detail, as } } };
+  }
   return from.searchParams.get('as') === 'nonna' ? NONNA : PARENT;
 }
+const viewAsList = (who) => ({
+  groups: [
+    { id: 'pines', name: 'The Pines', people: VIEW.filter((v) => v.group === 'pines') },
+    { id: null, name: 'Everyone else', people: VIEW.filter((v) => v.group === null) },
+  ].map((g) => ({ ...g, people: g.people.map(({ key, email, as, name, detail }) => ({ key, email, as, name, detail, address: false })) })),
+  viewing: who.viewing ? { email: who.viewing.email, as: who.viewing.as } : null,
+});
 const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
 const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
 
@@ -89,7 +119,9 @@ const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
 // away under the header, so it covers nothing.
 async function markAsPreview(res, who) {
   const link = (href, words) => `<a href="${href}" style="display:inline-block;padding:4px 2px;color:inherit;text-decoration:underline;text-underline-offset:3px">${words}</a>`;
-  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : `Preview with a made-up family. ${link('/?as=nonna', 'See it as Nonna, who sees only the Pines')}`;
+  // Seeing it as someone else is View as, with nothing to change, like the
+  // real one. ?as=nonna, Nonna's own page, is still there to try as her.
+  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : who.viewing ? 'Preview with a made-up family.' : `Preview with a made-up family. ${link('/?view=nonna', 'View it as Nonna, who sees only the Pines')}`;
   const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">${words}</div>`;
   const html = (await res.text()).replace(/<title>([^<]*)<\/title>/, '<title>Preview · $1</title>').replace(/<body[^>]*>/, (body) => body + strip);
   const headers = new Headers(res.headers);

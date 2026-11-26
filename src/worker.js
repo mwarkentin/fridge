@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, canSee, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily } from './auth.js';
+import { canChangeKid, canSee, identify, isArtistOf, isOwner, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily, viewable, viewedAs } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -59,6 +59,8 @@ async function handle(request, env) {
 
   const url = new URL(request.url);
   try {
+    who = viewAs(request, env, who);
+    if (who.viewing) readOnly(request, url, who);
     if (url.pathname.startsWith('/api/')) return await api(request, env, who, url);
     const img = url.pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
     if (img) {
@@ -81,7 +83,8 @@ async function api(request, env, who, url) {
   if (method !== 'GET' && method !== 'HEAD' && request.headers.get('X-Requested-With') !== 'fridge') {
     throw new HttpError(403, 'Changes have to come from the fridge’s own page or importer.');
   }
-  if (method === 'GET' && path === '/api/session') return json({ email: who.email, canEdit: who.canEdit, families: who.families, artist: who.artist });
+  if (method === 'GET' && path === '/api/session') return json(session(env, who));
+  if (path === '/api/view-as') return viewAsRoute(request, env, who);
   if (method === 'GET' && path === '/api/gallery') return json(await gallery(env, who));
   // Comments and stickers are for everyone signed in, with their own rules.
   const talked = await talk(request, env, who, url);
@@ -120,6 +123,108 @@ async function api(request, env, who, url) {
     }
   }
   throw new HttpError(404, 'There’s nothing at that address.');
+}
+
+// What the page needs to know about who's looking. `owner`, there only for
+// an owner, says they may view the fridge as someone else; while they are, everything else is that
+// person's, and `viewing` says whom, by name.
+function session(env, who) {
+  const out = { email: who.email, canEdit: who.canEdit, families: who.families, artist: who.artist };
+  if (who.viewing || isOwner(env, who)) out.owner = true;
+  if (who.viewing) out.viewing = { name: who.viewing.name, detail: who.viewing.detail, as: who.viewing.as };
+  return out;
+}
+
+// ---- Viewing as someone else ----
+// An owner (ADMINS, auth.js) can see the fridge exactly as someone else
+// would: their kids, art, pictures, comments, stickers and names, through
+// the same canSee and namesFor, because `who` is the one that person would
+// have signed in themselves. It's remembered in a cookie for an hour, so the
+// pictures follow it too, and only an owner's own sign-in makes it count:
+// anyone else's is ignored, whatever it says. While it's on, nothing
+// changes (readOnly), so nothing about the person viewed moves either: not
+// their last visit, nor what's new for them.
+const VIEW_COOKIE = '__Host-fridge-view-as';
+const VIEW_SECONDS = 3600;
+const b64url = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64url = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
+
+function viewCookie(request) {
+  for (const part of (request.headers.get('Cookie') || '').split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === VIEW_COOKIE) return v.join('=');
+  }
+  return null;
+}
+// The person someone's viewing as, from the cookie: { email, as } until it
+// expires, else null.
+function readViewCookie(request, now = Date.now()) {
+  const raw = viewCookie(request);
+  const m = raw && raw.match(/^(\d{10,13})\.([A-Za-z0-9_-]+)$/);
+  if (!m || Number(m[1]) < now || Number(m[1]) > now + VIEW_SECONDS * 1000 + 60_000) return null;
+  try {
+    const [email, as] = JSON.parse(unb64url(m[2]));
+    return typeof email === 'string' && (as === null || typeof as === 'string') ? { email, as } : null;
+  } catch {
+    return null;
+  }
+}
+const setViewCookie = (value, seconds) => `${VIEW_COOKIE}=${value}; Max-Age=${seconds}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+
+// One of the people an owner can view as (auth.js, viewable), or null.
+function findViewable(env, { email, as }) {
+  return viewable(env).flatMap((g) => g.people).find((p) => p.email === String(email).trim().toLowerCase() && (p.as ?? null) === (as ?? null)) ?? null;
+}
+
+// The `who` to answer as: the person an owner is viewing as, or whoever
+// signed in. A cookie from anyone but an owner, or for someone the fridge no
+// longer lists, is ignored.
+function viewAs(request, env, who) {
+  if (!isOwner(env, who)) return who;
+  const target = readViewCookie(request);
+  if (!target) return who;
+  let entry;
+  try {
+    entry = findViewable(env, target);
+  } catch (e) {
+    console.error('view as', e);
+    return who;
+  }
+  return entry ? viewedAs(env, who.email, entry) : who;
+}
+
+// While viewing as someone, every change is refused here, before any route
+// runs: the only one that goes through is stopping. The importer's routes
+// are refused too, even to read.
+function readOnly(request, url, who) {
+  const { method } = request;
+  if (url.pathname === '/api/view-as' && method === 'DELETE') return;
+  const importer = url.pathname === '/api/imported' || url.pathname === '/api/skipped';
+  if (importer || (method !== 'GET' && method !== 'HEAD')) throw new HttpError(403, `You’re viewing as ${who.viewing.name}; changes are off.`);
+}
+
+// GET: the people an owner can view as. POST { email, as }: start viewing as
+// one of them. DELETE: stop, for anyone, since it only clears the cookie.
+async function viewAsRoute(request, env, who) {
+  const { method } = request;
+  if (method === 'DELETE') return new Response(null, { status: 204, headers: { 'Set-Cookie': setViewCookie('', 0), 'Cache-Control': 'no-store' } });
+  const owner = who.viewing ? true : isOwner(env, who);
+  if (!owner) throw new HttpError(403, 'Only the fridge’s owners can view it as someone else.');
+  if (method === 'GET') {
+    try {
+      return json({ groups: viewable(env), viewing: who.viewing ? { email: who.email, as: who.viewing.as } : null });
+    } catch (e) {
+      console.error('view as', e);
+      throw new HttpError(503, 'The fridge’s list of people can’t be read just now.');
+    }
+  }
+  if (method !== 'POST') throw new HttpError(405, 'That can’t be done at that address.');
+  const b = await body(request);
+  if (typeof b.email !== 'string' || (b.as != null && typeof b.as !== 'string')) bad('Say whom to view as: email, and as for a shared sign-in.');
+  const entry = findViewable(env, { email: b.email, as: b.as ?? null });
+  if (!entry) bad('That isn’t someone the fridge lets in.');
+  const value = `${Date.now() + VIEW_SECONDS * 1000}.${b64url(JSON.stringify([entry.email, entry.as]))}`;
+  return Response.json({ viewing: { name: entry.name, detail: entry.detail, as: entry.as } }, { headers: { 'Set-Cookie': setViewCookie(value, VIEW_SECONDS), 'Cache-Control': 'no-store' } });
 }
 
 // The families, kids and pieces this person sees (canSee): for someone who
@@ -685,7 +790,9 @@ async function image(env, who, id, variant) {
   headers.set('ETag', obj.httpEtag);
   // A piece's images never change (edits only touch its details), and ids are
   // never reused. Private: only the signed-in browser keeps them.
-  headers.set('Cache-Control', 'private, max-age=31536000, immutable');
+  // Not kept while viewing as someone, so what's shown then is only what
+  // the Worker gave for them.
+  headers.set('Cache-Control', who.viewing ? 'private, no-store' : 'private, max-age=31536000, immutable');
   if (variant === 'original') {
     const type = obj.httpMetadata?.contentType || '';
     headers.set('Content-Disposition', `attachment; filename="fridge-${id}${ORIGINAL_EXT[type] || ''}"`);
