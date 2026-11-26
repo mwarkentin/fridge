@@ -22,6 +22,11 @@ let GROUPS = [];
 let HEADS = false;
 let MY_FAMILIES = [];
 let ARTIST = null; // the kid's name, for a kid signed in to add their own art
+// An owner, who can look at the fridge as someone else (ADMINS), and while
+// they are, whom: { name, detail, as }. Everything else on the page is then
+// that person's, with nothing to change: the Worker refuses every change.
+let OWNER = false;
+let VIEWING = null;
 let MINE = new Set(); // the pieces that artist added
 // The Worker's rules, so the page offers only what it would allow: a parent
 // can change a kid's pieces if the kid is in one of the parent's families
@@ -529,11 +534,15 @@ async function load() {
   // it began. On a first visit nothing is new yet.
   if (TALK && SEEN === null) SEEN = TALK.me.seen ?? NEVER;
   if (notes) NOTES = notes;
-  CAN_EDIT = session.canEdit;
+  OWNER = Boolean(session.owner);
+  VIEWING = session.viewing ?? null;
+  // Looking as someone, nothing is offered that would change anything.
+  CAN_EDIT = session.canEdit && !VIEWING;
   PREVIEW = Boolean(session.preview);
   MY_FAMILIES = session.families || [];
-  ARTIST = session.artist ?? null;
-  MINE = new Set(data.mine || []);
+  ARTIST = VIEWING ? null : (session.artist ?? null);
+  MINE = new Set(VIEWING ? [] : data.mine || []);
+  showViewing();
   const families = arrange(data.kids, data.families, session.families);
   ({ grouped: GROUPED, heads: HEADS, groups: GROUPS, kids: KIDS } = families);
   for (const k of KIDS) Object.assign(k, { colour: `var(--kid-${k.ci})`, soft: `var(--kid-${k.ci}-soft)`, slug: `kid-${k.id}` });
@@ -543,8 +552,9 @@ async function load() {
   drawBell();
   // Opening the fridge catches someone up, so next time only newer things
   // are new, unless something's waiting for them in the bell: then that
-  // waits, and the walls' New marks with it, until they open it.
-  if (NOTES && !NOTES.unread) caughtUp();
+  // waits, and the walls' New marks with it, until they open it. Not while
+  // viewing as someone: what's new for them stays new.
+  if (NOTES && !NOTES.unread && !VIEWING) caughtUp();
 }
 
 // ---- Piece view ----
@@ -719,6 +729,7 @@ const AS_KEY = 'fridge-as';
 function speaking() {
   const people = TALK?.me.names || [];
   if (people.length < 2) return '';
+  if (VIEWING) return (people.find((p) => p.name === VIEWING.as) || people[0]).name;
   let saved = null;
   try {
     saved = localStorage.getItem(AS_KEY);
@@ -801,6 +812,7 @@ function talkSection(p) {
   const shared = people.length > 1;
   // On a shared sign-in, who's commenting, above the comment box, and their
   // names to pick from once Change is tapped. Stickers go by the same choice.
+  if (VIEWING) return talkViewing(kid, shared);
   const asLine = shared ? `<p class="as-line" id="t-as">Commenting as <b id="t-as-name"></b><span aria-hidden="true">·</span><button class="as-change" type="button" id="t-as-change" aria-expanded="false" aria-controls="t-as-pick">Change</button></p>` : '';
   const asPick = shared
     ? `<div class="as-pick" id="t-as-pick" role="group" aria-labelledby="t-as-h" hidden><p class="as-h" id="t-as-h">Who’s commenting?</p><div class="as-opts">${people.map((p) => `<button class="as-card" type="button" data-as="${esc(p.name)}" aria-pressed="false">${icon('check')}${esc(shownOn(p, kid))}</button>`).join('')}</div></div>`
@@ -824,9 +836,23 @@ function talkSection(p) {
   </section>`;
 }
 
+// The same, looking as someone else: what they'd see, and nothing to do.
+function talkViewing(kid, shared) {
+  const as = shared ? `<p class="as-line as-fixed">They’d be commenting as <b>${esc(shownOn(TALK.me.names.find((p) => p.name === speaking()) || TALK.me.names[0], kid))}</b></p>` : '';
+  return `<section class="talk" id="talk" aria-labelledby="talk-h">
+    <h3 class="talk-h" id="talk-h">Stickers</h3>
+    <div class="stickers" id="t-stickers" role="list" aria-label="Stickers"></div>
+    <p class="st-from" id="t-from"></p>
+    <h3 class="talk-h">Comments<span class="count" id="t-count"></span></h3>
+    <ol class="c-list" id="t-list" aria-label="Comments"></ol>
+    ${as}
+    <p class="talk-off">You’re viewing as ${esc(VIEWING.name)}, so stickers and comments are off.</p>
+  </section>`;
+}
+
 async function loadPieceTalk(p) {
   const id = p.id;
-  $('#t-text').value = drafts.get(id) || '';
+  if ($('#t-text')) $('#t-text').value = drafts.get(id) || '';
   showLeft();
   editing = null;
   choosingAs = false;
@@ -870,6 +896,16 @@ function drawStickers() {
   if (!box || !talking) return;
   const loaded = Boolean(talking.stickers);
   const as = speaking();
+  // Looking as someone, they're only shown: the ones given, with how many,
+  // and nothing that looks like it could be tapped.
+  if (VIEWING) {
+    const given = STICKERS.map((s) => ({ ...s, ...(talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] }) })).filter((s) => s.count);
+    box.innerHTML = given.map((s) => `<span class="stk stk-static${s.mine.includes(as) ? ' is-mine' : ''}" role="listitem" aria-label="${esc(s.label)}, ${s.count}${s.mine.includes(as) ? `, one from ${esc(VIEWING.name)}` : ''}"><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span><b class="stk-n" aria-hidden="true">${s.count}</b></span>`).join('');
+    box.hidden = !given.length;
+    const givers = (talking.stickers || []).flatMap((s) => s.by);
+    $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet.';
+    return;
+  }
   box.innerHTML = STICKERS.map((s) => {
     const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] };
     return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
@@ -888,12 +924,14 @@ function drawComments() {
     list.innerHTML = `<li class="c-empty">${talking.error ? esc(talking.error) : 'Getting the comments…'}</li>`;
     return;
   }
-  list.innerHTML = comments.length ? comments.map((c) => commentHtml(c, p)).join('') : `<li class="c-empty">${doodle('heart')}Nobody’s said anything yet. Be the first!</li>`;
+  list.innerHTML = comments.length ? comments.map((c) => commentHtml(c, p)).join('') : `<li class="c-empty">${doodle('heart')}Nobody’s said anything yet.${VIEWING ? '' : ' Be the first!'}</li>`;
 }
 function commentHtml(c, p) {
   const kid = commenterKid(c);
   const artist = kid && kid.id === p.kid_id;
-  const actions = c.mine
+  const actions = VIEWING
+    ? ''
+    : c.mine
     ? `<button type="button" data-c-edit="${c.id}">${icon('pencil')}Edit</button><button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Delete</button>`
     : c.can_remove
       ? `<button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Remove</button>`
@@ -922,6 +960,7 @@ function counted(id, change) {
 }
 
 async function giveSticker(kind) {
+  if (VIEWING) return;
   const id = talking?.id;
   const st = talking?.stickers?.find((s) => s.kind === kind);
   if (!st) return;
@@ -948,6 +987,7 @@ async function giveSticker(kind) {
 }
 
 async function sendComment() {
+  if (VIEWING) return;
   const id = talking?.id;
   const text = $('#t-text').value.trim();
   if (!text) {
@@ -1149,13 +1189,14 @@ $('#bell-n').addEventListener('animationend', (e) => e.target.classList.remove('
 
 // Caught up to the notifications' as_of: here, the bell's count, and on the
 // Worker, for the bell next time and the walls' New marks next visit. The
-// preview saves nothing, so there it's only here.
+// preview saves nothing, so there it's only here, and so is viewing as
+// someone: nothing about them moves, and the Worker would refuse it anyway.
 function caughtUp() {
   if (!NOTES) return;
   const seen = NOTES.as_of;
   for (const n of NOTES.items) n.new = false;
   NOTES.unread = 0;
-  if (PREVIEW || (NOTES.seen && NOTES.seen >= seen)) return;
+  if (PREVIEW || VIEWING || (NOTES.seen && NOTES.seen >= seen)) return;
   NOTES.seen = seen;
   api('/api/me', { method: 'PATCH', json: { seen } }).catch(() => {});
 }
@@ -1354,6 +1395,90 @@ $('#open-add').onclick = openAdd;
 
 // ---- Shared ----
 let toastTimer;
+// ---- View as ----
+// For the fridge's owners: see it exactly as someone else would, with every
+// change off. The Worker does it (viewAs in worker.js): starting it sets a
+// cookie for an hour, so the pictures follow too, and the page loads again
+// as that person. The preview can't set anything, so there it's the page's
+// address instead (?view=).
+const viewSheet = $('#view-as');
+let viewOpener = null;
+// The strip's height, for what's drawn below it (app.css).
+new ResizeObserver(([e]) => document.documentElement.style.setProperty('--viewing-h', `${Math.ceil(e.borderBoxSize?.[0]?.blockSize ?? e.target.offsetHeight)}px`)).observe($('#viewing'));
+function showViewing() {
+  document.body.classList.toggle('viewing-as', Boolean(VIEWING));
+  $('#viewing').hidden = !VIEWING;
+  $('#viewing-name').textContent = VIEWING ? VIEWING.name : '';
+  $('#viewing-switch').hidden = !VIEWING;
+  $('#open-view-as').hidden = !OWNER || Boolean(VIEWING);
+}
+async function openViewAs() {
+  viewOpener = document.activeElement;
+  viewSheet.hidden = false;
+  lock(true);
+  $('#va-close').focus();
+  const list = $('#va-list');
+  let data;
+  try {
+    data = await api('/api/view-as');
+  } catch (e) {
+    list.innerHTML = `<p class="hint said-error">${esc(e.message)}</p>`;
+    return;
+  }
+  const now = data.viewing;
+  const person = (p, gi, pi) => {
+    const current = now && now.email === p.email && (now.as ?? null) === (p.as ?? null);
+    const detail = [p.detail, p.address ? p.email : ''].filter(Boolean).join(' · ');
+    return `<li><button class="va-person" type="button" data-g="${gi}" data-p="${pi}"${current ? ' aria-current="true"' : ''}><span class="va-name">${esc(p.name)}${current ? ' <span class="va-you">(now)</span>' : ''}</span><span class="va-detail">${esc(detail)}</span></button></li>`;
+  };
+  list.innerHTML = data.groups
+    .map((g, gi) => `<section class="va-fam" aria-labelledby="va-g${gi}"><h3 id="va-g${gi}">${esc(g.name)}</h3><ul>${g.people.map((p, pi) => person(p, gi, pi)).join('')}</ul></section>`)
+    .join('') || '<p class="hint">There’s nobody else to view as yet.</p>';
+  list.onclick = (e) => {
+    const b = e.target.closest('.va-person');
+    if (b) startViewing(data.groups[b.dataset.g].people[b.dataset.p]);
+  };
+}
+function closeViewAs() {
+  viewSheet.hidden = true;
+  lock(false);
+  viewOpener?.focus?.();
+}
+async function startViewing(p) {
+  if (PREVIEW) return location.assign(`/?view=${encodeURIComponent(p.key)}${location.hash}`);
+  try {
+    if (VIEWING) await api('/api/view-as', { method: 'DELETE' });
+    await api('/api/view-as', { method: 'POST', json: { email: p.email, as: p.as } });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  location.reload();
+}
+async function stopViewing() {
+  if (PREVIEW) return location.assign(`/${location.hash}`);
+  try {
+    await api('/api/view-as', { method: 'DELETE' });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  location.reload();
+}
+$('#open-view-as').onclick = openViewAs;
+$('#viewing-switch').onclick = openViewAs;
+$('#viewing-stop').onclick = stopViewing;
+$('#va-close').onclick = closeViewAs;
+viewSheet.addEventListener('click', (e) => {
+  if (e.target === viewSheet) closeViewAs();
+});
+viewSheet.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    closeViewAs();
+  }
+});
+
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;

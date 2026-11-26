@@ -32,7 +32,8 @@ async function handle(request, env) {
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
   const who = persona(request);
   const now = new Date();
-  if (pathname === '/api/session') return json({ email: 'visitor@example.com', canEdit: who.canEdit, preview: true, families: who.families, artist: who.artist });
+  if (pathname === '/api/session') return json(session(who));
+  if (pathname === '/api/view-as') return owns(who) ? json(viewAsList(who)) : json({ error: 'Only the fridge’s owners can view it as someone else.' }, 403);
   if (pathname === '/api/gallery') return json(gallery(now, who));
   if (pathname === '/api/comments') return json(talkSummary(now, who));
   if (pathname === '/api/notifications') return json(notifications(now, who));
@@ -59,7 +60,10 @@ async function handle(request, env) {
 // away under the header, so it covers nothing.
 async function markAsPreview(res, who) {
   const link = (key) => `<a href="/?as=${key}" style="display:inline-block;padding:7px 9px;color:#fff;${PERSONAS[key] === who ? 'text-decoration:none;background:#fff;color:#1c2a30;border-radius:999px' : 'text-decoration:underline'}"${PERSONAS[key] === who ? ' aria-current="page"' : ''}>${PERSONAS[key].label}</a>`;
-  const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">Preview with a made-up family<nav aria-label="See the preview as" style="font-size:14px">See it as: ${Object.keys(PERSONAS).map(link).join(' ')}</nav></div>`;
+  // While the parent views it as someone (View as, ?view=), the page's own
+  // strip says whom, so this one offers no other way to look.
+  const others = who.viewing ? '' : `<nav aria-label="See the preview as" style="font-size:14px">See it as: ${Object.keys(PERSONAS).map(link).join(' ')}</nav>`;
+  const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">Preview with a made-up family${others}</div>`;
   const html = (await res.text()).replace(/<title>([^<]*)<\/title>/, '<title>Preview · $1</title>').replace(/<body[^>]*>/, (body) => body + strip);
   const headers = new Headers(res.headers);
   headers.delete('Content-Length');
@@ -160,19 +164,46 @@ const PERSONAS = {
   ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440 },
   dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', sees: null, seen: 1440 },
 };
+// Whom the parents, who own the fridge, can view it as (View as), in the
+// shape of the real /api/view-as, each one of the people above.
+const VIEW = [
+  { key: 'aunt-pine', group: 'pines', persona: 'parents', email: 'visitor@example.com', as: 'Aunt Pine', name: 'Aunt Pine', detail: 'Parent, “Mum” at home' },
+  { key: 'uncle-pine', group: 'pines', persona: 'parents', email: 'visitor@example.com', as: 'Uncle Pine', name: 'Uncle Pine', detail: 'Parent, “Dad” at home' },
+  { key: 'ada-ipad', group: 'pines', persona: 'ada', email: 'ada.ipad@example.com', as: null, name: 'Ada', detail: 'Their iPad' },
+  { key: 'nonna', group: null, persona: 'nonna', email: 'nonna@example.com', as: null, name: 'Nonna', detail: 'Sees only The Pines' },
+];
 // Who's looking: ?as= on the page's address, which its own requests carry as
-// their Referer. Nothing is remembered, and nothing signs anyone in.
+// their Referer, or with ?view=, the parents viewing it as one of VIEW, with
+// changes off, as the real Worker's View as does with a cookie. Nothing is
+// remembered, and nothing signs anyone in.
 function persona(request) {
   const url = new URL(request.url);
   let from = url;
-  if (!url.searchParams.has('as')) {
+  if (!url.searchParams.has('as') && !url.searchParams.has('view')) {
     try {
       const referer = new URL(request.headers.get('Referer'));
       if (referer.origin === url.origin) from = referer;
     } catch {}
   }
+  const view = VIEW.find((v) => v.key === from.searchParams.get('view'));
+  if (view) return { ...PERSONAS[view.persona], viewing: view };
   return PERSONAS[from.searchParams.get('as')] || PERSONAS.parents;
 }
+// The parents own the fridge; while they view it as someone, they still do.
+const owns = (who) => Boolean(who.viewing) || who === PERSONAS.parents;
+function session(who) {
+  const out = { email: 'visitor@example.com', canEdit: who.canEdit, preview: true, families: who.families, artist: who.artist };
+  if (owns(who)) out.owner = true;
+  if (who.viewing) out.viewing = { name: who.viewing.name, detail: who.viewing.detail, as: who.viewing.as };
+  return out;
+}
+const viewAsList = (who) => ({
+  groups: [
+    { id: 'pines', name: 'The Pines', people: VIEW.filter((v) => v.group === 'pines') },
+    { id: null, name: 'Everyone else', people: VIEW.filter((v) => v.group === null) },
+  ].map((g) => ({ ...g, people: g.people.map(({ key, email, as, name, detail }) => ({ key, email, as, name, detail, address: false })) })),
+  viewing: who.viewing ? { email: who.viewing.email, as: who.viewing.as } : null,
+});
 const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
 const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
 // Who put each piece up, and when, minutes ago. The rest went up months ago,

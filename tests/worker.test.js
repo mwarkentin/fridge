@@ -1492,3 +1492,267 @@ test('a SEES that can’t be read turns everyone away', async (t) => {
   assert.equal((await call('/api/gallery', { as: GRAN, localEnv: { ...seeEnv(), FAMILIES: undefined } })).status, 503);
   assert.equal((await call('/api/gallery', { as: GRAN, localEnv: { ...seeEnv(), FAMILIES: JSON.stringify([OAKS]) } })).status, 503);
 });
+
+// ---- Viewing as someone else ----
+// An owner (ADMINS) looks at the fridge as someone else would see it, with
+// changes off. PINE is the owner here: a parent in the Pines.
+const viewEnv = (admins = PINE) => ({ ...seeEnv(), ADMINS: admins });
+const v = (path, opts = {}) => call(path, { as: PINE, localEnv: viewEnv(), ...opts });
+// Start viewing as someone, and the cookie the browser would send back.
+async function viewing(target, as = null, { by = PINE, localEnv = viewEnv() } = {}) {
+  const res = await call('/api/view-as', { as: by, method: 'POST', json: { email: target, as }, localEnv });
+  assert.equal(res.status, 200, `view as ${target}`);
+  const cookie = res.headers.get('Set-Cookie');
+  assert.match(cookie, /^__Host-fridge-view-as=[^;]+; Max-Age=3600; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
+  return cookie.split(';')[0];
+}
+const tables = async () => Object.fromEntries(await Promise.all(['pieces', 'comments', 'stickers', 'people', 'skipped', 'kids'].map(async (t) => [t, (await env.DB.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()).results])));
+
+test('view as: only an owner sees whom they can view as, grouped by family, everyone else last', async () => {
+  const res = await v('/api/view-as');
+  assert.equal(res.status, 200);
+  const { groups, viewing: now } = await res.json();
+  assert.equal(now, null);
+  assert.deepEqual(groups.map((g) => [g.id, g.name]), [['pine', 'The Pines'], ['oak', 'The Oaks'], [null, 'Everyone else']]);
+  const row = (p) => [p.email, p.as, p.name];
+  assert.deepEqual(groups[0].people.map(row), [
+    [PINE, null, 'Pine Mum'],
+    [PINE_TOO, null, 'pine.too'],
+    [BOTH, null, 'both'],
+    [NAMED_ONLY, null, 'named.only'],
+    [ADA_IPAD, null, 'Ada'], // a kid's iPad, as the kid
+  ]);
+  assert.deepEqual(groups[1].people.map(row), [[OAK, null, 'Oak Dad'], [DEE, null, 'Dee']]);
+  // A shared sign-in is each of its people; viewers say what they see.
+  assert.deepEqual(groups[2].people.map(row), [
+    [PARENT, null, 'parent'],
+    [LONER, null, 'loner'],
+    [CY_NANA, null, 'Cy’s Nana'],
+    [GRAN, null, 'Gran'],
+    [SHARED, 'Grandma', 'Grandma'],
+    [SHARED, 'Pop', 'Pop'],
+    [NONNA, null, 'Nonna'],
+  ]);
+  const of = (email, as = null) => groups.flatMap((g) => g.people).find((p) => p.email === email && p.as === as);
+  assert.equal(of(NONNA).detail, 'Sees only The Pines');
+  assert.equal(of(GRAN).detail, 'Sees every family');
+  assert.equal(of(ADA_IPAD).detail, 'Their iPad');
+  assert.equal(of(DEE).detail, 'Artist: adds their own art');
+  assert.equal(of(OAK).detail, 'Parent');
+  // Addresses where a name wouldn't tell people apart, or there's no name.
+  assert.deepEqual([of(GRAN).address, of(PINE_TOO).address, of(ADA_IPAD).address], [false, true, false]);
+
+  // Nobody else gets it, nor learns they could, whatever they are.
+  for (const as of [GRAN, NONNA, OAK, DEE, ADA_IPAD, SHARED, PARENT]) {
+    const theirs = await v('/api/view-as', { as });
+    assert.equal(theirs.status, 403, as);
+    assert.doesNotMatch(await theirs.text(), /@|Nonna|Gran/, as);
+    assert.equal((await (await v('/api/session', { as })).json()).owner, undefined, as);
+  }
+  assert.equal((await (await v('/api/session')).json()).owner, true);
+});
+
+test('view as: the owner sees exactly what that person sees, pictures included', async () => {
+  await clean();
+  await said(GRAN, tp.Ada, 'Lovely');
+  await said(OAK, tp.Cy, 'On the Oaks’ art');
+  await said(NONNA, tp.Bo, 'Bello');
+  assert.equal((await s(`/api/pieces/${tp.Ada}/stickers/heart?as=Pop`, { as: SHARED, method: 'POST' })).status, 200);
+  assert.equal((await s(`/api/pieces/${tp.Ada}/stickers/star`, { as: ADA_IPAD, method: 'POST' })).status, 200);
+
+  const targets = [[NONNA], [GRAN], [SHARED, 'Pop'], [ADA_IPAD], [DEE], [OAK], [PINE_TOO]];
+  const reads = ['/api/gallery', '/api/comments', ...[tp.Ada, tp.Bo, tp.Cy, tp.Dee, tp.Di].map((id) => `/api/pieces/${id}/comments`)];
+  for (const [target, as] of targets) {
+    const cookie = await viewing(target, as);
+    const asOwner = (path, opts = {}) => v(path, { headers: { Cookie: cookie }, ...opts });
+    for (const path of reads) {
+      const mine = await asOwner(path);
+      const theirs = await v(path, { as: target });
+      assert.deepEqual([mine.status, await mine.json()], [theirs.status, await theirs.json()], `${target}: ${path}`);
+    }
+    for (const id of [tp.Ada, tp.Cy, tp.Dee, 99999]) {
+      for (const variant of ['thumb', 'original']) {
+        const mine = await asOwner(`/img/${id}/${variant}`);
+        const theirs = await v(`/img/${id}/${variant}`, { as: target });
+        assert.deepEqual([mine.status, await mine.text()], [theirs.status, await theirs.text()], `${target}: ${id} ${variant}`);
+        if (mine.status === 200) assert.equal(mine.headers.get('Cache-Control'), 'private, no-store', 'not kept while viewing');
+      }
+    }
+    const session = await (await asOwner('/api/session')).json();
+    const own = await (await v('/api/session', { as: target })).json();
+    assert.deepEqual(session, { ...own, owner: true, viewing: session.viewing }, target);
+    assert.equal(session.viewing.as, as ?? null);
+  }
+
+  // Nonna's limits, through her eyes: nothing of the Oaks.
+  const nonna = await viewing(NONNA);
+  const g = await (await v('/api/gallery', { headers: { Cookie: nonna } })).json();
+  assert.deepEqual(g.kids.map((k) => k.name), ['Ada', 'Bo']);
+  assert.doesNotMatch(JSON.stringify(g), HIDDEN);
+  assert.doesNotMatch(await (await v('/api/comments', { headers: { Cookie: nonna } })).text(), HIDDEN);
+  assert.equal((await v(`/img/${tp.Cy}/display`, { headers: { Cookie: nonna } })).status, 404);
+  assert.deepEqual((await (await v('/api/session', { headers: { Cookie: nonna } })).json()).viewing, { name: 'Nonna', detail: 'Sees only The Pines', as: null });
+  // On the shared sign-in, whose stickers are whose is the one viewed's.
+  const pop = await viewing(SHARED, 'Pop');
+  const { stickers } = await (await v(`/api/pieces/${tp.Ada}/comments`, { headers: { Cookie: pop } })).json();
+  assert.deepEqual(stickers.find((x) => x.kind === 'heart').mine, ['Pop']);
+  // And the owner can read the list while viewing, to switch.
+  assert.deepEqual((await (await v('/api/view-as', { headers: { Cookie: pop } })).json()).viewing, { email: SHARED, as: 'Pop' });
+});
+
+test('view as: every change is refused, and nothing about the person viewed is written', async () => {
+  const comment = await said(OAK, tp.Cy, 'Mine to change');
+  for (const [target, name] of [[OAK, 'Oak Dad'], [NONNA, 'Nonna'], [DEE, 'Dee'], [ADA_IPAD, 'Ada'], [PINE, 'Pine Mum']]) {
+    const cookie = await viewing(target);
+    const before = await tables();
+    const changes = [
+      ['POST', '/api/pieces', { form: pieceForm({ kid_id: fk.Cy, made: '2025-09-01' }) }],
+      ['PATCH', `/api/pieces/${tp.Cy}`, { json: { favourite: true } }],
+      ['DELETE', `/api/pieces/${tp.Dee}`],
+      ['POST', `/api/pieces/${tp.Ada}/comments`, { json: { body: 'Hi' } }],
+      ['PATCH', `/api/comments/${comment.id}`, { json: { body: 'Changed' } }],
+      ['DELETE', `/api/comments/${comment.id}`],
+      ['POST', `/api/pieces/${tp.Ada}/stickers/smile`],
+      ['DELETE', `/api/pieces/${tp.Ada}/stickers/star`],
+      ['PATCH', '/api/me', { json: { seen: minutesAgo(1) } }],
+      ['POST', '/api/skipped', { json: { add: ['f'.repeat(64)] } }],
+      ['GET', '/api/imported'],
+      ['POST', '/api/view-as', { json: { email: GRAN } }],
+      ['PUT', '/api/gallery'],
+      ['POST', '/'],
+    ];
+    for (const [method, path, opts = {}] of changes) {
+      const res = await v(path, { method, headers: { Cookie: cookie }, ...opts });
+      assert.deepEqual([res.status, await errorOf(res)], [403, `You’re viewing as ${name}; changes are off.`], `${target}: ${method} ${path}`);
+    }
+    // A whole visit, as the page makes it: reads only.
+    for (const path of ['/', '/api/session', '/api/gallery', '/api/comments', '/api/notifications', `/api/pieces/${tp.Ada}/comments`, `/img/${tp.Ada}/thumb`, '/api/view-as']) {
+      assert.equal((await v(path, { headers: { Cookie: cookie } })).status, 200, `${target}: ${path}`);
+    }
+    assert.deepEqual(await tables(), before, `${target}: nothing written`);
+  }
+  // The same changes go through for them, and for the owner, without it.
+  assert.equal((await v(`/api/comments/${comment.id}`, { as: OAK, method: 'PATCH', json: { body: 'Changed' } })).status, 200);
+  assert.equal((await v('/api/me', { method: 'PATCH', json: { seen: minutesAgo(1) } })).status, 200);
+});
+
+test('view as: the bell is that person’s, and nothing about them is caught up', async () => {
+  await clean();
+  await oldArt();
+  const moon = await addArt(PINE, 'Ada', 'Moon');
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  const fromNonna = await said(NONNA, tp.Ada, 'Bellissimo');
+  const fromGran = await said(GRAN, tp.Ada, 'After Nonna');
+  const fromOak = await said(OAK, tp.Ada, 'From a parent in the other family');
+  await sticker(GRAN, tp.Ada, 'star');
+  for (const [id, m] of [[moon, 9], [kite, 8]]) await at('pieces', id, m);
+  for (const [c, m] of [[fromNonna, 7], [fromGran, 6], [fromOak, 5]]) await at('comments', c.id, m);
+  await stickerAt(tp.Ada, GRAN, 'star', 4);
+  // Both caught up twenty minutes ago, so all of that is new to them.
+  const before = minutesAgo(20);
+  for (const as of [ADA_IPAD, NONNA]) assert.equal((await v('/api/me', { as, method: 'PATCH', json: { seen: before } })).status, 200);
+  const bell = async (opts) => {
+    const n = await (await v('/api/notifications', opts)).json();
+    return { ...n, as_of: null };
+  };
+
+  for (const target of [ADA_IPAD, NONNA]) {
+    const cookie = await viewing(target);
+    const written = await tables();
+    // Exactly theirs: the same list, the same count, the same new ones.
+    const shown = await bell({ headers: { Cookie: cookie } });
+    assert.deepEqual(shown, await bell({ as: target }), target);
+    assert.equal(shown.seen, before);
+    assert.ok(shown.unread > 0 && shown.items.every((n) => n.new), target);
+    // Opening the bell would catch them up: refused, as every change is.
+    const res = await v('/api/me', { method: 'PATCH', json: { seen: minutesAgo(0) }, headers: { Cookie: cookie } });
+    assert.equal(res.status, 403, target);
+    assert.deepEqual(await tables(), written, `${target}: nothing written`);
+    assert.equal((await bell({ as: target })).seen, before, `${target}: still where they were`);
+  }
+  // Ada's iPad: what's about Ada's art. Nonna: the Pines only, the other family as Family.
+  assert.deepEqual(brief(await bell({ headers: { Cookie: await viewing(ADA_IPAD) } })), [
+    ['sticker', 'Gran', tp.Ada, 'star'],
+    ['comment', 'Oak Dad', tp.Ada, 'From a parent in the other family'],
+    ['comment', 'Gran', tp.Ada, 'After Nonna'],
+    ['comment', 'Nonna', tp.Ada, 'Bellissimo'],
+    ['art', 'Pine Mum', moon, 1],
+  ]);
+  const nonna = await bell({ headers: { Cookie: await viewing(NONNA) } });
+  assert.deepEqual(brief(nonna), [
+    ['reply', 'Family', tp.Ada, 'From a parent in the other family'],
+    ['reply', 'Gran', tp.Ada, 'After Nonna'],
+    ['art', 'Pine Mum', moon, 1],
+  ]);
+  assert.doesNotMatch(JSON.stringify(nonna), HIDDEN);
+});
+
+test('view as: nobody else can turn it on, by cookie or anything else', async () => {
+  const cookie = await viewing(NONNA);
+  const value = cookie.split('=').slice(1).join('=');
+  const [exp, payload] = value.split('.');
+  const forge = (email, as = null, at = exp) => `__Host-fridge-view-as=${at}.${Buffer.from(JSON.stringify([email, as])).toString('base64url')}`;
+  // Someone else with the owner's own cookie, or one made up: themselves.
+  for (const as of [GRAN, NONNA, OAK, DEE, ADA_IPAD, PARENT]) {
+    for (const Cookie of [cookie, forge(NONNA), forge(PINE), forge(OAK)]) {
+      const theirs = await v('/api/gallery', { as, headers: { Cookie } });
+      assert.deepEqual(await theirs.json(), await (await v('/api/gallery', { as })).json(), `${as} with ${Cookie}`);
+      const session = await (await v('/api/session', { as, headers: { Cookie } })).json();
+      assert.deepEqual([session.owner, session.viewing, session.email], [undefined, undefined, as]);
+    }
+    const res = await v('/api/view-as', { as, method: 'POST', json: { email: NONNA } });
+    assert.equal(res.status, 403, as);
+    assert.equal(res.headers.get('Set-Cookie'), null);
+  }
+  // Changes still go through as themselves.
+  assert.equal((await v(`/api/pieces/${tp.Ada}/stickers/rainbow`, { as: GRAN, method: 'POST', headers: { Cookie: cookie } })).status, 200);
+  // A parent who isn't an owner, and an owner from a header or a query: no.
+  assert.equal((await v('/api/view-as', { as: OAK, method: 'POST', json: { email: NONNA }, headers: { 'X-View-As': NONNA } })).status, 403);
+  assert.equal((await (await v('/api/session?as=nonna@example.com', { as: GRAN })).json()).email, GRAN);
+  // The owner, too, gets only the people the fridge lets in, nor a cookie
+  // that's expired, made up, or for someone it no longer lists.
+  for (const json of [{ email: 'stranger@example.com' }, { email: SHARED, as: 'Nobody' }, { email: SHARED }, { email: 7 }, {}]) {
+    assert.equal((await v('/api/view-as', { method: 'POST', json })).status, 400, JSON.stringify(json));
+  }
+  const ownerSees = async (Cookie, localEnv = viewEnv()) => (await (await call('/api/session', { as: PINE, headers: { Cookie }, localEnv })).json()).email;
+  assert.equal(await ownerSees(cookie), NONNA);
+  assert.equal(await ownerSees(forge(NONNA, null, String(Date.now() - 1000))), PINE, 'expired');
+  assert.equal(await ownerSees(forge(NONNA, null, String(Date.now() + 86_400_000))), PINE, 'too long');
+  assert.equal(await ownerSees(`__Host-fridge-view-as=${exp}.${payload}x`), PINE, 'garbled');
+  assert.equal(await ownerSees(forge('stranger@example.com')), PINE, 'not someone it lets in');
+  assert.equal(await ownerSees(cookie.replace('__Host-', '')), PINE, 'not its own cookie');
+  assert.equal(await ownerSees(cookie, { ...viewEnv(), SEES: undefined, NAMES: JSON.stringify(NAMES) }), PINE, 'no longer listed');
+  // Starting it is a change like any other: it needs the header.
+  assert.equal((await v('/api/view-as', { method: 'POST', json: { email: NONNA }, headers: { 'X-Requested-With': 'nope' } })).status, 403);
+});
+
+test('view as: stopping restores the owner', async () => {
+  const cookie = await viewing(NONNA);
+  const stop = await v('/api/view-as', { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.equal(stop.status, 204);
+  assert.equal(stop.headers.get('Set-Cookie'), '__Host-fridge-view-as=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict');
+  // Stopping needs the header too, so another site can't do it either.
+  assert.equal((await v('/api/view-as', { method: 'DELETE', headers: { Cookie: cookie, 'X-Requested-With': '' } })).status, 403);
+  // Without the cookie the browser no longer sends, the owner is themselves.
+  const session = await (await v('/api/session')).json();
+  assert.deepEqual([session.email, session.canEdit, session.owner, session.viewing], [PINE, true, true, undefined]);
+  assert.equal((await v('/api/gallery')).status, 200);
+  assert.equal((await (await v('/api/gallery')).json()).kids.length, 5);
+});
+
+test('view as: with no ADMINS, or one that can’t be read, nobody can', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const cookie = await viewing(NONNA);
+  for (const ADMINS of [undefined, '', ' ', 'not an address', `${PINE}, ${GRAN}`, GRAN, `${PINE};${OAK}`]) {
+    const localEnv = { ...seeEnv(), ADMINS };
+    const res = await call('/api/view-as', { as: PINE, method: 'POST', json: { email: NONNA }, localEnv });
+    assert.equal(res.status, 403, String(ADMINS));
+    assert.equal((await call('/api/view-as', { as: PINE, localEnv })).status, 403);
+    const session = await (await call('/api/session', { as: PINE, headers: { Cookie: cookie }, localEnv })).json();
+    assert.deepEqual([session.email, session.owner], [PINE, undefined], `${ADMINS}: the cookie counts for nothing`);
+    // Everyone still gets in.
+    for (const as of [PINE, GRAN, NONNA]) assert.equal((await call('/api/gallery', { as, localEnv })).status, 200);
+  }
+  // Two owners, written loosely.
+  for (const as of [PINE, OAK]) assert.equal((await call('/api/view-as', { as, localEnv: viewEnv(` ${OAK.toUpperCase()} ,${PINE}`) })).status, 200, as);
+});
