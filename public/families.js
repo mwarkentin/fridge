@@ -15,7 +15,9 @@ const near = (a, b) => a === b || CLOSE.has(a < b ? `${a}-${b}` : `${b}-${a}`);
 
 // Each kid's colour, in the API's order (oldest first), so a kid is the same
 // colour for everyone who looks. A kid's colour depends only on the kids
-// before them, so a new baby never changes anyone else's.
+// before them, so a new baby never changes anyone else's. Someone who sees
+// only some families gets only those kids from the API, so their colours
+// come from those kids alone, and hint at nobody else.
 function colours(kids, familyOf) {
   const uses = [0, 0, 0, 0, 0, 0];
   const taken = new Map(); // family id -> colours its kids have
@@ -39,7 +41,8 @@ function colours(kids, familyOf) {
 //
 // With families: the viewer's own families first, then the rest in the API's
 // order, then any kids not in a family. `heads` says whether there's more
-// than one family to tell apart, so whether to show the families' names.
+// than one family to tell apart, so whether to show the families' names:
+// someone who sees only one family (SEES) sees no family names at all.
 export function arrange(kids, families, mine) {
   const fams = (Array.isArray(families) ? families : []).filter((f) => f && f.id != null);
   if (!fams.length) return { grouped: false, heads: false, groups: [], kids: kids.map((k, i) => ({ ...k, ci: i % 6, familyName: null })) };

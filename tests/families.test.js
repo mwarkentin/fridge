@@ -122,3 +122,17 @@ test('family ids match whether they come as text or numbers', () => {
   assert.deepEqual(out.groups.map((g) => g.label), ['Our kids', 'Seven']);
   assert.deepEqual(out.kids.map((k) => k.familyName), ['Eight', 'Seven']);
 });
+
+test('someone who sees only one family gets its kids on their own, with no family names to tell apart', () => {
+  // What the API sends someone SEES lists with only the Pines: that family, its kids.
+  const pines = [
+    { id: 1, name: 'Ada', born: '2019-04-02', family: 'pine' },
+    { id: 2, name: 'Bo', born: '2021-07-02', family: 'pine' },
+  ];
+  const out = arrange(pines, [{ id: 'pine', name: 'The Pines' }], []);
+  assert.equal(out.grouped, true);
+  assert.equal(out.heads, false, 'no family names');
+  assert.equal(out.groups.length, 1);
+  assert.deepEqual(names(out.kids), ['Ada', 'Bo']);
+  assert.ok(!near(out.kids[0].ci, out.kids[1].ci), 'siblings still get colours apart');
+});

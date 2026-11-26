@@ -174,15 +174,55 @@ export function readNames(env) {
   return out;
 }
 
-// { email, canEdit, families, artist, kid } for a signed-in person, or null.
-// Parents (PARENT_EMAILS, a Worker secret infra hands to the deploy) can
+// Who sees only some families, from SEES: a Worker secret infra hands to the
+// deploy, JSON like
+//   { "nonna@example.com": ["pine"] }
+// keyed by the address someone signs in with, each with the ids of the
+// families (FAMILIES) whose kids they see, with those kids' art and what's
+// said about it. It's for people in no family, like grandparents on one
+// family's side: anyone it doesn't list sees every family, and parents and
+// kids always do, so it can't list their addresses. Missing or empty means
+// everyone sees everything, as before it. One that can't be read throws, so
+// nobody gets in until it's fixed, rather than someone seeing a family they
+// shouldn't.
+//
+// Returns each listed address's family ids.
+export function readSees(env, families = readFamilies(env)) {
+  const raw = (env.SEES || '').trim();
+  const out = new Map();
+  if (!raw) return out;
+  let map;
+  try {
+    map = JSON.parse(raw);
+  } catch {
+    throw new Error('SEES isn’t valid JSON.');
+  }
+  if (!map || typeof map !== 'object' || Array.isArray(map)) throw new Error('SEES must be a JSON object of addresses to lists of family ids.');
+  const ids = families.map((f) => f.id);
+  const inFamilies = new Set([...parentEmails(env), ...families.flatMap((f) => [...f.parents, ...f.kids.flatMap((k) => [k.artist, ...k.devices])])].filter(Boolean));
+  for (const [key, list] of Object.entries(map)) {
+    if (!isEmail(key)) throw new Error('SEES has a key that isn’t an email.');
+    const email = key.trim().toLowerCase();
+    if (out.has(email)) throw new Error('SEES lists an address twice.');
+    if (inFamilies.has(email)) throw new Error('SEES lists a parent’s or a kid’s address: they see every family.');
+    if (!Array.isArray(list) || !list.length || !list.every((id) => typeof id === 'string' && ids.includes(id.trim()))) {
+      throw new Error('Each address in SEES needs a list of one or more family ids from FAMILIES.');
+    }
+    out.set(email, [...new Set(list.map((id) => id.trim()))]);
+  }
+  return out;
+}
+
+// { email, canEdit, families, artist, kid, sees } for a signed-in person, or
+// null. Parents (PARENT_EMAILS, a Worker secret infra hands to the deploy) can
 // change things; everyone else Access lets in can look. `families` are the
 // ids of the families (FAMILIES) a parent is in: they can change only those
 // families' kids, and kids in no family. `artist` is the name of the kid
 // someone signs in as to add their own art (FAMILIES), or null. `kid` is the
 // name of the kid whose address it is, as an artist or one of their devices,
 // or null: their comments and stickers are that kid's. Anyone signed in can
-// comment and give stickers.
+// comment and give stickers. `sees` is null for someone who sees every
+// family, or the ids of the only families they see (SEES; canSee).
 export async function identify(request, env) {
   const host = new URL(request.url).hostname;
   // Local development only: wrangler dev has no Access in front of it.
@@ -208,7 +248,9 @@ function person(email, env) {
   const families = canEdit ? all.filter((f) => f.parents.includes(me)).map((f) => f.id) : [];
   // A parent is a parent, even if a kid's address is theirs too.
   const kid = canEdit ? null : (all.flatMap((f) => f.kids).find((k) => k.artist === me || k.devices.includes(me)) ?? null);
-  return { email: me, canEdit, families, artist: kid?.artist === me ? kid.name : null, kid: kid?.name ?? null };
+  // Read for everyone too, so a broken SEES turns everyone away.
+  const sees = readSees(env, all).get(me) ?? null;
+  return { email: me, canEdit, families, artist: kid?.artist === me ? kid.name : null, kid: kid?.name ?? null, sees };
 }
 
 // The kids' own addresses (artists' and devices'), each to its kid's name,
@@ -222,6 +264,17 @@ export function kidAddresses(env) {
   }
   return out;
 }
+
+// Who sees what. Everyone sees every kid, except someone SEES lists, who
+// sees only the kids in those families: not another family's, nor a kid in
+// no family. Whoever doesn't see a kid doesn't see anything of theirs: their
+// art and its pictures, what's said about it, nor their name. This is the
+// one place that decides it. Every route that shows or changes a kid, a
+// piece, or a comment or sticker on one asks it (worker.js: seenKids,
+// seenPiece), and so does anything new that tells someone about them.
+export const seesEverything = (who) => who.sees === null;
+export const seesFamily = (who, id) => who.sees === null || who.sees.includes(id);
+export const canSee = (who, kid) => (kid.family == null ? seesEverything(who) : seesFamily(who, kid.family));
 
 // The rules, mirrored in the page. A parent can change a kid's pieces when
 // the kid is in one of their families or in none. An artist can add their

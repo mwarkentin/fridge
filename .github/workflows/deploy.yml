@@ -48,19 +48,21 @@ jobs:
       - name: Apply database migrations
         run: npx wrangler d1 migrations apply fridge --remote
 
-      # PARENT_EMAILS, FAMILIES and NAMES go up as Worker secrets, in a file
-      # so they're never on a command line. The Access settings aren't
+      # PARENT_EMAILS, FAMILIES, NAMES and SEES go up as Worker secrets, in a
+      # file so they're never on a command line. The Access settings aren't
       # secret. FAMILIES (the families, their parents and their kids, from
       # infra's fridge_people.auto.tfvars) can be missing, which means no
       # families: every parent changes everything, and the kids stay as they
       # are. NAMES (what everyone but the kids is called beside comments,
       # from the same file) can be missing too, which means nobody has a
-      # name yet.
+      # name yet. So can SEES (who sees only some families, from the same
+      # file), which means everyone sees every family.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}
           FAMILIES: ${{ secrets.FAMILIES }}
           NAMES: ${{ secrets.NAMES }}
+          SEES: ${{ secrets.SEES }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
         run: |
@@ -100,6 +102,21 @@ jobs:
             echo "::error::The NAMES secret isn't an object of sign-in addresses to a person, or a list of up to 6 for a shared sign-in. Each person is a name, or a name and a family name, each with up to 30 characters and no @, and no two people share a name. Fix fridge_people.auto.tfvars in mwarkentin/infra."
             exit 1
           fi
-          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n}' > "$RUNNER_TEMP/secrets.json"
+          sees="${SEES:-{\}}"
+          # A bad SEES turns everyone away, so it stops here too. Each address
+          # sees one or more of the families above, by id. The Worker checks
+          # the rest: that it's nobody's who's in a family.
+          if ! jq -n -e --arg f "$families" --arg s "$sees" '
+            [$f | fromjson | .[].id | gsub("^\\s+|\\s+$"; "")] as $ids
+            | $s | fromjson
+            | type == "object"
+              and all(to_entries[];
+                (.key | test("^[^@\\s]+@[^@\\s]+$"))
+                and (.value | type == "array" and length >= 1
+                  and all(.[]; type == "string" and (gsub("^\\s+|\\s+$"; "") as $id | any($ids[]; . == $id)))))' > /dev/null 2>&1; then
+            echo "::error::The SEES secret isn't an object of sign-in addresses to lists of one or more family ids from FAMILIES. Fix fridge_people.auto.tfvars in mwarkentin/infra."
+            exit 1
+          fi
+          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s}' > "$RUNNER_TEMP/secrets.json"
           npx wrangler deploy --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD" --secrets-file "$RUNNER_TEMP/secrets.json"
           rm "$RUNNER_TEMP/secrets.json"

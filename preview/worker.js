@@ -29,32 +29,68 @@ const json = (data, status = 200) => Response.json(data, { status, headers: { 'C
 async function handle(request, env) {
   const { pathname } = new URL(request.url);
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
-  // The visitor is a parent in the first family.
-  if (pathname === '/api/session') return json({ email: 'visitor@example.com', canEdit: true, preview: true, families: [FAMILIES[0].id] });
-  if (pathname === '/api/gallery') return json(gallery(new Date()));
-  if (pathname === '/api/comments') return json(talkSummary(new Date()));
+  const who = visitor(request);
+  if (pathname === '/api/session') return json(who.session);
+  if (pathname === '/api/gallery') return json(gallery(new Date(), who));
+  if (pathname === '/api/comments') return json(talkSummary(new Date(), who));
   const talk = pathname.match(/^\/api\/pieces\/(\d+)\/comments$/);
   if (talk) {
     const id = Number(talk[1]);
-    if (!PIECES.some((p) => p.id === id)) return json({ error: 'That isn’t on the fridge.' }, 404);
-    return json(pieceTalk(new Date(), id));
+    if (!seenPieces(who).some((p) => p.id === id)) return json({ error: 'That isn’t on the fridge.' }, 404);
+    return json(pieceTalk(new Date(), id, who));
   }
   if (pathname.startsWith('/api/')) return json({ error: 'There’s nothing at that address.' }, 404);
   const img = pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
   if (img) {
-    const piece = PIECES.find((p) => p.id === Number(img[1]));
+    const piece = seenPieces(who).find((p) => p.id === Number(img[1]));
     if (!piece) return json({ error: 'There’s no piece with that id.' }, 404);
     return new Response(drawing(piece), { headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' } });
   }
   const res = await env.ASSETS.fetch(request);
-  if (pathname === '/' && (res.headers.get('Content-Type') || '').startsWith('text/html')) return markAsPreview(res);
+  if (pathname === '/' && (res.headers.get('Content-Type') || '').startsWith('text/html')) return markAsPreview(res, who);
   return res;
 }
 
+// Who's looking. Usually a parent in the first family: Aunt Pine and Uncle
+// Pine, who share a sign-in. With ?as=nonna on the page's address, it's
+// Nonna, a grandparent on their side who sees only the first family (as SEES
+// has it in the real Worker): not the other family, its kids, their art, nor
+// what's said about it. The page's own requests carry its address as their
+// Referer, so that's where the API and the pictures look; nothing is
+// remembered, and nothing signs anyone in.
+const PARENT = {
+  name: null,
+  sees: null,
+  session: { email: 'visitor@example.com', canEdit: true, preview: true, families: ['pines'] },
+  me: { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: 9 },
+};
+const NONNA = {
+  name: 'Nonna',
+  sees: ['pines'],
+  session: { email: 'nonna@example.com', canEdit: false, preview: true, families: [], artist: null },
+  me: { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: 10 },
+};
+function visitor(request) {
+  const url = new URL(request.url);
+  let from = url;
+  if (!url.searchParams.has('as')) {
+    try {
+      const referer = new URL(request.headers.get('Referer'));
+      if (referer.origin === url.origin) from = referer;
+    } catch {}
+  }
+  return from.searchParams.get('as') === 'nonna' ? NONNA : PARENT;
+}
+const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
+const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
+
 // The page itself, saying in its title and a strip across the top that it's
-// a preview. The strip scrolls away under the header, so it covers nothing.
-async function markAsPreview(res) {
-  const strip = '<div style="padding:7px max(16px,env(safe-area-inset-right,0px)) 7px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">Preview with a made-up family</div>';
+// a preview, with a link to see it as the other visitor. The strip scrolls
+// away under the header, so it covers nothing.
+async function markAsPreview(res, who) {
+  const link = (href, words) => `<a href="${href}" style="display:inline-block;padding:4px 2px;color:inherit;text-decoration:underline;text-underline-offset:3px">${words}</a>`;
+  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : `Preview with a made-up family. ${link('/?as=nonna', 'See it as Nonna, who sees only the Pines')}`;
+  const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">${words}</div>`;
   const html = (await res.text()).replace(/<title>([^<]*)<\/title>/, '<title>Preview · $1</title>').replace(/<body[^>]*>/, (body) => body + strip);
   const headers = new Headers(res.headers);
   headers.delete('Content-Length');
@@ -67,14 +103,14 @@ async function markAsPreview(res) {
 // Dates count back from today, so ages stay put and "This time of year"
 // always has something in it.
 const FAMILIES = [
+  { id: 'pines', name: 'The Pines' },
   { id: 'oaks', name: 'The Oaks' },
-  { id: 'willows', name: 'The Willows' },
 ];
 const KIDS = [
-  { id: 1, name: 'Ada', family: 'oaks', born: [8, 64] },
-  { id: 2, name: 'Bo', family: 'oaks', born: [5, 288] },
-  { id: 3, name: 'Cy', family: 'willows', born: [7, 150] },
-  { id: 4, name: 'Dee', family: 'willows', born: [3, 200] },
+  { id: 1, name: 'Ada', family: 'pines', born: [8, 64] },
+  { id: 2, name: 'Bo', family: 'pines', born: [5, 288] },
+  { id: 3, name: 'Cy', family: 'oaks', born: [7, 150] },
+  { id: 4, name: 'Dee', family: 'oaks', born: [3, 200] },
 ];
 // [id, kid, drawing, width, height, [years, days] ago, precision, title, what they said, medium, tags, favourite]
 const PIECES = [
@@ -107,28 +143,29 @@ function back(today, [years, days]) {
   d.setUTCDate(d.getUTCDate() - days);
   return d;
 }
-// The same shape as the real /api/gallery, kids oldest first like the real one.
-function gallery(today) {
-  const kids = KIDS.map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
-  const pieces = PIECES.map(({ kind, ago, ...p }) => {
+// The same shape as the real /api/gallery, kids oldest first like the real
+// one, with only the families, kids and pieces this visitor sees.
+function gallery(today, who) {
+  const kids = KIDS.filter((k) => seesKid(who, k.id)).map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
+  const pieces = seenPieces(who).map(({ kind, ago, ...p }) => {
     const d = back(today, ago);
     if (p.made_precision === 'month') d.setUTCDate(15);
     if (p.made_precision === 'year') d.setUTCMonth(6, 1);
     const added = new Date(today.getTime() - (PIECES.length - p.id) * 36e5);
     return { ...p, made: iso(d > today ? today : d), source_name: null, created_at: added.toISOString().slice(0, 19).replace('T', ' ') };
   }).sort((a, b) => (a.made < b.made ? 1 : a.made > b.made ? -1 : b.id - a.id));
-  return { families: FAMILIES, kids, pieces };
+  return { families: FAMILIES.filter((f) => who.sees === null || who.sees.includes(f.id)), kids, pieces };
 }
 
 // ---- Made-up comments and stickers ----
-// In the real Worker's shapes (talk() in src/worker.js). The visitor's
+// In the real Worker's shapes (talk() in src/worker.js). The parents'
 // sign-in is shared by two parents in the first family, Mum and Dad on its
-// kids' art and Aunt Oak and Uncle Oak on the other family's, so the page
+// kids' art and Aunt Pine and Uncle Pine on the other family's, so the page
 // says which of them is commenting. They've read up to comment 9, so the
-// three after it are new. As parents in the first family, they could remove
-// comments on its kids' art. The page keeps what the visitor adds to
-// itself: the Worker above refuses every change.
-const VISITOR_FAMILY = 'oaks';
+// ones after it are new. As parents in the first family, they could remove
+// comments on its kids' art. Nonna has read up to comment 10, and can remove
+// only her own. The page keeps what a visitor adds to itself: the Worker
+// above refuses every change.
 // [id, piece, who, the kid it is (or none), minutes ago, what they said]
 const COMMENTS = [
   [1, 4, 'Grandma', null, 4380, 'Look at those flames! Where is it going?'],
@@ -143,36 +180,52 @@ const COMMENTS = [
   [10, 1, 'Pop', null, 180, 'That hat is very like Grandma’s.'],
   [11, 8, 'Auntie Jo', null, 50, 'Hot! Hot! Hot! made me laugh out loud.'],
   [12, 20, 'Cy', 3, 20, 'Blub!'],
+  [13, 2, 'Dee', 4, 15, 'Can you draw my house next?'],
+  [14, 10, 'Aunt Oak', null, 12, 'These would cheer anyone up.'],
+  [15, 4, 'Nonna', null, 8, 'What a rocket! Save me a seat.'],
 ].map(([id, piece_id, by, kid_id, ago, body]) => ({ id, piece_id, by, kid_id, ago, body }));
 const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
 // Who gave which stickers to each piece.
 const GIVEN = {
-  1: { heart: ['Grandma', 'Pop', 'Nana', 'Auntie Jo'] },
+  1: { heart: ['Grandma', 'Pop', 'Nana', 'Auntie Jo', 'Nonna'] },
   3: { rainbow: ['Grandma', 'Cy'] },
-  4: { star: ['Grandma', 'Pop', 'Nana'], heart: ['Grandma'], wow: ['Bo', 'Cy'] },
+  4: { star: ['Grandma', 'Pop', 'Nana', 'Nonna'], heart: ['Grandma'], wow: ['Bo', 'Cy'] },
   8: { smile: ['Auntie Jo', 'Bo'] },
   12: { wow: ['Auntie Jo', 'Ada'], smile: ['Pop'] },
   13: { star: ['Nana'], rainbow: ['Grandma'] },
   18: { heart: ['Grandma', 'Dee'], rainbow: ['Pop', 'Auntie Jo', 'Ada'] },
   20: { smile: ['Cy', 'Dee'] },
 };
+// Who's in which family, of the people above. To someone who doesn't see
+// their family, they're "Family", as the real Worker names them, never their
+// name.
+const MEMBERS = { Ada: 'pines', Bo: 'pines', Cy: 'oaks', Dee: 'oaks', 'Aunt Oak': 'oaks' };
+const hiddenFrom = (who, by) => who.sees !== null && MEMBERS[by] && !who.sees.includes(MEMBERS[by]);
 const stamp = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
-function comment(today, c) {
+function comment(today, c, who) {
   const kid = KIDS.find((k) => k.id === PIECES.find((p) => p.id === c.piece_id).kid_id);
-  return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: stamp(new Date(today.getTime() - c.ago * 6e4)), edited: false, by: c.by, kid_id: c.kid_id, mine: false, can_remove: kid.family === VISITOR_FAMILY };
+  const mine = c.by === who.name;
+  const hidden = hiddenFrom(who, c.by);
+  return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: stamp(new Date(today.getTime() - c.ago * 6e4)), edited: false, by: hidden ? 'Family' : c.by, kid_id: hidden ? null : c.kid_id, mine, can_remove: mine || who.session.families.includes(kid.family) };
 }
-const stickersOn = (id) => STICKERS.map((kind) => ({ kind, count: (GIVEN[id]?.[kind] || []).length, mine: [], by: GIVEN[id]?.[kind] || [] }));
-function talkSummary(today) {
+const stickersOn = (id, who) =>
+  STICKERS.map((kind) => {
+    const by = GIVEN[id]?.[kind] || [];
+    return { kind, count: by.length, mine: by.includes(who.name) ? [''] : [], by: by.map((n) => (hiddenFrom(who, n) ? 'Family' : n)) };
+  });
+// Comments on the pieces this visitor sees.
+const seenComments = (who) => COMMENTS.filter((c) => seenPieces(who).some((p) => p.id === c.piece_id));
+function talkSummary(today, who) {
   const counts = {};
-  for (const p of PIECES) {
+  for (const p of seenPieces(who)) {
     const on = COMMENTS.filter((c) => c.piece_id === p.id);
-    const stickers = stickersOn(p.id).reduce((n, s) => n + s.count, 0);
-    if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: Math.max(0, ...on.map((c) => c.id)) };
+    const stickers = stickersOn(p.id, who).reduce((n, s) => n + s.count, 0);
+    if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: Math.max(0, ...on.filter((c) => c.by !== who.name).map((c) => c.id)) };
   }
-  const latest = [...COMMENTS].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, c));
-  return { me: { names: [{ name: 'Aunt Oak', home: 'Mum' }, { name: 'Uncle Oak', home: 'Dad' }], families: [VISITOR_FAMILY], kid: null, kid_id: null, seen: 9 }, newest: Math.max(...COMMENTS.map((c) => c.id)), counts, latest };
+  const latest = [...seenComments(who)].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, c, who));
+  return { me: who.me, newest: Math.max(0, ...seenComments(who).map((c) => c.id)), counts, latest };
 }
-const pieceTalk = (today, id) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, c)), stickers: stickersOn(id) });
+const pieceTalk = (today, id, who) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, c, who)), stickers: stickersOn(id, who) });
 
 // ---- Crayon drawings, as SVG ----
 const C = { red: '#d63031', orange: '#f08c1e', yellow: '#f5c518', green: '#3ca046', blue: '#286ec8', purple: '#8246aa', brown: '#82552f', pink: '#f078aa', black: '#28282d', sky: '#6eb4eb', grass: '#5ab43c', grey: '#c8c8d2' };

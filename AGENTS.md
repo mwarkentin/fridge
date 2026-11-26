@@ -40,9 +40,11 @@ history on `main` is permanent.
   and stickers (`kid`, `kidAddresses`); everyone else's names come from the
   `NAMES` Worker secret (`readNames`), one or more people per sign-in
   address, and a parent can go by another name ("Mom") on their own
-  family's kids' art, the same to everyone. It fails closed: with no Access
-  settings, or a `FAMILIES` it can't read, nobody gets in; with a `NAMES` it
-  can't read, comments are off.
+  family's kids' art, the same to everyone. Someone in no family can be
+  shown only some families (the `SEES` Worker secret, `readSees`), and
+  `canSee` is the one rule for who sees which kids. It fails closed: with
+  no Access settings, or a `FAMILIES` or `SEES` it can't read, nobody gets
+  in; with a `NAMES` it can't read, comments are off.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
@@ -61,7 +63,10 @@ history on `main` is permanent.
 - `preview/`: a public preview of the page for pull requests. `worker.js`
   makes up the kids, the art, its drawings, comments and stickers, and
   refuses every change (the page keeps what's added there to itself);
-  `wrangler.toml` gives it no bindings. `.github/workflows/preview.yml`
+  `wrangler.toml` gives it no bindings. It's seen as a parent in the
+  first family, or, from a page opened with `?as=nonna`, as Nonna, who
+  sees only that family (the page's requests carry that address as their
+  Referer). `.github/workflows/preview.yml`
   deploys one per pull request and deletes it when the pull request closes.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
   computer. It signs in with `cloudflared` as that parent.
@@ -80,7 +85,7 @@ mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 `fridge-art` bucket, the `fridge` database, the Access application and its
 policies, the custom domain, the deploy token, and this repo's Actions
 secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
-`NAMES`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
+`NAMES`, `SEES`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
 `ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
 since Access doesn't guard those addresses. The previews are public on
@@ -109,8 +114,21 @@ workers.dev only because they're a separate Worker with nothing real on it.
   the Worker decides. The importer's routes are for parents only.
   Skips (`/api/skipped`) are fingerprints only, so any parent can record
   them.
+- Who sees what: everyone sees every kid, except someone `SEES` lists, who
+  sees only the kids in those families (not another family's, nor a kid in
+  no family). Only people in no family can be limited: parents and kids
+  always see everything. `canSee` in `auth.js` is the one place that
+  decides; every route that shows or changes a kid, a piece, a picture, or
+  a comment or sticker on one goes through it (`seenKids`, `seenPiece`,
+  `pieceOwner`, `kidById` in `worker.js`), and so must anything new that
+  tells someone about them, like notifications. A piece someone doesn't
+  see answers exactly as one that isn't there (a 404 where a piece is
+  named, nothing in a list), never with a 403 that says it exists. To
+  them, everyone in only the families they don't see, and anyone whose
+  name has the name of a kid they don't see in it, is `FAMILY` ("Family"),
+  never their name (`namesFor`). Test every route as someone limited.
 - Comments and stickers (`talk()` in `worker.js`) are for everyone signed
-  in, on any piece. Authors edit and delete their own comments; a parent can
+  in, on any piece they see. Authors edit and delete their own comments; a parent can
   also remove (never reword) any comment on art they could change
   (`canChangeKid`); a sticker is taken back only by whoever gave it. On a
   sign-in two people share, each comment and sticker says which of them
