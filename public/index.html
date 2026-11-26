@@ -50,6 +50,7 @@
       <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.8 7h14.4M9.8 7V4.8h4.4V7M7 7l.9 12.6h8.2L17 7M10.4 11v5M13.6 11v5"/></symbol>
       <symbol id="i-door" viewBox="0 0 24 24"><path d="M13.6 4.4h4.2a1.6 1.6 0 0 1 1.6 1.6v12a1.6 1.6 0 0 1-1.6 1.6h-4.2M9.6 8 5.6 12l4 4M5.8 12h9"/></symbol>
       <symbol id="i-tag" viewBox="0 0 24 24"><path d="M4 12.4V4.8A.8.8 0 0 1 4.8 4h7.6l8 8-8.4 8.4z"/><circle cx="8.6" cy="8.6" r="1.4"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.8 12s3.4-6.4 9.2-6.4 9.2 6.4 9.2 6.4-3.4 6.4-9.2 6.4S2.8 12 2.8 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
       <symbol id="i-bubble" viewBox="0 0 24 24"><path d="M5.6 5h12.8a2.4 2.4 0 0 1 2.4 2.4v7.4a2.4 2.4 0 0 1-2.4 2.4h-6.2l-4.6 3.2v-3.2h-2a2.4 2.4 0 0 1-2.4-2.4V7.4A2.4 2.4 0 0 1 5.6 5z"/></symbol>
       <!-- Stickers to give a piece: die-cut, with a white edge, the same in both themes. -->
       <symbol id="s-heart" viewBox="0 0 48 48"><path d="M24 42.5C11 33.8 4.5 26.8 4.5 17.8 4.5 11.4 9.4 6.5 15.6 6.5c3.6 0 6.6 1.8 8.4 4.7 1.8-2.9 4.8-4.7 8.4-4.7 6.2 0 11.1 4.9 11.1 11.3 0 9-6.5 16-19.5 24.7z" fill="url(#g-heart)" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/><ellipse cx="14.5" cy="15" rx="5" ry="3" fill="#fff" fill-opacity=".55" transform="rotate(-28 14.5 15)"/></symbol>
@@ -65,11 +66,20 @@
     </defs>
   </svg>
 
+  <!-- An owner looking at the fridge as someone else: always in sight, above the header and the piece view, with the way back. -->
+  <div class="viewing" id="viewing" hidden>
+    <div class="viewing-inner">
+      <p class="viewing-who"><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg><span>Viewing as <b id="viewing-name"></b><span class="viewing-off"> · changes are off</span></span></p>
+      <button class="viewing-btn" id="viewing-switch" type="button">Switch</button>
+      <button class="viewing-btn stop" id="viewing-stop" type="button">Stop</button>
+    </div>
+  </div>
   <header class="bar">
     <div class="bar-inner">
       <a class="brand" href="#home" aria-label="The Fridge, home"><span class="brand-the" aria-hidden="true">the</span><span class="magnets" aria-hidden="true"><b class="mg-0" style="--n:0">F</b><b class="mg-y" style="--n:1">R</b><b class="mg-1" style="--n:2">I</b><b class="mg-2" style="--n:3">D</b><b class="mg-3" style="--n:4">G</b><b class="mg-4" style="--n:5">E</b></span></a>
       <nav class="tabs" id="tabs" aria-label="Sections"></nav>
       <div class="actions">
+        <button class="btn round" id="open-view-as" type="button" aria-label="View as someone else" title="View as…" hidden><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg></button>
         <button class="btn" id="open-frame" type="button"><svg class="i" aria-hidden="true"><use href="#i-frame"/></svg><span class="lbl">Frame</span></button>
         <button class="btn primary edit-only" id="open-add" type="button"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add art</button>
       </div>
@@ -161,6 +171,15 @@
       <p class="a-view-name"><span id="a-view-name"></span><span class="a-view-hint" id="a-view-hint">Tap the picture to see it full size.</span></p>
     </div>
     <div class="a-view-art" id="a-view-art"><img id="a-view-img" alt=""></div>
+  </div>
+
+  <!-- View as: for the fridge's owners, to see it as someone else does, without changing anything. -->
+  <div id="view-as" class="sheet-wrap" hidden>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="va-title">
+      <div class="sheet-head"><h2 id="va-title"><svg class="doodle" aria-hidden="true"><use href="#d-sparkle"/></svg>View as…</h2><button class="btn round" type="button" id="va-close" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+      <p class="hint">See the fridge just as they do: their kids, art, comments and names. Nothing can be changed while you look, and nothing they’d see as new stops being new.</p>
+      <div id="va-list" class="va-list"><p class="hint">Getting everyone…</p></div>
+    </section>
   </div>
 
   <div id="toast" class="toast" role="status" hidden></div>

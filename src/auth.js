@@ -281,3 +281,85 @@ export const canSee = (who, kid) => (kid.family == null ? seesEverything(who) : 
 // own art, and change only the pieces they added (worker.js, mayChange).
 export const canChangeKid = (who, kid) => who.canEdit && (kid.family === null || who.families.includes(kid.family));
 export const isArtistOf = (who, kid) => who.artist !== null && sameName(who.artist, kid.name);
+
+// ---- Viewing as someone else ----
+// The fridge's owners, from ADMINS: a Worker secret infra hands to the
+// deploy, sign-in addresses separated by commas like PARENT_EMAILS, each one
+// a parent's. An owner can look at the fridge as anyone else it lets in
+// would see it, with changes off (worker.js, viewAs). Missing or empty means
+// nobody can. One that can't be read throws, and then nobody can either
+// (owner), rather than someone who isn't a parent getting to.
+export function readAdmins(env) {
+  const raw = (env.ADMINS || '').trim();
+  if (!raw) return [];
+  const list = raw.split(',').map((e) => e.trim().toLowerCase());
+  if (!list.every(isEmail)) throw new Error('ADMINS must be sign-in addresses separated by commas.');
+  const parents = parentEmails(env);
+  if (!list.every((e) => parents.includes(e))) throw new Error('ADMINS lists someone who isn’t a parent (PARENT_EMAILS).');
+  return [...new Set(list)];
+}
+
+// Whether this signed-in person is one of the owners. Never for someone
+// already viewing as someone else: `who` is then the person viewed.
+export function isOwner(env, who) {
+  if (!who || who.viewing) return false;
+  try {
+    return readAdmins(env).includes(who.email);
+  } catch (e) {
+    console.error('ADMINS', e);
+    return false;
+  }
+}
+
+// Everyone the fridge knows of, as an owner picks whom to view as: each
+// family's parents, then its kids (an artist's own address, then each of
+// their devices, which are the kid), in FAMILIES' order; then everyone else
+// NAMES or SEES lists, and any parent in no family. On a sign-in two people
+// share, each of them, so their own names come out right (`as`). Each is
+// { email, as, name, detail, address }: `address` is true where the name
+// alone wouldn't tell two of them apart, or where it's only the start of
+// the address. Returned as groups: [{ id, name, people }], everyone else
+// last with id null.
+export function viewable(env) {
+  const families = readFamilies(env);
+  const names = readNames(env);
+  const sees = readSees(env, families);
+  const parents = parentEmails(env);
+  const listed = new Set();
+  const nameless = (email) => email.split('@')[0];
+  const peopleOn = (email, detail) => {
+    const people = names.get(email) || [];
+    if (!people.length) return [{ email, as: null, name: nameless(email), detail, address: true }];
+    return people.map((p) => ({ email, as: people.length > 1 ? p.name : null, name: p.name, detail: p.family ? `${detail}, “${p.family}” at home` : detail, address: false }));
+  };
+  const take = (email) => !listed.has(email) && listed.add(email);
+  const familyName = (id) => families.find((f) => f.id === id)?.name ?? id;
+  const groups = families.map((f) => {
+    const people = [];
+    for (const email of f.parents) if (take(email)) people.push(...peopleOn(email, parents.includes(email) ? 'Parent' : 'Looks, in this family'));
+    for (const kid of f.kids) {
+      if (kid.artist && !parents.includes(kid.artist) && take(kid.artist)) people.push({ email: kid.artist, as: null, name: kid.name, detail: 'Artist: adds their own art', address: false });
+      for (const device of kid.devices) if (!parents.includes(device) && take(device)) people.push({ email: device, as: null, name: kid.name, detail: 'Their iPad', address: false });
+    }
+    return { id: f.id, name: f.name, people };
+  });
+  const others = [];
+  for (const email of parents) if (take(email)) others.push(...peopleOn(email, 'Parent, in no family'));
+  for (const email of [...names.keys(), ...sees.keys()].sort()) {
+    if (!take(email)) continue;
+    const only = sees.get(email);
+    others.push(...peopleOn(email, only ? `Sees only ${only.map(familyName).join(' and ')}` : 'Sees every family'));
+  }
+  const all = [...groups, { id: null, name: 'Everyone else', people: others }].filter((g) => g.people.length);
+  // Two the same, like a kid's two devices: show their addresses.
+  const flat = all.flatMap((g) => g.people);
+  for (const p of flat) if (flat.some((q) => q !== p && sameName(q.name, p.name) && q.detail === p.detail)) p.address = true;
+  return all;
+}
+
+// The `who` of the person `email` would be if they signed in themselves, as
+// identify() makes it, with `viewing` saying who's looking and as which of
+// the people on that sign-in.
+export function viewedAs(env, owner, entry) {
+  return { ...person(entry.email, env), viewing: { owner, as: entry.as, name: entry.name, detail: entry.detail } };
+}

@@ -209,3 +209,42 @@ test('says when it’s Nonna’s view, with a way back', async () => {
   const body = await (await call('/?as=nonna')).text();
   assert.match(body, /<div [^>]*>Preview as Nonna, who sees only the Pines\. <a href="\/"[^>]*>See it as their parent<\/a><\/div>/);
 });
+
+// View as: the made-up parent owns the fridge, so it can be tried here.
+// With ?view= on the page's address, it's them viewing as someone else.
+const viewing = (key, path, init = {}) => call(path, { ...init, headers: { Referer: `https://fridge-preview-pr-1.example.workers.dev/?view=${key}`, ...init.headers } });
+
+test('view as: the parent owns it, and can view as each of its people, in the real list’s shape', async () => {
+  const session = await (await call('/api/session')).json();
+  assert.equal(session.owner, true);
+  assert.equal((await (await asNonna('/api/session')).json()).owner, undefined, 'Nonna isn’t an owner');
+  assert.equal((await asNonna('/api/view-as')).status, 403);
+  const { groups, viewing: now } = await (await call('/api/view-as')).json();
+  assert.equal(now, null);
+  assert.deepEqual(groups.map((g) => [g.id, g.name]), [['pines', 'The Pines'], [null, 'Everyone else']]);
+  for (const p of groups.flatMap((g) => g.people)) {
+    assert.deepEqual(Object.keys(p).sort(), ['address', 'as', 'detail', 'email', 'key', 'name']);
+    assert.match(p.email, /@example\.com$/);
+  }
+  assert.ok(groups.at(-1).people.some((p) => p.name === 'Nonna'));
+});
+
+test('view as: shows what that person sees, with changes still refused', async () => {
+  const nonna = await (await viewing('nonna', '/api/gallery')).json();
+  assert.deepEqual(nonna, await (await asNonna('/api/gallery')).json());
+  assert.doesNotMatch(JSON.stringify(nonna), OAKS);
+  assert.deepEqual((await (await viewing('nonna', '/api/session')).json()).viewing, { name: 'Nonna', detail: 'Sees only The Pines', as: null });
+  assert.deepEqual((await (await viewing('nonna', '/api/comments')).json()).me, (await (await asNonna('/api/comments')).json()).me);
+  assert.equal((await viewing('nonna', '/img/13/display')).status, 404, 'the Oaks’ pictures');
+  // Ada's iPad is Ada: her own comments are hers.
+  const ada = await (await viewing('ada-ipad', '/api/session')).json();
+  assert.deepEqual([ada.canEdit, ada.owner, ada.viewing.name], [false, true, 'Ada']);
+  const { latest, me } = await (await viewing('ada-ipad', '/api/comments')).json();
+  assert.equal(me.kid, 'Ada');
+  assert.ok(latest.filter((c) => c.by === 'Ada').every((c) => c.mine));
+  // One of the parents on the shared sign-in.
+  assert.equal((await (await viewing('uncle-pine', '/api/session')).json()).viewing.as, 'Uncle Pine');
+  assert.equal((await (await viewing('nobody', '/api/session')).json()).viewing, undefined);
+  // Still nothing changes.
+  for (const method of ['POST', 'DELETE']) assert.equal((await viewing('nonna', '/api/view-as', { method })).status, 403);
+});

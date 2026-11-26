@@ -626,6 +626,36 @@ textarea { resize: vertical; }
   .a-buttons .btn:not(#a-submit) { flex: 1 1 0; }
 }
 
+/* View as: an owner sees the fridge as someone else does. The strip stays at
+   the top, above the header, the piece view and the sheets, which move down
+   below it (--viewing-h, its height, set by app.js), so it's always in
+   sight. It's written on masking tape. */
+.viewing { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 35; background: var(--label); color: var(--label-ink); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+body.viewing-as .bar { top: calc(env(safe-area-inset-top, 0px) + var(--viewing-h, 0px)); }
+body.viewing-as :is(.overlay, .sheet-wrap, .a-view, .frame) { top: calc(env(safe-area-inset-top, 0px) + var(--viewing-h, 0px)); padding-top: 0; }
+body.viewing-as .sheet-wrap { padding-top: 16px; }
+.viewing-inner { max-width: 1180px; margin: 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px max(16px, env(safe-area-inset-right, 0px)) 4px max(16px, env(safe-area-inset-left, 0px)); }
+.viewing-who { display: flex; align-items: center; gap: 8px; flex: 1 1 12ch; min-width: 0; margin: 0; font: 800 16px/1.25 var(--body); overflow-wrap: anywhere; }
+.viewing-who .i { flex: none; width: 22px; height: 22px; }
+.viewing-who b { font: 600 18px/1.1 var(--display); }
+.viewing-off { font-weight: 700; }
+.viewing-btn { min-height: 44px; padding: 6px 16px; border: 2px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: 800 16px/1 var(--body); cursor: pointer; }
+.viewing-btn.stop { background: var(--label-ink); border-color: var(--label-ink); color: var(--label); }
+.viewing-btn:focus-visible, .va-person:focus-visible { outline: 3px solid var(--cr-blue); outline-offset: 2px; }
+@media (max-width: 420px) { .viewing-off { display: none; } }
+.va-list { display: grid; gap: 18px; }
+.va-fam { display: grid; gap: 8px; margin: 0; }
+.va-fam h3 { justify-self: start; margin: 0; padding: 3px 12px; background: var(--label); color: var(--label-ink); font: 600 17px/1.2 var(--display); transform: rotate(-1deg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15); }
+.va-fam ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.va-person { display: grid; gap: 1px; width: 100%; min-height: 52px; padding: 8px 14px; border: 2px solid var(--btn-line); border-radius: 16px; background: var(--surface); color: var(--ink); text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.va-person[aria-current="true"] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.va-person[aria-current="true"] .va-detail { color: inherit; }
+.va-name { font: 800 17px/1.2 var(--body); }
+.va-detail { color: var(--muted); font: 700 14px/1.3 var(--body); }
+.va-you { font-weight: 700; }
+.talk-off { margin: 0; padding: 10px 14px; border-radius: 14px; background: var(--label); color: var(--label-ink); font-weight: 700; }
+.as-line.as-fixed { margin: 0; }
+
 .toast { position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); z-index: 40; display: flex; align-items: center; gap: 8px; background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 16px; font-weight: 800; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3); max-width: calc(100% - 32px); text-align: center; transform: translateX(-50%) rotate(-1deg); }
 @media (prefers-reduced-motion: no-preference) { .toast:not([hidden]) { animation: pop 0.35s cubic-bezier(0.3, 0.7, 0.4, 1.5); } }
 @keyframes pop { from { transform: translateX(-50%) translateY(14px) scale(0.9) rotate(-1deg); opacity: 0; } }
