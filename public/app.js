@@ -1186,6 +1186,7 @@ function setBell(open) {
   if (open === bellOpen || !NOTES) return;
   bellOpen = open;
   bell.hidden = !open;
+  if (!open) setMailOpen(false);
   if (open) {
     fresh = new Set(NOTES.items.filter((n) => n.new).map((n) => n.key));
     caughtUp();
@@ -1258,13 +1259,16 @@ window.addEventListener('hashchange', () => setBell(false));
 window.addEventListener('resize', () => bellOpen && placeBell());
 
 // ---- What's new, by email ----
-// Under the bell: how often someone gets its news by email (the Worker's
-// digest, sendDigests in worker.js), or Never, which is how it stops. See it
-// shows the email as Send me one now would send it, from the bell's own list
+// At the top of the bell, folded behind one small button that says how
+// it's set: how often someone gets its news by email (the Worker's digest,
+// sendDigests in worker.js), or Never, which is how it stops. See it shows
+// the email as Send me one now would send it, from the bell's own list
 // (digest.js, which the Worker sends with too); only an owner can send one
 // now, to try it. While viewing as someone it's only to look: their
 // settings, and their email as they'd get it. A kid's iPad never gets one.
 const mailBox = $('#bell-mail');
+const mailToggle = $('#bm-toggle');
+let mailOpen = false;
 const mailEvery = $('#bm-every');
 const mailHour = $('#bm-hour');
 const mailSheet = $('#mail-view');
@@ -1273,10 +1277,21 @@ const myZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const utcStamp = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 
+function setMailOpen(open) {
+  mailOpen = open;
+  mailToggle.setAttribute('aria-expanded', String(open));
+  mailBox.hidden = !open || mailToggle.hidden;
+}
+mailToggle.addEventListener('click', () => setMailOpen(!mailOpen));
+
 function drawMail() {
   const d = TALK?.me.digest ?? null;
-  mailBox.hidden = !d || (!d.can && !VIEWING);
-  if (mailBox.hidden) return;
+  mailToggle.hidden = !d || (!d.can && !VIEWING);
+  mailBox.hidden = mailToggle.hidden || !mailOpen;
+  if (mailToggle.hidden) return;
+  // Folded, the button says how it's set, in a word.
+  $('#bm-sum').textContent = d.every === 'weekly' ? 'Sundays' : d.every === 'daily' ? 'Daily' : 'Email';
+  mailToggle.setAttribute('aria-label', `${VIEWING ? `${VIEWING.name}’s email` : 'Email me what’s new'}: ${scheduleWords(d.every, d.hour)}`);
   $('#bm-pick').hidden = Boolean(VIEWING);
   mailEvery.value = d.every;
   mailHour.value = String(d.hour);
@@ -1331,6 +1346,7 @@ function openMail() {
     zone: d.zone ?? myZone(),
     url: location.origin,
     picture: (id) => `/img/${Number(id)}/thumb`,
+    icon: '/icons/icon-192.png',
     test: true,
   });
   $('#mv-hint').textContent = `${VIEWING ? `What ${VIEWING.name} would get` : 'What Send me one now would send'}: everything from the last ${d.every === 'daily' ? 'day' : 'week'}, seen or not. The real one has only what’s new since the last.`;
@@ -1376,8 +1392,9 @@ $('#bm-send').addEventListener('click', async (e) => {
   b.disabled = false;
 });
 
-// The email's links: ?piece=<id> opens that piece, ?bell opens the bell.
-// Followed once, when the fridge first opens, and then taken off the address.
+// The email's links: ?piece=<id> opens that piece, ?bell opens the bell,
+// and ?bell=email opens it at the email settings. Followed once, when the
+// fridge first opens, and then taken off the address.
 let linked = false;
 function followLink() {
   if (linked) return;
@@ -1386,6 +1403,7 @@ function followLink() {
   if (!q.has('piece') && !q.has('bell')) return;
   const piece = Number(q.get('piece'));
   const bell = q.has('bell');
+  const settings = q.get('bell') === 'email';
   q.delete('piece');
   q.delete('bell');
   const rest = q.toString();
@@ -1393,7 +1411,10 @@ function followLink() {
   if (piece) {
     if (PIECES.some((p) => p.id === piece)) openDetail(piece, [piece]);
     else toast('That isn’t on the fridge any more.');
-  } else if (bell) setBell(true);
+  } else if (bell) {
+    setBell(true);
+    if (settings && !mailToggle.hidden) setMailOpen(true);
+  }
 }
 
 // ---- Frame mode ----

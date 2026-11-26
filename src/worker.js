@@ -1008,13 +1008,26 @@ async function setDigest(env, who, d) {
     .run();
 }
 
+// The app icon, for the top of the email beside the wordmark, as it is in
+// public/icons, or null if it can't be had (and then the email goes without).
+async function appIcon(env) {
+  try {
+    const res = await env.ASSETS.fetch(new Request('https://fridge.invalid/icons/icon-192.png'));
+    return res.ok ? await res.arrayBuffer() : null;
+  } catch {
+    return null;
+  }
+}
+
 // The email for this person: their notifications from after `since`, with
-// the kids' colours as the page gives them (families.js) and every piece's
-// title, or no mail if there are none. `as_of` is how far it got.
+// the kids' colours as the page gives them (families.js), every piece's
+// title and the app icon, or no mail if there are none. `as_of` is how far
+// it got.
 async function digestFor(env, who, { since, every, hour, zone, test = false }) {
   const notes = await notifications(env, who);
   const items = notes.items.filter((n) => n.at > since);
   if (!items.length) return { as_of: notes.as_of, mail: null, count: 0 };
+  const icon = await appIcon(env);
   const families = readFamilies(env);
   const ids = [...new Set(items.flatMap((n) => (n.kind === 'art' ? n.pieces : [n.piece_id])))];
   const [kidRows, titleRows] = await env.DB.batch([
@@ -1026,16 +1039,16 @@ async function digestFor(env, who, { since, every, hour, zone, test = false }) {
   const titles = Object.fromEntries(titleRows.results.map((r) => [r.id, r.title]));
   const kidId = who.kid ? (kids.find((k) => sameName(k.name, who.kid))?.id ?? null) : null;
   const url = `https://${digestSender(env).split('@')[1]}`;
-  const mail = digestMail({ items, kids, titles, kidId, every, hour, zone, since, url, picture: (id) => `cid:piece-${id}`, test });
-  return { as_of: notes.as_of, mail, count: items.length };
+  const mail = digestMail({ items, kids, titles, kidId, every, hour, zone, since, url, picture: (id) => `cid:piece-${id}`, icon: icon && 'cid:fridge', test });
+  return { as_of: notes.as_of, mail: { ...mail, icon }, count: items.length };
 }
 
-// Sent to their sign-in address, with its pictures' thumbnails attached
-// for the email to show. They go as they are, so sending costs the Worker
+// Sent to their sign-in address, with the app icon and its pictures'
+// thumbnails attached for the email to show. They go as they are, so sending costs the Worker
 // next to no time.
 async function sendDigest(env, who, mail) {
   const objects = await Promise.all(mail.pictures.map((id) => env.ART.get(keyFor(id, 'thumb'))));
-  const attachments = [];
+  const attachments = mail.icon ? [{ content: mail.icon, filename: 'the-fridge.png', type: 'image/png', disposition: 'inline', contentId: 'fridge' }] : [];
   for (const [i, obj] of objects.entries()) {
     if (obj) attachments.push({ content: await obj.arrayBuffer(), filename: `piece-${mail.pictures[i]}.jpg`, type: 'image/jpeg', disposition: 'inline', contentId: `piece-${mail.pictures[i]}` });
   }

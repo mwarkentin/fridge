@@ -1784,16 +1784,21 @@ const DAY = 24 * HOUR;
 const pastHour = () => (new Date().getUTCHours() + 21) % 24;
 // What an email says, without its style sheet (whose @media isn't an address).
 const said_ = (part) => part.replace(/<style>[\s\S]*?<\/style>/, '');
-// Every cid: picture the email shows is attached, as an inline JPEG.
+// Every cid: picture the email shows is attached inline: the app icon, as
+// the PNG in public/icons, and each piece's thumbnail, as a JPEG. Returns
+// the pieces'.
 function picturesMatch(mail) {
-  const shown = [...new Set([...mail.html.matchAll(/src="cid:(piece-\d+)"/g)].map((m) => m[1]))].sort();
+  const shown = [...new Set([...mail.html.matchAll(/src="cid:([a-z0-9-]+)"/g)].map((m) => m[1]))].sort();
   const attached = (mail.attachments ?? []).map((a) => a.contentId).sort();
   assert.deepEqual(attached, shown);
+  assert.ok(shown.includes('fridge'), 'the app icon');
   for (const a of mail.attachments ?? []) {
-    assert.deepEqual([a.disposition, a.type, a.filename], ['inline', 'image/jpeg', `${a.contentId}.jpg`]);
+    const icon = a.contentId === 'fridge';
+    assert.deepEqual([a.disposition, a.type, a.filename], ['inline', icon ? 'image/png' : 'image/jpeg', icon ? 'the-fridge.png' : `${a.contentId}.jpg`]);
     assert.ok(a.content instanceof ArrayBuffer && a.content.byteLength > 0);
+    if (icon) assert.deepEqual(Buffer.from(a.content), readFileSync('public/icons/icon-192.png'));
   }
-  return shown;
+  return shown.filter((id) => id !== 'fridge');
 }
 
 test('digest: nobody gets one until it’s set up, never a kid’s iPad, and only the owners while it’s tried out', async () => {

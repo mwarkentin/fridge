@@ -171,9 +171,10 @@ on either family's art (any art they see: see
 
 ## What's new for you
 
-The bell at the top of the page has what's new for whoever's signed in,
-with a red magnet counting what came since they last looked. Tap it to see
-the list, newest first; tap a line to open its piece, at its comments.
+The bell, at the right end of the top bar, has what's new for whoever's
+signed in, with a red magnet counting what came since they last looked.
+Tap it to see the list, newest first; tap a line to open its piece, at its
+comments.
 
 - **New art**, from either family (or only the families you see), unless
   you put it up yourself. A day's
@@ -205,15 +206,24 @@ person's bell, and opening it changes nothing for them.
 
 ## What's new, by email
 
-The bell can come by email too: **Email me what's new**, at the bottom of
-the bell, sends it every Sunday or every day, at the hour you choose, in
-your own time. **Never** turns it off; that's the only way to stop it, and
-there's no unsubscribe link. Each email has what's new since the last one
-(or since you last caught up in the bell, if that's later), with nothing
-if there's nothing new: the new art with its pictures and titles, then
-the comments, with what was said beside each piece's picture, then the
-stickers. Every piece links to itself on the fridge, and **Open the
-fridge** opens the bell.
+The bell can come by email too. At the top of the bell, the envelope
+button (folded, it says how it's set: Email, Sundays or Daily) opens
+**Email me what's new**: every Sunday or every day, at the hour you
+choose, in your own time. **Never** turns it off; that's the only way to
+stop it, and there's no unsubscribe link. Each email has what's new since
+the last one (or since you last caught up in the bell, if that's later),
+with nothing if there's nothing new: the new art with its pictures and
+titles, then the comments, with what was said beside each piece's
+picture, then the stickers. Every piece links to itself on the fridge,
+**Open the fridge** opens the bell, and the footer's link opens the bell
+at the email settings.
+
+It looks like the fridge: the wordmark's letter magnets beside the app
+icon, a squiggle under each heading, each piece taped up on paper with its
+title in handwriting, everyone's magnets, and what was said in a speech
+bubble in the kid's colours. Email can't fetch the page's fonts, which are
+behind the sign-in, so it asks for them by name and otherwise uses the
+nearest a phone or computer has (Apple's rounded and chalkboard fonts).
 
 It's the bell's list, worked out when the email goes, so it follows the
 same rules: only kids you see, and only names, never addresses. Nothing is
