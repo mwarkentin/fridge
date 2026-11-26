@@ -518,7 +518,7 @@ textarea { resize: vertical; }
   .btn.bell:has(.bell-n.popped) .i { animation: wiggle 0.6s ease; transform-origin: 50% 15%; }
 }
 .bell-panel { position: absolute; top: calc(100% + 6px); right: var(--bell-right, 16px); z-index: 2; width: min(440px, calc(100% - 32px)); max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); overflow-y: auto; overscroll-behavior: contain; padding: 14px 12px 14px; background: var(--surface); border-radius: 22px; box-shadow: 0 0 0 1px var(--line), 0 20px 40px -14px rgba(0, 0, 0, 0.45); }
-.bell-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 6px 10px; }
+.bell-head { position: sticky; top: -14px; z-index: 1; display: flex; align-items: center; gap: 10px; margin: -14px -12px 0; padding: 14px 18px 10px; background: var(--surface); border-radius: 22px 22px 0 0; }
 .bell-head h2 { margin: 0; font: 600 1.4rem/1.1 var(--display); }
 .bell-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .n-item { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 46px 56px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; min-height: 72px; padding: 8px 10px 8px 8px; border-radius: 16px; color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -543,9 +543,13 @@ textarea { resize: vertical; }
 .n-said { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; white-space: pre-line; }
 .n-said.by-kid { font: 400 1.25rem/1.15 var(--hand); }
 .n-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; color: var(--muted); font-size: 14px; font-weight: 700; }
-.bell-mail { display: grid; gap: 10px; margin: 12px 0 0; padding: 14px 6px 2px; border-top: 2px dashed var(--line); }
-.bm-head { display: flex; align-items: center; gap: 8px; margin: 0; font: 600 1.15rem/1.2 var(--display); }
-.bm-head .i { width: 24px; height: 24px; flex: none; color: var(--cr-blue); }
+.bm-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; margin-left: auto; min-height: 40px; padding: 5px 8px 5px 12px; border: 2px solid var(--btn-line); border-radius: 999px; background: var(--surface); color: var(--ink); font: 800 15px/1 var(--body); box-shadow: 0 2px 0 var(--btn-line); cursor: pointer; }
+.bm-toggle .i { width: 20px; height: 20px; color: var(--cr-blue); }
+.bm-toggle .chev { width: 16px; height: 16px; color: var(--muted); transition: transform 0.15s ease; }
+.bm-toggle[aria-expanded="true"] { background: var(--bg-soft); }
+.bm-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.bell-mail { display: grid; gap: 10px; margin: 0 0 12px; padding: 4px 6px 14px; border-bottom: 2px dashed var(--line); }
+.bm-head { margin: 0; font: 600 1.15rem/1.2 var(--display); }
 .bm-pick { display: flex; flex-wrap: wrap; gap: 8px; }
 .bm-pick select { width: auto; flex: 1 1 9rem; min-height: 46px; font-size: 16px; padding: 8px 10px; }
 .bm-acts { display: flex; flex-wrap: wrap; gap: 8px; }
