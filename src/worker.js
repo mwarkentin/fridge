@@ -2,7 +2,10 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, canSee, identify, isArtistOf, isOwner, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily, viewable, viewedAs } from './auth.js';
+import { canChangeKid, canSee, identify, isArtistOf, isOwner, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily, signedInAs, viewable, viewedAs } from './auth.js';
+// The page's own modules, for the email digest: its words and colours are the page's.
+import { digestMail } from '../public/digest.js';
+import { arrange } from '../public/families.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -33,6 +36,10 @@ const text = (body, status) => new Response(body, { status, headers: { 'Content-
 export default {
   async fetch(request, env) {
     return secure(await handle(request, env));
+  },
+  // Every hour (wrangler.toml): the email digests that are due.
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(sendDigests(env, controller.scheduledTime));
   },
 };
 
@@ -534,7 +541,7 @@ const FAMILY = 'Family'; // who someone is, to a person who doesn't see their fa
 async function talk(request, env, who, url) {
   const { method } = request;
   const path = url.pathname;
-  if (!/^\/api\/(comments|me|notifications|pieces\/\d+\/(comments|stickers\/[a-z]+))(\/\d+)?$/.test(path)) return null;
+  if (!/^\/api\/(comments|digest|me|notifications|pieces\/\d+\/(comments|stickers\/[a-z]+))(\/\d+)?$/.test(path)) return null;
   try {
     readNames(env);
   } catch (e) {
@@ -548,6 +555,8 @@ async function talk(request, env, who, url) {
     if (method === 'GET') return json(await notifications(env, who));
   } else if (path === '/api/me') {
     if (method === 'PATCH') return json(await changeMe(env, who, await body(request)));
+  } else if (path === '/api/digest') {
+    if (method === 'POST') return json(await testDigest(env, who));
   } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/comments$/))) {
     const id = Number(m[1]);
     if (method === 'GET') return json(await pieceTalk(env, who, id));
@@ -663,12 +672,14 @@ async function stickersOut(env, who, pieceId, kid) {
 // everyone sees (`name`, what to send as `as`) and, for a parent, the one
 // shown on their own families' kids' art (`home`, or null), with those
 // families' ids; a kid has their kid instead. And how far they've caught up
-// (`seen`, a time like created_at, or null for someone who never has).
+// (`seen`, a time like created_at, or null for someone who never has), and
+// their email digest (`digest`, digestSettings), or null where the fridge
+// can't email them.
 async function me(env, who) {
-  const row = await env.DB.prepare('SELECT seen_at FROM people WHERE email = ?').bind(who.email).first();
+  const row = await env.DB.prepare('SELECT seen_at, digest, digest_hour, digest_zone FROM people WHERE email = ?').bind(who.email).first();
   const by = (await namesFor(env, who))({ author: who.email, name: '' });
   const people = who.kid ? [] : readNames(env).get(who.email) || [];
-  return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen_at ?? null };
+  return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen_at ?? null, digest: digestSettings(env, who, row) };
 }
 
 // For the whole page: comments and stickers on each piece (`newest` is when
@@ -769,17 +780,21 @@ async function setSticker(env, who, pieceId, kind, on, as) {
 
 // { seen }: how far this sign-in has caught up, as the `as_of` of the
 // notifications the page showed. It only goes forward, and never past now.
-// Names are infra's (NAMES), so there's nothing else to change here.
+// { digest }: their email digest's settings (setDigest). Names are infra's
+// (NAMES), so there's nothing else to change here.
 const TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const validTime = (s) => typeof s === 'string' && TIME.test(s) && !Number.isNaN(Date.parse(`${s.replace(' ', 'T')}Z`)) && new Date(`${s.replace(' ', 'T')}Z`).toISOString().startsWith(s.replace(' ', 'T'));
 async function changeMe(env, who, b) {
-  if (!('seen' in b)) bad('Nothing to change. Names come from the fridge’s settings in infra.');
-  if (!validTime(b.seen)) bad('seen must be a time like 2026-11-26 09:30:00, as the notifications’ as_of gives it.');
-  await env.DB.prepare(
-    "INSERT INTO people (email, seen_at) VALUES (?1, min(?2, datetime('now'))) ON CONFLICT (email) DO UPDATE SET seen_at = max(coalesce(seen_at, ''), min(?2, datetime('now'))), updated_at = datetime('now')",
-  )
-    .bind(who.email, b.seen)
-    .run();
+  if (!('seen' in b) && !('digest' in b)) bad('Nothing to change. Names come from the fridge’s settings in infra.');
+  if ('seen' in b && !validTime(b.seen)) bad('seen must be a time like 2026-11-26 09:30:00, as the notifications’ as_of gives it.');
+  if ('digest' in b) await setDigest(env, who, b.digest);
+  if ('seen' in b) {
+    await env.DB.prepare(
+      "INSERT INTO people (email, seen_at) VALUES (?1, min(?2, datetime('now'))) ON CONFLICT (email) DO UPDATE SET seen_at = max(coalesce(seen_at, ''), min(?2, datetime('now'))), updated_at = datetime('now')",
+    )
+      .bind(who.email, b.seen)
+      .run();
+  }
   return { me: await me(env, who) };
 }
 
@@ -893,6 +908,200 @@ async function notifications(env, who) {
   return { seen, as_of, unread: all.filter((n) => n.new).length, items: all.slice(0, NOTE_MAX) };
 }
 
+// ---- The email digest ----
+// What's new on the fridge, by email, for each sign-in that asks for it:
+// daily, or on Sundays, at the hour they chose in their own time. It's the
+// notifications since the last one went, or since they last caught up if
+// that's later, worked out from them when it goes, so it follows exactly
+// the bell's rules and says what the bell would: names, titles, what was
+// said and the pictures, and never an address (digest.js). Only the
+// settings and how far the last one got are kept (people.digest...).
+//
+// Who can have it: nobody until it's set up, with the EMAIL binding and the
+// address it comes from (DIGEST_FROM, which infra gives the deploy, at the
+// fridge's own domain, where its links go too); never a kid's devices, whose
+// notifications are in the bell; and while it's being tried out (DIGESTS,
+// "owners" in wrangler.toml) only the owners, until DIGESTS is "everyone".
+// Turning it off is always allowed, and is how it stops: there's no
+// unsubscribe link. Cloudflare's Email Service sends it, only to verified
+// destination addresses: each person clicks its "Verify email address" once.
+const DIGEST_EVERY = { daily: 1, weekly: 7 }; // days
+const DIGEST_HOUR = 8; // until they choose, in their time
+const DAY_MS = 86_400_000;
+
+// The address the digest comes from, or null.
+function digestSender(env) {
+  const from = String(env.DIGEST_FROM ?? '').trim().toLowerCase();
+  return /^[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(from) ? from : null;
+}
+const emailReady = (env) => typeof env.EMAIL?.send === 'function' && digestSender(env) !== null;
+// Whether the fridge could ever email this person, and whether it may now.
+const digestOffered = (env, who) => emailReady(env) && !(who.kid && !who.artist);
+function mayDigest(env, who) {
+  if (!digestOffered(env, who)) return false;
+  const phase = String(env.DIGESTS ?? '').trim();
+  return phase === 'everyone' || (phase === 'owners' && isOwner(env, who));
+}
+// For the page (me): null where the fridge can't email them, else `can`,
+// whether they may turn it on now, and their settings: `every` (off, daily
+// or weekly), `hour`, and `zone`, null until they first turn it on.
+function digestSettings(env, who, row) {
+  if (!digestOffered(env, who)) return null;
+  return { can: mayDigest(env, who), every: row?.digest ?? 'off', hour: row?.digest_hour ?? DIGEST_HOUR, zone: row?.digest_zone ?? null };
+}
+
+// A clock for each time zone, made once: making one takes a while, and the
+// hourly run has little time.
+const clocks = new Map();
+function clockFor(zone) {
+  if (!clocks.has(zone)) clocks.set(zone, new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
+  return clocks.get(zone);
+}
+function validZone(zone) {
+  if (typeof zone !== 'string' || !zone || zone.length > 64) return false;
+  try {
+    clockFor(zone);
+    return true;
+  } catch {
+    return false;
+  }
+}
+const stampOf = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+const msOf = (at) => Date.parse(`${at.replace(' ', 'T')}Z`);
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// What a clock in `zone` says at `ms`, as if it were UTC, and the weekday.
+function wallClock(ms, zone) {
+  const parts = clockFor(zone).formatToParts(new Date(ms));
+  const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  return { at: Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute), Number(p.second)), weekday: WEEKDAYS.indexOf(p.weekday) };
+}
+// When the last digest was due at or before `ms`: `hour` today, or on
+// Sunday for a weekly one, on a clock in `zone`. A UTC time like created_at.
+export function lastDue(ms, every, hour, zone) {
+  const now = wallClock(ms, zone);
+  let due = now.at - (now.at % DAY_MS) + hour * 3_600_000 - (every === 'weekly' ? now.weekday * DAY_MS : 0);
+  if (due > now.at) due -= DIGEST_EVERY[every] * DAY_MS;
+  // Back from their clock to UTC, at that time's offset (summer time or not).
+  const offset = (t) => wallClock(t, zone).at - Math.floor(t / 1000) * 1000;
+  return stampOf(due - offset(due - offset(due)));
+}
+
+// { every, hour, zone }: how often (off, daily or weekly) and when, on a
+// clock in their time zone. Turning it on starts from when it would have
+// gone last, so the first one covers the time since.
+async function setDigest(env, who, d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) bad('digest must be { every, hour, zone }.');
+  if (!['off', 'daily', 'weekly'].includes(d.every)) bad('every must be off, daily or weekly.');
+  if (d.every === 'off') {
+    await env.DB.prepare("INSERT INTO people (email) VALUES (?) ON CONFLICT (email) DO UPDATE SET digest = NULL, updated_at = datetime('now')").bind(who.email).run();
+    return;
+  }
+  if (!digestOffered(env, who)) throw new HttpError(403, emailReady(env) ? 'The fridge doesn’t email a kid’s iPad: what’s new for them is in the bell.' : 'The fridge can’t send email yet.');
+  if (!mayDigest(env, who)) throw new HttpError(403, 'The email is only for the fridge’s owners while it’s tried out.');
+  if (!Number.isInteger(d.hour) || d.hour < 0 || d.hour > 23) bad('hour must be a whole hour from 0 to 23.');
+  if (!validZone(d.zone)) bad('zone must be a time zone like America/Toronto.');
+  await env.DB.prepare(
+    `INSERT INTO people (email, digest, digest_hour, digest_zone, digest_at) VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT (email) DO UPDATE SET digest = ?2, digest_hour = ?3, digest_zone = ?4, digest_at = max(coalesce(digest_at, ''), ?5), updated_at = datetime('now')`,
+  )
+    .bind(who.email, d.every, d.hour, d.zone, lastDue(Date.now(), d.every, d.hour, d.zone))
+    .run();
+}
+
+// The email for this person: their notifications from after `since`, with
+// the kids' colours as the page gives them (families.js) and every piece's
+// title, or no mail if there are none. `as_of` is how far it got.
+async function digestFor(env, who, { since, every, hour, zone, test = false }) {
+  const notes = await notifications(env, who);
+  const items = notes.items.filter((n) => n.at > since);
+  if (!items.length) return { as_of: notes.as_of, mail: null, count: 0 };
+  const families = readFamilies(env);
+  const ids = [...new Set(items.flatMap((n) => (n.kind === 'art' ? n.pieces : [n.piece_id])))];
+  const [kidRows, titleRows] = await env.DB.batch([
+    env.DB.prepare('SELECT id, name, born FROM kids ORDER BY born, id'),
+    env.DB.prepare('SELECT id, title FROM pieces WHERE id IN (SELECT value FROM json_each(?))').bind(JSON.stringify(ids)),
+  ]);
+  const seen = kidRows.results.map((k) => ({ ...k, family: familyOf(families, k) })).filter((k) => canSee(who, k));
+  const { kids } = arrange(seen, families.filter((f) => seesFamily(who, f.id)).map(({ id, name }) => ({ id, name })), who.families);
+  const titles = Object.fromEntries(titleRows.results.map((r) => [r.id, r.title]));
+  const kidId = who.kid ? (kids.find((k) => sameName(k.name, who.kid))?.id ?? null) : null;
+  const url = `https://${digestSender(env).split('@')[1]}`;
+  const mail = digestMail({ items, kids, titles, kidId, every, hour, zone, since, url, picture: (id) => `cid:piece-${id}`, test });
+  return { as_of: notes.as_of, mail, count: items.length };
+}
+
+// Sent to their sign-in address, with its pictures' thumbnails attached
+// for the email to show. They go as they are, so sending costs the Worker
+// next to no time.
+async function sendDigest(env, who, mail) {
+  const objects = await Promise.all(mail.pictures.map((id) => env.ART.get(keyFor(id, 'thumb'))));
+  const attachments = [];
+  for (const [i, obj] of objects.entries()) {
+    if (obj) attachments.push({ content: await obj.arrayBuffer(), filename: `piece-${mail.pictures[i]}.jpg`, type: 'image/jpeg', disposition: 'inline', contentId: `piece-${mail.pictures[i]}` });
+  }
+  await env.EMAIL.send({ to: who.email, from: { email: digestSender(env), name: 'The Fridge' }, subject: mail.subject, html: mail.html, text: mail.text, ...(attachments.length ? { attachments } : {}) });
+}
+
+// Every hour: each digest that has come due since the last one went
+// (lastDue), oldest first and one at a time, each marked done as soon as
+// it's gone, so a run that's cut short leaves the rest for the next hour.
+// Nothing new means no email, and it's done. Cloudflare saying no for
+// a while (RETRY), or anything else going wrong, means trying again next
+// hour; Cloudflare saying no to this person or this email means waiting
+// for the next one.
+const RETRY = new Set(['E_RATE_LIMIT_EXCEEDED', 'E_DAILY_LIMIT_EXCEEDED', 'E_INTERNAL_SERVER_ERROR', 'E_EMAIL_SENDING_NOT_READY', 'E_DELIVERY_FAILED']);
+export async function sendDigests(env, now = Date.now()) {
+  if (!emailReady(env)) return;
+  const rows = (await env.DB.prepare('SELECT email, digest, digest_hour, digest_zone, digest_at, seen_at FROM people WHERE digest IS NOT NULL ORDER BY digest_at, email').all()).results;
+  for (const r of rows) {
+    const hour = r.digest_hour ?? DIGEST_HOUR;
+    const zone = validZone(r.digest_zone) ? r.digest_zone : 'UTC';
+    const due = lastDue(now, r.digest, hour, zone);
+    if (r.digest_at && r.digest_at >= due) continue;
+    const done = (at) => env.DB.prepare("UPDATE people SET digest_at = max(coalesce(digest_at, ''), ?) WHERE email = ?").bind(at, r.email).run();
+    try {
+      const who = signedInAs(env, r.email);
+      if (!mayDigest(env, who)) continue;
+      const since = [r.seen_at ?? '', r.digest_at ?? '', stampOf(msOf(due) - DIGEST_EVERY[r.digest] * DAY_MS)].sort().at(-1);
+      const { as_of, mail } = await digestFor(env, who, { since, every: r.digest, hour, zone });
+      if (mail) await sendDigest(env, who, mail);
+      await done(as_of > due ? as_of : due);
+    } catch (e) {
+      console.error('digest not sent', e?.code ?? '', e?.message ?? e);
+      if (e?.code && !RETRY.has(e.code)) await done(due).catch(() => {});
+    }
+  }
+}
+
+// POST /api/digest: an owner's own digest, now, to try it out. It has
+// everything from the last day or week (by their setting), seen or not, and
+// says it's a test. Nothing changes: the next one still goes when it's due.
+async function testDigest(env, who) {
+  if (!isOwner(env, who)) throw new HttpError(403, 'Only the fridge’s owners can send themselves a test email.');
+  if (!emailReady(env)) throw new HttpError(503, 'The fridge can’t send email yet: infra gives it an address to send from (DIGEST_FROM).');
+  const row = await env.DB.prepare('SELECT digest, digest_hour, digest_zone FROM people WHERE email = ?').bind(who.email).first();
+  const every = row?.digest ?? 'off';
+  const since = stampOf(Date.now() - DIGEST_EVERY[every === 'daily' ? 'daily' : 'weekly'] * DAY_MS);
+  const { mail, count } = await digestFor(env, who, { since, every, hour: row?.digest_hour ?? DIGEST_HOUR, zone: validZone(row?.digest_zone) ? row.digest_zone : 'UTC', test: true });
+  if (!mail) return { sent: false, items: 0 };
+  try {
+    await sendDigest(env, who, mail);
+  } catch (e) {
+    console.error('test digest not sent', e?.code ?? '', e?.message ?? e);
+    throw new HttpError(502, sendTrouble(e));
+  }
+  return { sent: true, items: count, pictures: mail.pictures.length };
+}
+const NOT_VERIFIED = 'Cloudflare won’t send to your address yet: it has to be a verified destination address. Infra adds it, and you click Verify in the email Cloudflare sends.';
+const NO_SENDER = 'Cloudflare won’t send from DIGEST_FROM yet: its domain isn’t set up for sending.';
+const sendTrouble = (e) =>
+  ({
+    E_RECIPIENT_NOT_ALLOWED: NOT_VERIFIED,
+    E_RECIPIENT_PLAN_RESTRICTED: NOT_VERIFIED,
+    E_SENDER_DOMAIN_NOT_AVAILABLE: NO_SENDER,
+    E_SENDER_DOMAIN_NOT_CONFIGURED: NO_SENDER,
+    E_EMAIL_SENDING_NOT_READY: 'Cloudflare is still setting up sending for the fridge’s domain. Try again in a few minutes.',
+  })[e?.code] ?? `Cloudflare couldn’t send it${e?.code ? ` (${e.code})` : ''}. Try again in a minute.`;
 
 // Someone who sees only some families gets none of the others' pictures, at
 // any size or by any address: the same 404 as for a piece that isn't there.

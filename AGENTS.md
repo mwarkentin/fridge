@@ -30,6 +30,7 @@ history on `main` is permanent.
   sign-in for everything else, then serves the API
   (`/api/...`), the images (`/img/<id>/thumb|display|original`, from the
   `ART` bucket) and the page (`public/`, through the `ASSETS` binding).
+  Every hour it sends the email digests that are due (`sendDigests`).
 - `src/auth.js`: verifies Cloudflare Access's JWT on every request. Parents
   (the `PARENT_EMAILS` Worker secret) can change things; everyone else Access
   lets in can only look. With families (the `FAMILIES` Worker secret), a
@@ -54,6 +55,11 @@ history on `main` is permanent.
   step and nothing loaded from other sites (the Worker's Content Security
   Policy allows only this origin). The fonts are in `public/fonts/` with
   their licences.
+- `public/notes.js` and `public/digest.js`: what each notification says,
+  and the email digest made of them (subject, HTML and text). The page,
+  the Worker (which imports them) and the tests run the same code, so the
+  bell, See it and the email always agree. They touch neither the page nor
+  the Worker.
 - `public/add/`: Add art, loaded when a parent opens it. `sheet.js` takes
   several photos, scans and PDFs at once, shows a card per piece to check,
   then uploads them one by one. `names.js`, `ids.js`, `pages.js` and
@@ -64,8 +70,8 @@ history on `main` is permanent.
 - `public/pdfjs/`: a pinned copy of pdf.js, for PDFs in Add art. See "pdf.js"
   below.
 - `preview/`: a public preview of the page for pull requests. `worker.js`
-  makes up the kids, the art, its drawings, comments, stickers and
-  notifications, and refuses every change (the page keeps what's added
+  makes up the kids, the art, its drawings, comments, stickers,
+  notifications and email settings, and refuses every change (the page keeps what's added
   there to itself); `wrangler.toml` gives it no bindings. It's seen as a
   parent in the first family, or, from a page opened with `?as=` (its
   strip's links), as another made-up person: a grandparent, Nonna (who sees
@@ -77,7 +83,9 @@ history on `main` is permanent.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
   computer. It signs in with `cloudflared` as that parent.
 - `tests/`: `worker.test.js` runs the Worker against local D1 and R2
-  (wrangler's `getPlatformProxy`) with Access tokens it signs itself;
+  (wrangler's `getPlatformProxy`) with Access tokens it signs itself, and an
+  email binding that keeps what it's sent; `digest.test.js` checks the
+  email's words and layout;
   `preview.test.js` checks the preview; `families.test.js` checks how the
   page groups, orders and colours the kids by family (`public/families.js`);
   `add-art.test.js` checks Add art's modules and the copy of pdf.js;
@@ -92,7 +100,11 @@ mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 policies, the custom domain, the deploy token, and this repo's Actions
 secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
 `NAMES`, `SEES`, `ADMINS`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
-`ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`). Don't add `routes` to `wrangler.toml` (that would
+`ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`, `DIGEST_FROM`), and the email around it:
+the domain onboarded for Email Sending and the verified destination
+addresses. Keep addresses out of `wrangler.toml` (no
+`allowed_destination_addresses`): who gets email is the people's choice,
+in the bell, among the people infra lets in. Don't add `routes` to `wrangler.toml` (that would
 take the domain from infra), and keep `workers_dev` and `preview_urls` off,
 since Access doesn't guard those addresses. The previews are public on
 workers.dev only because they're a separate Worker with nothing real on it.
@@ -156,6 +168,20 @@ workers.dev only because they're a separate Worker with nothing real on it.
   listed, so catching up to `as_of` never passes over something unlisted.
   While an owner views as someone, the bell is that person's, and nothing
   catches them up: the page doesn't try, and `readOnly` would refuse it.
+- The email digest (`sendDigests` in `worker.js`, `digestMail` in
+  `public/digest.js`) is someone's notifications (`notifications()`),
+  worked out when it goes, so it follows the same rules: only kids they
+  see, names (`namesFor`) and never addresses, in the subject, the HTML,
+  the text and the pictures alike. Nothing is stored but each sign-in's
+  settings and how far its last one got (`people.digest`, `digest_hour`,
+  `digest_zone`, `digest_at`): don't add a second "seen". Nobody gets one
+  without the `EMAIL` binding and `DIGEST_FROM`; never a kid's devices; and
+  only the owners while `DIGESTS` is `"owners"`. Never (in the bell) is
+  always allowed and is how it stops: don't add an unsubscribe route that
+  skips `auth.js`. The test (`POST /api/digest`) is the owners' only, and
+  changes nothing. The pictures go as they are (`ArrayBuffer`), so a run
+  costs the Worker almost no CPU, and each email is marked done as soon as
+  it's gone, so a run cut short leaves the rest for the next hour.
 - View as (`viewAs` in `worker.js`) is for the owners only (`isOwner`):
   anyone else's cookie counts for nothing, and the list of people
   (`/api/view-as`) goes to nobody else. The person viewed's `who` is the

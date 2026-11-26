@@ -58,7 +58,9 @@ jobs:
       # name yet. So can SEES (who sees only some families, from the same
       # file), which means everyone sees every family. So can ADMINS (the
       # owners, who can view the fridge as someone else, from the same file),
-      # which means nobody can.
+      # which means nobody can. DIGEST_FROM (the address the email digest
+      # comes from, an Actions variable) can be missing too, which means no
+      # email.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}
@@ -68,6 +70,7 @@ jobs:
           ADMINS: ${{ secrets.ADMINS }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          DIGEST_FROM: ${{ vars.DIGEST_FROM }}
         run: |
           families="${FAMILIES:-[]}"
           # The Worker turns everyone away if it can't read FAMILIES, so a
@@ -130,5 +133,15 @@ jobs:
             exit 1
           fi
           jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" --arg a "${ADMINS:-}" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s, ADMINS: $a}' > "$RUNNER_TEMP/secrets.json"
-          npx wrangler deploy --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD" --secrets-file "$RUNNER_TEMP/secrets.json"
+          # The address the email digest comes from, if infra has given one.
+          # Without it the fridge sends no email.
+          from=()
+          if [ -n "${DIGEST_FROM:-}" ]; then
+            if ! [[ "$DIGEST_FROM" =~ ^[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+              echo "::error::The DIGEST_FROM variable isn't an email address. Fix it in mwarkentin/infra."
+              exit 1
+            fi
+            from=(--var "DIGEST_FROM:$DIGEST_FROM")
+          fi
+          npx wrangler deploy --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD" "${from[@]}" --secrets-file "$RUNNER_TEMP/secrets.json"
           rm "$RUNNER_TEMP/secrets.json"

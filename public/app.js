@@ -5,6 +5,8 @@
 // stickers and comment on it.
 
 import { arrange } from './families.js';
+import { noteWords as wordsFor } from './notes.js';
+import { digestMail, hourWords, scheduleWords } from './digest.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,6 +29,7 @@ let ARTIST = null; // the kid's name, for a kid signed in to add their own art
 // that person's, with nothing to change: the Worker refuses every change.
 let OWNER = false;
 let VIEWING = null;
+let MY_EMAIL = '';
 let MINE = new Set(); // the pieces that artist added
 // The Worker's rules, so the page offers only what it would allow: a parent
 // can change a kid's pieces if the kid is in one of the parent's families
@@ -535,6 +538,7 @@ async function load() {
   if (TALK && SEEN === null) SEEN = TALK.me.seen ?? NEVER;
   if (notes) NOTES = notes;
   OWNER = Boolean(session.owner);
+  MY_EMAIL = session.email ?? '';
   VIEWING = session.viewing ?? null;
   // Looking as someone, nothing is offered that would change anything.
   CAN_EDIT = session.canEdit && !VIEWING;
@@ -550,6 +554,8 @@ async function load() {
   buildChrome();
   render();
   drawBell();
+  drawMail();
+  followLink();
   // Opening the fridge catches someone up, so next time only newer things
   // are new, unless something's waiting for them in the bell: then that
   // waits, and the walls' New marks with it, until they open it. Not while
@@ -1114,36 +1120,11 @@ let bellOpen = false;
 let fresh = new Set(); // what was new when the bell opened: it stays marked while it's open
 const bell = $('#bell');
 const bellBtn = $('#open-bell');
-const STICKER_WORDS = { heart: 'a heart', star: 'a gold star', wow: 'a wow', smile: 'a smiley', rainbow: 'a rainbow' };
-// "a heart", "a heart and a gold star", "a heart, a wow and a gold star".
-const andList = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : (list[0] ?? ''));
-const own = (s) => `${s}’s`;
 const forKid = () => TALK?.me.kid_id != null;
 
-// What a notification says, as HTML: everything from the Worker escaped.
-function noteWords(n) {
-  const kid = KIDS.find((k) => k.id === n.kid_id);
-  const by = `<b>${esc(n.by)}</b>`;
-  const t = n.title ? esc(n.title) : '';
-  if (forKid() && n.kid_id === TALK.me.kid_id) {
-    // To a kid, about their own art: few words, and the picture says which.
-    const yours = t ? `your “${t}”` : 'your picture';
-    if (n.kind === 'sticker') return `${by} gave ${yours} ${andList(n.stickers.map((s) => STICKER_WORDS[s]))}`;
-    if (n.kind === 'art') return n.count === 1 ? `${by} put ${yours} on the fridge` : `${by} put ${n.count} of your pictures on the fridge`;
-    return `${by} said`;
-  }
-  if (forKid()) return `${by} said`;
-  // The artist themselves isn't "Ada on Ada’s".
-  const self = n.by_kid_id != null && n.by_kid_id === n.kid_id;
-  const piece = self ? (t ? `“${t}”` : 'an untitled piece') : t ? `${esc(own(kid?.name ?? ''))} “${t}”` : `${esc(own(kid?.name ?? ''))} untitled piece`;
-  if (n.kind === 'sticker') return `${by} gave ${piece} ${andList(n.stickers.map((s) => STICKER_WORDS[s]))}`;
-  if (n.kind === 'art') {
-    if (n.count > 1) return self ? `${by} put up ${n.count} new pieces` : `${by} put up ${n.count} new pieces by ${esc(kid?.name ?? '')}`;
-    return `${by} put up ${piece}`;
-  }
-  if (n.kind === 'reply') return `${by} replied on ${piece}`;
-  return `${by} on ${piece}`;
-}
+// What a notification says, as HTML: the same words as the email's
+// (notes.js), with everything from the Worker escaped.
+const noteWords = (n) => wordsFor(n, { kids: KIDS, kidId: TALK?.me.kid_id ?? null });
 // Its picture: the stickers themselves, the commenter's magnet, or the art's.
 function notePic(n) {
   if (n.kind === 'sticker') return `<span class="n-st">${n.stickers.slice(0, 3).map((s) => `<svg class="stk-art" aria-hidden="true"><use href="#s-${s}"/></svg>`).join('')}</span>`;
@@ -1275,6 +1256,145 @@ topBar.addEventListener('focusout', (e) => {
 });
 window.addEventListener('hashchange', () => setBell(false));
 window.addEventListener('resize', () => bellOpen && placeBell());
+
+// ---- What's new, by email ----
+// Under the bell: how often someone gets its news by email (the Worker's
+// digest, sendDigests in worker.js), or Never, which is how it stops. See it
+// shows the email as Send me one now would send it, from the bell's own list
+// (digest.js, which the Worker sends with too); only an owner can send one
+// now, to try it. While viewing as someone it's only to look: their
+// settings, and their email as they'd get it. A kid's iPad never gets one.
+const mailBox = $('#bell-mail');
+const mailEvery = $('#bm-every');
+const mailHour = $('#bm-hour');
+const mailSheet = $('#mail-view');
+mailHour.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${hourWords(h)}</option>`).join('');
+const myZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const utcStamp = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+
+function drawMail() {
+  const d = TALK?.me.digest ?? null;
+  mailBox.hidden = !d || (!d.can && !VIEWING);
+  if (mailBox.hidden) return;
+  $('#bm-pick').hidden = Boolean(VIEWING);
+  mailEvery.value = d.every;
+  mailHour.value = String(d.hour);
+  mailHour.hidden = d.every === 'off';
+  $('#bm-title').textContent = VIEWING ? `${VIEWING.name}’s email` : 'Email me what’s new';
+  $('#bm-note').textContent = VIEWING
+    ? d.every === 'off'
+      ? 'They don’t get one.'
+      : `${capital(scheduleWords(d.every, d.hour))}, their time.`
+    : d.every === 'off'
+      ? 'What’s new, with the pictures, in your inbox.'
+      : `${capital(scheduleWords(d.every, d.hour))}, to ${MY_EMAIL}. Choose Never to stop it.`;
+  $('#bm-see-lbl').textContent = VIEWING ? 'See theirs' : 'See it';
+  $('#bm-send').hidden = !OWNER || Boolean(VIEWING);
+}
+
+async function saveMail() {
+  const was = TALK.me.digest;
+  const every = mailEvery.value;
+  const digest = every === 'off' ? { every } : { every, hour: Number(mailHour.value), zone: myZone() };
+  if (PREVIEW) {
+    TALK.me.digest = { ...was, ...digest };
+    drawMail();
+    return toast('Here only: the preview doesn’t save it');
+  }
+  try {
+    TALK.me = (await api('/api/me', { method: 'PATCH', json: { digest } })).me;
+  } catch (e) {
+    drawMail();
+    return toast(e.message);
+  }
+  drawMail();
+  const now = TALK.me.digest;
+  toast(now.every === 'off' ? 'No more emails' : `You’ll get it ${scheduleWords(now.every, now.hour)}`);
+}
+mailEvery.addEventListener('change', saveMail);
+mailHour.addEventListener('change', saveMail);
+
+// The email as a test would go now: everything in the bell from the last
+// day or week, seen or not, with the pictures from the fridge itself.
+function openMail() {
+  const d = TALK.me.digest;
+  const since = utcStamp(Date.now() - (d.every === 'daily' ? 1 : 7) * 86_400_000);
+  const titles = Object.fromEntries(PIECES.map((p) => [p.id, p.title]));
+  const mail = digestMail({
+    items: (NOTES?.items ?? []).filter((n) => n.at > since),
+    kids: KIDS,
+    titles,
+    kidId: TALK.me.kid_id ?? null,
+    every: d.every,
+    hour: d.hour,
+    zone: d.zone ?? myZone(),
+    url: location.origin,
+    picture: (id) => `/img/${Number(id)}/thumb`,
+    test: true,
+  });
+  $('#mv-hint').textContent = `${VIEWING ? `What ${VIEWING.name} would get` : 'What Send me one now would send'}: everything from the last ${d.every === 'daily' ? 'day' : 'week'}, seen or not. The real one has only what’s new since the last.`;
+  $('#mv-subject').textContent = mail.subject;
+  const frame = $('#mv-frame');
+  frame.onload = () => {
+    const doc = frame.contentDocument;
+    if (doc) frame.style.height = `${doc.documentElement.scrollHeight}px`;
+  };
+  // Its links open here, in the page itself.
+  frame.srcdoc = mail.html.replace('<head>', '<head><base target="_top">');
+  setBell(false);
+  mailSheet.hidden = false;
+  lock(true);
+  $('#mv-close').focus();
+}
+function closeMail() {
+  mailSheet.hidden = true;
+  lock(false);
+  bellBtn.focus();
+}
+$('#bm-see').addEventListener('click', openMail);
+$('#mv-close').addEventListener('click', closeMail);
+mailSheet.addEventListener('click', (e) => {
+  if (e.target === mailSheet) closeMail();
+});
+mailSheet.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    closeMail();
+  }
+});
+$('#bm-send').addEventListener('click', async (e) => {
+  if (PREVIEW) return toast('The preview doesn’t send email');
+  const b = e.currentTarget;
+  b.disabled = true;
+  try {
+    const r = await api('/api/digest', { method: 'POST' });
+    toast(r.sent ? `Sent you ${plural(r.items, 'thing')} from the last ${TALK.me.digest.every === 'daily' ? 'day' : 'week'}` : `Nothing from the last ${TALK.me.digest.every === 'daily' ? 'day' : 'week'} to send`);
+  } catch (err) {
+    toast(err.message);
+  }
+  b.disabled = false;
+});
+
+// The email's links: ?piece=<id> opens that piece, ?bell opens the bell.
+// Followed once, when the fridge first opens, and then taken off the address.
+let linked = false;
+function followLink() {
+  if (linked) return;
+  linked = true;
+  const q = new URLSearchParams(location.search);
+  if (!q.has('piece') && !q.has('bell')) return;
+  const piece = Number(q.get('piece'));
+  const bell = q.has('bell');
+  q.delete('piece');
+  q.delete('bell');
+  const rest = q.toString();
+  history.replaceState(null, '', `${location.pathname}${rest ? `?${rest}` : ''}${location.hash}`);
+  if (piece) {
+    if (PIECES.some((p) => p.id === piece)) openDetail(piece, [piece]);
+    else toast('That isn’t on the fridge any more.');
+  } else if (bell) setBell(true);
+}
 
 // ---- Frame mode ----
 const frame = $('#frame');

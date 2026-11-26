@@ -165,8 +165,8 @@ on either family's art (any art they see: see
   the ones that came in since you last caught up, and each piece on the
   walls shows its comments and stickers, with **New** when someone else
   has commented since then. Frame shows none of it. The bell has what's
-  new for you (see [What's new for you](#whats-new-for-you)). There are no
-  emails.
+  new for you (see [What's new for you](#whats-new-for-you)), and can
+  email it too (see [What's new, by email](#whats-new-by-email)).
 - Taking a piece off the fridge takes its comments and stickers with it.
 
 ## What's new for you
@@ -202,6 +202,33 @@ goes when its piece, comment or sticker does. It's never about a kid
 someone doesn't see, nor names anyone they don't. It shows the last 60
 days. An owner viewing as someone (see [View as](#view-as)) sees that
 person's bell, and opening it changes nothing for them.
+
+## What's new, by email
+
+The bell can come by email too: **Email me what's new**, at the bottom of
+the bell, sends it every Sunday or every day, at the hour you choose, in
+your own time. **Never** turns it off; that's the only way to stop it, and
+there's no unsubscribe link. Each email has what's new since the last one
+(or since you last caught up in the bell, if that's later), with nothing
+if there's nothing new: the new art with its pictures and titles, then
+the comments, with what was said beside each piece's picture, then the
+stickers. Every piece links to itself on the fridge, and **Open the
+fridge** opens the bell.
+
+It's the bell's list, worked out when the email goes, so it follows the
+same rules: only kids you see, and only names, never addresses. Nothing is
+kept for it but each sign-in's settings and how far its last email got.
+**See it** shows the email as it would go (with everything from the last
+week, seen or not), and an owner viewing as someone sees theirs.
+
+While it's being tried out (`DIGESTS = "owners"` in `wrangler.toml`), only
+the fridge's owners can have it, and they can **Send me one now** to try
+it: the last week's, marked as a test, which changes nothing about the
+next one. To open it to everyone, set `DIGESTS = "everyone"`. A kid's iPad
+never gets one: its news is in the bell. Cloudflare's Email Service sends
+it, only to addresses Cloudflare has verified, so each person clicks
+**Verify email address** in an email from Cloudflare once (see [Setting it
+up](#setting-it-up)). An hourly job sends whatever's due.
 
 ## View as
 
@@ -358,6 +385,22 @@ Nonna see now?") without asking them to look.
    Android phones and desktop Chrome can install it too (**Install app** or
    **Add to Home screen** in Chrome's menu), after signing in.
 
+7. **Email** (see [What's new, by email](#whats-new-by-email)) needs three
+   things, all in Cloudflare and infra rather than here:
+   - **The fridge's domain, onboarded for sending:** in the Cloudflare
+     dashboard, **Compute**, **Email Service**, **Email Sending**,
+     **Onboard Domain** (or infra's `cloudflare_email_sending_subdomain`).
+     It adds its records on `cf-bounce.<domain>`, and a DMARC record if
+     there's none.
+   - **Each person who'll get it as a verified destination address:**
+     **Email Routing**, **Destination addresses** (or infra's
+     `cloudflare_email_routing_address`). Cloudflare emails each address a
+     link to click once. Sending to verified addresses is free on any plan.
+   - **`DIGEST_FROM`:** an address at the fridge's own domain for it to
+     come from, like `fridge@<domain>`, as this repo's Actions variable
+     (infra sets it). The email's links go to that domain. The next deploy
+     picks it up; until then, the fridge sends no email.
+
 ## Working on it
 
 ```sh
@@ -391,6 +434,17 @@ and, to view the fridge as any of them (see [View as](#view-as)):
 ```sh
 ADMINS=you@example.com
 ```
+
+and, to try the email (see [What's new, by email](#whats-new-by-email)):
+
+```sh
+DIGEST_FROM=fridge@fridge.example.com
+```
+
+Locally nothing is really sent: `npm run dev` writes each email's text,
+HTML and pictures to `.wrangler/tmp/email/` and says where. To run the
+hourly job, start it with `--test-scheduled` and open
+`http://localhost:8787/__scheduled`.
 
 Then:
 

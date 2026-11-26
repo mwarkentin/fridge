@@ -155,14 +155,17 @@ const SIGNINS = {
   cy: { kid: 3 },
   dee: { kid: 4 },
 };
-// Who the page is for: what they see (null for everything), and how far
-// they'd caught up, minutes ago.
+// Who the page is for: what they see (null for everything), how far they'd
+// caught up, minutes ago, and their email digest, as the real Worker's me
+// has it while it's tried out: only the owners can turn it on, and a kid's
+// iPad never gets one.
+const NO_EMAIL_YET = { can: false, every: 'off', hour: 8, zone: null };
 const PERSONAS = {
-  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420 },
-  grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, sees: null, seen: 500 },
-  nonna: { label: 'Nonna, who sees only the Pines', signin: 'nonna', canEdit: false, families: [], artist: null, sees: ['pines'], seen: 1000 },
-  ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440 },
-  dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', sees: null, seen: 1440 },
+  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420, digest: { can: true, every: 'weekly', hour: 8, zone: 'Europe/London' } },
+  grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, sees: null, seen: 500, digest: NO_EMAIL_YET },
+  nonna: { label: 'Nonna, who sees only the Pines', signin: 'nonna', canEdit: false, families: [], artist: null, sees: ['pines'], seen: 1000, digest: NO_EMAIL_YET },
+  ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440, digest: null },
+  dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', sees: null, seen: 1440, digest: NO_EMAIL_YET },
 };
 // Whom the parents, who own the fridge, can view it as (View as), in the
 // shape of the real /api/view-as, each one of the people above.
@@ -278,7 +281,7 @@ const stickersOn = (id, who) =>
 function me(today, who) {
   const s = SIGNINS[who.signin];
   const kid = s.kid ? KIDS.find((k) => k.id === s.kid) : null;
-  return { names: kid ? [] : s.people.map((p) => ({ name: p.name, home: p.home ?? null })), families: who.families, kid: kid?.name ?? null, kid_id: kid?.id ?? null, seen: ago(today, who.seen) };
+  return { names: kid ? [] : s.people.map((p) => ({ name: p.name, home: p.home ?? null })), families: who.families, kid: kid?.name ?? null, kid_id: kid?.id ?? null, seen: ago(today, who.seen), digest: who.digest };
 }
 function talkSummary(today, who) {
   const counts = {};

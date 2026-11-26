@@ -102,7 +102,7 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
   // The same keys as the real Worker's (tests/worker.test.js, COMMENT_KEYS).
   const KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
   assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me']);
-  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: null }, 'a shared sign-in, so the page says which of them it is');
+  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: null, digest: { can: true, every: 'weekly', hour: 8, zone: 'Europe/London' } }, 'a shared sign-in, so the page says which of them it is');
   assert.match(s.me.seen, TIME);
   assert.equal(s.latest.length, 8);
   assert.deepEqual(s.latest.map((c) => c.id), [...s.latest.map((c) => c.id)].sort((a, b) => b - a), 'newest first');
@@ -156,9 +156,13 @@ test('can be seen as each kind of person, from links in its strip', async () => 
     const m = (await (await as(key, '/api/comments')).json()).me;
     return { ...m, seen: m.seen.length };
   };
-  assert.deepEqual(await me('grandma'), { names: [{ name: 'Grandma', home: null }], families: [], kid: null, kid_id: null, seen: 19 });
-  assert.deepEqual(await me('ada'), { names: [], families: [], kid: 'Ada', kid_id: 1, seen: 19 });
-  assert.deepEqual(await me('dee'), { names: [], families: [], kid: 'Dee', kid_id: 4, seen: 19 });
+  // The email digest, as while it's tried out: the owners can have it, a kid's iPad never.
+  const notYet = { can: false, every: 'off', hour: 8, zone: null };
+  assert.deepEqual(await me('grandma'), { names: [{ name: 'Grandma', home: null }], families: [], kid: null, kid_id: null, seen: 19, digest: notYet });
+  assert.deepEqual(await me('ada'), { names: [], families: [], kid: 'Ada', kid_id: 1, seen: 19, digest: null });
+  assert.deepEqual(await me('dee'), { names: [], families: [], kid: 'Dee', kid_id: 4, seen: 19, digest: notYet });
+  assert.deepEqual((await me('parents')).digest, { can: true, every: 'weekly', hour: 8, zone: 'Europe/London' });
+  for (const method of ['PATCH', 'POST']) assert.equal((await call(method === 'PATCH' ? '/api/me' : '/api/digest', { method })).status, 403, 'it saves and sends nothing');
   const g = await (await as('dee', '/api/gallery')).json();
   assert.ok(g.mine.length && g.mine.every((id) => g.pieces.find((p) => p.id === id).kid_id === 4), 'an artist can change what they put up');
   assert.deepEqual((await (await call('/api/gallery')).json()).mine, []);
@@ -273,7 +277,7 @@ test('as Nonna, shows comments and stickers only on that family’s art, and the
   const all = await (await call('/api/gallery')).json();
   const { pieces } = await (await asNonna('/api/gallery')).json();
   const s = await (await asNonna('/api/comments')).json();
-  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null, digest: { can: false, every: 'off', hour: 8, zone: null } });
   assert.match(s.me.seen, TIME);
   assert.ok(Object.keys(s.counts).every((id) => pieces.some((p) => p.id === Number(id))));
   assert.ok(s.latest.length && s.latest.every((c) => pieces.some((p) => p.id === c.piece_id)));

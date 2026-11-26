@@ -4,7 +4,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { getPlatformProxy } from 'wrangler';
-import worker from '../src/worker.js';
+import worker, { lastDue, sendDigests } from '../src/worker.js';
 
 const TEAM = 'example.cloudflareaccess.com';
 const AUD = 'test-audience';
@@ -620,23 +620,23 @@ test('names: from NAMES, a kid by their own addresses, and never an address', as
   await clean();
   const gran = await said(GRAN, tp.Ada, 'Lovely!');
   assert.equal(gran.by, 'Gran');
-  assert.deepEqual((await summary(GRAN)).me, { names: [{ name: 'Gran', home: null }], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await summary(GRAN)).me, { names: [{ name: 'Gran', home: null }], families: [], kid: null, kid_id: null, seen: null, digest: null });
   // Someone NAMES doesn't list shows as the part of their address before the @.
   assert.equal((await said(NANA, tp.Ada, 'Gorgeous')).by, 'nana');
-  assert.deepEqual((await summary(NANA)).me, { names: [], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await summary(NANA)).me, { names: [], families: [], kid: null, kid_id: null, seen: null, digest: null });
   // NAMES changes in infra show everywhere, even on what was said before.
   assert.equal((await commentOf(gran.id, tp.Ada, PINE, talkEnv({ ...NAMES, [GRAN]: 'Granny' }))).by, 'Granny');
 
   // Kids are named by their own addresses, whatever they send.
-  assert.deepEqual((await summary(DEE)).me, { names: [], families: [], kid: 'Dee', kid_id: fk.Dee, seen: null });
-  assert.deepEqual((await summary(ADA_IPAD)).me, { names: [], families: [], kid: 'Ada', kid_id: fk.Ada, seen: null });
+  assert.deepEqual((await summary(DEE)).me, { names: [], families: [], kid: 'Dee', kid_id: fk.Dee, seen: null, digest: null });
+  assert.deepEqual((await summary(ADA_IPAD)).me, { names: [], families: [], kid: 'Ada', kid_id: fk.Ada, seen: null, digest: null });
   const fromIpad = await said(ADA_IPAD, tp.Ada, 'I made it!');
   assert.deepEqual([fromIpad.by, fromIpad.kid_id], ['Ada', fk.Ada]);
   const fromDee = await t(`/api/pieces/${tp.Ada}/comments`, { as: DEE, method: 'POST', json: { body: 'Cool rocket', as: 'Gran' } });
   assert.deepEqual(await fromDee.json().then((r) => [r.comment.by, r.comment.kid_id]), ['Dee', fk.Dee]);
   // Without its address in FAMILIES, the iPad is someone NAMES doesn't list.
   const plain = { ...familyEnv(), NAMES: JSON.stringify(NAMES) };
-  assert.deepEqual((await summary(ADA_IPAD, plain)).me, { names: [], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await summary(ADA_IPAD, plain)).me, { names: [], families: [], kid: null, kid_id: null, seen: null, digest: null });
   assert.equal((await commentOf(fromIpad.id, tp.Ada, GRAN, plain)).by, 'ada.ipad');
   // And without NAMES, everyone but the kids shows as their address's first part.
   assert.equal((await commentOf(gran.id, tp.Ada, PINE, familyEnv(TALK_FAMILIES))).by, 'gran');
@@ -704,7 +704,7 @@ test('a parent is their family name on their own family’s art, and their name 
   assert.deepEqual([onAda.id, onCy.id].map((id) => latest.find((c) => c.id === id).by), ['Mom', 'Aunt Pine']);
 
   // A shared sign-in: each person, with both their names and the families where the second shows.
-  assert.deepEqual((await (await call('/api/comments', { as: OAK, localEnv })).json()).me, { names: [{ name: 'Aunt Oak', home: 'Mom' }, { name: 'Uncle Oak', home: 'Dad' }], families: ['oak'], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await (await call('/api/comments', { as: OAK, localEnv })).json()).me, { names: [{ name: 'Aunt Oak', home: 'Mom' }, { name: 'Uncle Oak', home: 'Dad' }], families: ['oak'], kid: null, kid_id: null, seen: null, digest: null });
   let res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad' }, localEnv });
   assert.equal(res.status, 400, 'say which');
   res = await call(`/api/pieces/${tp.Dee}/comments`, { as: OAK, method: 'POST', json: { body: 'From Dad', as: 'Dad' }, localEnv });
@@ -992,7 +992,7 @@ test('a kid’s devices in FAMILIES are checked like the rest of it', async (t) 
   assert.equal((await call('/api/comments', { as: 'ada.ipad@example.com', localEnv: both }).then((r) => r.json())).me.kid, 'Ada');
   // And a parent's address is a parent's.
   const parentToo = { ...familyEnv(TALK_FAMILIES), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${ADA_IPAD}` };
-  assert.deepEqual((await call('/api/comments', { as: ADA_IPAD, localEnv: parentToo }).then((r) => r.json())).me, { names: [], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual((await call('/api/comments', { as: ADA_IPAD, localEnv: parentToo }).then((r) => r.json())).me, { names: [], families: [], kid: null, kid_id: null, seen: null, digest: null });
 });
 
 // ---- Notifications ----
@@ -1345,7 +1345,7 @@ test('comments and stickers on art someone doesn’t see aren’t there for them
   assert.deepEqual(hers.counts[tp.Ada], { comments: 6, stickers: 3, newest: await when(fromIpad) });
   assert.ok(hers.latest.length && hers.latest.every((c) => c.piece_id === tp.Ada || c.piece_id === tp.Bo));
   assert.equal(hers.latest[0].id, fromNonna.id, 'not the newest on art she doesn’t see');
-  assert.deepEqual(hers.me, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null });
+  assert.deepEqual(hers.me, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null, digest: null });
   for (const as of EVERYONE_ELSE) {
     const theirs = await summary(as);
     assert.deepEqual([theirs.counts[tp.Cy], theirs.counts[tp.Dee]?.stickers], [{ comments: 2, stickers: 1, newest: await when(as === GRAN ? oldOnCy : onCy) }, 1], as);
@@ -1755,4 +1755,284 @@ test('view as: with no ADMINS, or one that can’t be read, nobody can', async (
   }
   // Two owners, written loosely.
   for (const as of [PINE, OAK]) assert.equal((await call('/api/view-as', { as, localEnv: viewEnv(` ${OAK.toUpperCase()} ,${PINE}`) })).status, 200, as);
+});
+
+// ---- The email digest ----
+// mailEnv gives the Worker an email binding that keeps what it's sent (or
+// says no, like Cloudflare, with `fail`), and an address to send from.
+// PINE is the owner, so the only one who gets it while it's tried out.
+const FROM = 'fridge@fridge.example.com';
+function mailbox(fail = null) {
+  const sent = [];
+  return {
+    sent,
+    async send(message) {
+      if (fail) throw Object.assign(new Error('Cloudflare said no'), fail === 'plain' ? {} : { code: fail });
+      sent.push(message);
+      return { messageId: `m${sent.length}` };
+    },
+  };
+}
+const mailEnv = (box = mailbox(), more = {}) => ({ ...viewEnv(), EMAIL: box, DIGEST_FROM: FROM, DIGESTS: 'owners', ...more });
+const turnOn = (as, digest, localEnv) => call('/api/me', { as, method: 'PATCH', json: { digest }, localEnv });
+const meOf = async (as, localEnv) => (await (await call('/api/comments', { as, localEnv })).json()).me;
+const personRow = (email) => env.DB.prepare('SELECT digest, digest_hour, digest_zone, digest_at, seen_at FROM people WHERE email = ?').bind(email).first();
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+// An hour a daily digest was due between three and four hours ago, in UTC,
+// so what a test adds now came after it.
+const pastHour = () => (new Date().getUTCHours() + 21) % 24;
+// What an email says, without its style sheet (whose @media isn't an address).
+const said_ = (part) => part.replace(/<style>[\s\S]*?<\/style>/, '');
+// Every cid: picture the email shows is attached, as an inline JPEG.
+function picturesMatch(mail) {
+  const shown = [...new Set([...mail.html.matchAll(/src="cid:(piece-\d+)"/g)].map((m) => m[1]))].sort();
+  const attached = (mail.attachments ?? []).map((a) => a.contentId).sort();
+  assert.deepEqual(attached, shown);
+  for (const a of mail.attachments ?? []) {
+    assert.deepEqual([a.disposition, a.type, a.filename], ['inline', 'image/jpeg', `${a.contentId}.jpg`]);
+    assert.ok(a.content instanceof ArrayBuffer && a.content.byteLength > 0);
+  }
+  return shown;
+}
+
+test('digest: nobody gets one until it’s set up, never a kid’s iPad, and only the owners while it’s tried out', async () => {
+  await clean();
+  const weekly = { every: 'weekly', hour: 8, zone: 'America/Toronto' };
+  // Not set up: no binding, no address to send from, or one that isn't an address.
+  for (const localEnv of [viewEnv(), mailEnv(mailbox(), { DIGEST_FROM: undefined }), mailEnv(mailbox(), { DIGEST_FROM: 'the fridge' }), { ...mailEnv(), EMAIL: undefined }]) {
+    assert.equal((await meOf(PINE, localEnv)).digest, null);
+    const res = await turnOn(PINE, weekly, localEnv);
+    assert.equal(res.status, 403);
+    assert.match((await res.json()).error, /can’t send email yet/);
+    assert.equal((await call('/api/digest', { as: PINE, method: 'POST', localEnv })).status, 503);
+  }
+  // While it's tried out: the owner can; everyone else sees it's coming, but
+  // a kid's iPad never gets one.
+  const owners = mailEnv();
+  assert.deepEqual((await meOf(PINE, owners)).digest, { can: true, every: 'off', hour: 8, zone: null });
+  for (const as of [GRAN, OAK, DEE, NONNA]) {
+    assert.deepEqual((await meOf(as, owners)).digest, { can: false, every: 'off', hour: 8, zone: null }, as);
+    const res = await turnOn(as, weekly, owners);
+    assert.equal(res.status, 403, as);
+    assert.match((await res.json()).error, /only for the fridge’s owners/);
+    assert.equal((await turnOn(as, { every: 'off' }, owners)).status, 200, `${as} can always turn it off`);
+    assert.equal((await call('/api/digest', { as, method: 'POST', localEnv: owners })).status, 403, `${as}: no test email`);
+  }
+  assert.equal((await meOf(ADA_IPAD, owners)).digest, null);
+  assert.equal((await turnOn(ADA_IPAD, weekly, owners)).status, 403);
+  // For everyone: all but a kid's iPad; the test email stays the owners'.
+  const everyone = mailEnv(mailbox(), { DIGESTS: 'everyone' });
+  for (const as of [PINE, GRAN, OAK, DEE, NONNA]) {
+    assert.equal((await meOf(as, everyone)).digest.can, true, as);
+    assert.equal((await turnOn(as, weekly, everyone)).status, 200, as);
+  }
+  assert.equal((await meOf(ADA_IPAD, everyone)).digest, null);
+  assert.equal((await turnOn(ADA_IPAD, weekly, everyone)).status, 403);
+  assert.equal((await call('/api/digest', { as: GRAN, method: 'POST', localEnv: everyone })).status, 403);
+  // Anything else is nobody, owners too.
+  for (const DIGESTS of [undefined, '', 'all', 'Owners']) assert.equal((await meOf(PINE, mailEnv(mailbox(), { DIGESTS }))).digest.can, false, String(DIGESTS));
+});
+
+test('digest: its settings are checked, and turning it on starts from when it would have gone last', async () => {
+  await clean();
+  const localEnv = mailEnv();
+  for (const digest of ['weekly', null, [], { every: 'monthly', hour: 8, zone: 'UTC' }, { every: 'weekly', hour: 24, zone: 'UTC' }, { every: 'weekly', hour: 7.5, zone: 'UTC' }, { every: 'weekly', hour: '8', zone: 'UTC' }, { every: 'daily', hour: 8 }, { every: 'daily', hour: 8, zone: 'Mars/Olympus_Mons' }, { every: 'daily', hour: 8, zone: '' }]) {
+    assert.equal((await turnOn(PINE, digest, localEnv)).status, 400, JSON.stringify(digest));
+  }
+  assert.equal(await personRow(PINE), null, 'nothing written');
+  const before = Date.now();
+  const res = await turnOn(PINE, { every: 'weekly', hour: 8, zone: 'America/Toronto' }, localEnv);
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).me.digest, { can: true, every: 'weekly', hour: 8, zone: 'America/Toronto' });
+  const row = await personRow(PINE);
+  assert.ok([lastDue(before, 'weekly', 8, 'America/Toronto'), lastDue(Date.now(), 'weekly', 8, 'America/Toronto')].includes(row.digest_at), 'from when it would have gone last');
+  // Off keeps when, for next time; seen can go with it.
+  const seen = minutesAgo(1);
+  assert.equal((await call('/api/me', { as: PINE, method: 'PATCH', json: { digest: { every: 'off' }, seen }, localEnv })).status, 200);
+  assert.deepEqual((await meOf(PINE, localEnv)).digest, { can: true, every: 'off', hour: 8, zone: 'America/Toronto' });
+  assert.equal((await personRow(PINE)).seen_at, seen);
+  // A bad seen changes nothing, the digest included.
+  assert.equal((await call('/api/me', { as: PINE, method: 'PATCH', json: { digest: { every: 'daily', hour: 7, zone: 'UTC' }, seen: 'soon' }, localEnv })).status, 400);
+  assert.equal((await personRow(PINE)).digest, null);
+  // While viewing as someone, neither the settings nor a test go through.
+  const cookie = await viewing(GRAN, null, { localEnv });
+  for (const [path, method, json] of [['/api/me', 'PATCH', { digest: { every: 'off' } }], ['/api/digest', 'POST', undefined]]) {
+    assert.equal((await call(path, { as: PINE, method, json, headers: { Cookie: cookie }, localEnv })).status, 403, path);
+  }
+  // ... and the settings shown are that person's.
+  assert.deepEqual((await (await call('/api/comments', { as: PINE, headers: { Cookie: cookie }, localEnv })).json()).me.digest, { can: false, every: 'off', hour: 8, zone: null });
+});
+
+test('digest: when each is due, on a clock in its own time zone', () => {
+  const due = (iso, every, hour, zone) => lastDue(Date.parse(iso), every, hour, zone);
+  // Thursday: last Sunday at 8 in Toronto (EST, UTC−5).
+  assert.equal(due('2026-11-26T14:00:00Z', 'weekly', 8, 'America/Toronto'), '2026-11-22 13:00:00');
+  // Sunday, a minute before and at 8.
+  assert.equal(due('2026-11-29T12:59:00Z', 'weekly', 8, 'America/Toronto'), '2026-11-22 13:00:00');
+  assert.equal(due('2026-11-29T13:00:00Z', 'weekly', 8, 'America/Toronto'), '2026-11-29 13:00:00');
+  // Daily: today's, or yesterday's before the hour.
+  assert.equal(due('2026-11-26T14:00:00Z', 'daily', 8, 'America/Toronto'), '2026-11-26 13:00:00');
+  assert.equal(due('2026-11-26T12:00:00Z', 'daily', 8, 'America/Toronto'), '2026-11-25 13:00:00');
+  // The day the clocks go forward (EDT, UTC−4), half-hour zones, and the other side of the date line.
+  assert.equal(due('2026-03-08T13:00:00Z', 'weekly', 8, 'America/Toronto'), '2026-03-08 12:00:00');
+  assert.equal(due('2026-11-26T14:00:00Z', 'weekly', 8, 'Asia/Kolkata'), '2026-11-22 02:30:00');
+  assert.equal(due('2026-11-26T14:00:00Z', 'daily', 0, 'Pacific/Auckland'), '2026-11-26 11:00:00');
+  assert.equal(due('2026-11-26T14:00:00Z', 'weekly', 23, 'UTC'), '2026-11-22 23:00:00');
+});
+
+test('digest: an owner’s test email, now: the last week’s names, titles, what was said and pictures, and never an address', async () => {
+  await clean();
+  await oldArt();
+  const moon = await addArt(PINE_TOO, 'Ada', 'Moon <b>&</b> stars');
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  const cloud = await addArt(OAK, 'Cy', 'Cloud');
+  for (const [id, m] of [[moon, 30], [kite, 25], [cloud, 25]]) await at('pieces', id, m);
+  const lovely = await said(GRAN, tp.Ada, 'Lovely!\nThe colours <3');
+  await at('comments', lovely.id, 20);
+  await sticker(GRAN, tp.Ada, 'star');
+  await stickerAt(tp.Ada, GRAN, 'star', 15);
+  const box = mailbox();
+  const localEnv = mailEnv(box);
+  // Caught up just now, and the digest off: the test has it all the same.
+  assert.equal((await call('/api/me', { as: PINE, method: 'PATCH', json: { seen: minutesAgo(0) }, localEnv })).status, 200);
+  const written = await tables();
+  const res = await call('/api/digest', { as: PINE, method: 'POST', localEnv });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { sent: true, items: 4, pictures: 4 });
+  assert.deepEqual(await tables(), written, 'nothing changes');
+  assert.equal(box.sent.length, 1);
+  const [mail] = box.sent;
+  assert.deepEqual([mail.to, mail.from], [PINE, { email: FROM, name: 'The Fridge' }]);
+  assert.equal(mail.subject, 'Test: What’s new on the fridge: 3 new pieces, 1 comment and 1 sticker');
+  assert.deepEqual(picturesMatch(mail), [`piece-${cloud}`, `piece-${kite}`, `piece-${moon}`, `piece-${tp.Ada}`].sort());
+  // Names, titles and what was said, escaped, with links to each piece.
+  for (const s of ['Gran', 'Oak Dad', 'Moon &lt;b&gt;&amp;&lt;/b&gt; stars', 'Kite', 'Cloud', 'Lovely!<br>The colours &lt;3', `href="https://fridge.example.com/?piece=${tp.Ada}"`, 'href="https://fridge.example.com/?bell=1"', 'a test you asked for']) assert.ok(mail.html.includes(s), s);
+  assert.doesNotMatch(mail.html, /<b>&<\/b>|colours <3/);
+  for (const s of ['Gran', 'Moon <b>&</b> stars', 'Lovely!', `https://fridge.example.com/?piece=${tp.Ada}`]) assert.ok(mail.text.includes(s), s);
+  // No address anywhere in it but who it's to and from.
+  for (const part of [mail.subject, said_(mail.html), mail.text]) assert.doesNotMatch(part, /@/);
+  // Kite and Cloud are one day's art by one person, shown together.
+  assert.match(mail.html, /Oak Dad<\/b> put up 2 new pieces by Cy/);
+
+  // Nothing in the last week: nothing goes.
+  await oldArt();
+  await clean();
+  assert.deepEqual(await (await call('/api/digest', { as: PINE, method: 'POST', localEnv })).json(), { sent: false, items: 0 });
+  assert.equal(box.sent.length, 1);
+  // Cloudflare saying no comes back as why.
+  const art = await addArt(PINE_TOO, 'Bo', 'Boat');
+  await at('pieces', art, 5);
+  for (const [code, why] of [['E_RECIPIENT_NOT_ALLOWED', /verified destination address/], ['E_RECIPIENT_PLAN_RESTRICTED', /verified destination address/], ['E_SENDER_DOMAIN_NOT_AVAILABLE', /DIGEST_FROM/], ['E_RATE_LIMIT_EXCEEDED', /E_RATE_LIMIT_EXCEEDED/]]) {
+    const r = await call('/api/digest', { as: PINE, method: 'POST', localEnv: mailEnv(mailbox(code)) });
+    assert.equal(r.status, 502, code);
+    assert.match((await r.json()).error, why, code);
+  }
+});
+
+test('digest: each goes at its hour, once, with what’s new since the last one or since they last caught up', async () => {
+  await clean();
+  await oldArt();
+  const box = mailbox();
+  const localEnv = mailEnv(box, { DIGESTS: 'everyone' });
+  const hour = pastHour();
+  const daily = { every: 'daily', hour, zone: 'UTC' };
+  for (const as of [PINE, GRAN]) assert.equal((await turnOn(as, daily, localEnv)).status, 200, as);
+  const boat = await addArt(PINE, 'Bo', 'Boat');
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  await at('pieces', boat, 20);
+  await at('pieces', kite, 10);
+  // Gran caught up between the two.
+  assert.equal((await call('/api/me', { as: GRAN, method: 'PATCH', json: { seen: minutesAgo(15) }, localEnv })).status, 200);
+  const due = lastDue(Date.now(), 'daily', hour, 'UTC');
+
+  // Turned on after today's went: nothing until tomorrow's.
+  await sendDigests(localEnv, Date.now());
+  assert.equal(box.sent.length, 0);
+  const tomorrow = Date.now() + DAY;
+  await sendDigests(localEnv, tomorrow);
+  assert.deepEqual(box.sent.map((m) => m.to).sort(), [GRAN, PINE]);
+  const pine = box.sent.find((m) => m.to === PINE);
+  const gran = box.sent.find((m) => m.to === GRAN);
+  assert.equal(pine.subject, 'What’s new on the fridge: 1 new piece', 'not their own art');
+  assert.match(pine.html, /Kite/);
+  assert.doesNotMatch(pine.html, /Boat/);
+  assert.equal(gran.subject, 'What’s new on the fridge: 1 new piece', 'only since she caught up');
+  assert.match(gran.html, /Kite/);
+  assert.doesNotMatch(gran.html, /Boat/);
+  assert.match(pine.html, /You get this every day at/);
+  for (const mail of box.sent) picturesMatch(mail);
+  const next = lastDue(tomorrow, 'daily', hour, 'UTC');
+  assert.ok(next > due);
+  assert.ok((await personRow(PINE)).digest_at >= next, 'done');
+  // Once: again the same hour, nothing.
+  await sendDigests(localEnv, tomorrow + 30 * 60_000);
+  assert.equal(box.sent.length, 2);
+  // The day after: nothing new since, so no email, and it's done all the same.
+  await sendDigests(localEnv, tomorrow + DAY);
+  assert.equal(box.sent.length, 2);
+  assert.ok((await personRow(GRAN)).digest_at >= lastDue(tomorrow + DAY, 'daily', hour, 'UTC'));
+  // Turned off: none. (Back to before tomorrow's, so there's something new.)
+  assert.equal((await turnOn(PINE, { every: 'off' }, localEnv)).status, 200);
+  const back = () => env.DB.prepare('UPDATE people SET digest_at = ?').bind(due).run();
+  await back();
+  const late = await addArt(OAK, 'Cy', 'Late');
+  await at('pieces', late, 1);
+  await sendDigests(localEnv, tomorrow);
+  assert.deepEqual(box.sent.slice(2).map((m) => m.to), [GRAN]);
+  assert.match(box.sent[2].html, /Late/);
+  // Through the hourly trigger, the same way.
+  await back();
+  const waits = [];
+  await worker.scheduled({ scheduledTime: tomorrow }, localEnv, { waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+  assert.equal(box.sent.at(-1).to, GRAN);
+});
+
+test('digest: only for whom it’s for, under the bell’s rules, and Cloudflare saying no', async () => {
+  await clean();
+  await oldArt();
+  const yesterday = lastDue(Date.now() - DAY, 'daily', pastHour(), 'UTC');
+  // Set straight in the database, as if each had turned it on when they could.
+  const on = (email) => env.DB.prepare("INSERT INTO people (email, digest, digest_hour, digest_zone, digest_at) VALUES (?, 'daily', ?, 'UTC', ?) ON CONFLICT (email) DO UPDATE SET digest = 'daily', digest_hour = excluded.digest_hour, digest_zone = 'UTC', digest_at = excluded.digest_at").bind(email, pastHour(), yesterday).run();
+  for (const as of [PINE, GRAN, NONNA, ADA_IPAD]) await on(as);
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  const moon = await addArt(PINE, 'Ada', 'Moon');
+  await at('pieces', kite, 10);
+  await at('pieces', moon, 9);
+  const fromNonna = await said(NONNA, tp.Ada, 'Bellissimo');
+  const fromOak = await said(OAK, tp.Ada, 'From the other family');
+  await at('comments', fromNonna.id, 9);
+  await at('comments', fromOak.id, 8);
+
+  // While it's tried out, only the owner's goes; the rest stay due.
+  const owners = mailbox();
+  await sendDigests(mailEnv(owners), Date.now());
+  assert.deepEqual(owners.sent.map((m) => m.to), [PINE]);
+  assert.equal((await personRow(GRAN)).digest_at, yesterday);
+  // For everyone: but never a kid's iPad.
+  const everyone = mailbox();
+  await sendDigests(mailEnv(everyone, { DIGESTS: 'everyone' }), Date.now());
+  assert.deepEqual(everyone.sent.map((m) => m.to).sort(), [GRAN, NONNA]);
+  assert.equal((await personRow(ADA_IPAD)).digest_at, yesterday);
+  // Nonna sees only the Pines: nothing of the Oaks, and their people as Family.
+  const nonna = everyone.sent.find((m) => m.to === NONNA);
+  for (const part of [nonna.subject, said_(nonna.html), nonna.text]) assert.doesNotMatch(part, HIDDEN);
+  assert.match(nonna.html, /Moon/);
+  assert.match(nonna.html, /<b>Family<\/b> replied on Ada’s/);
+  assert.deepEqual(picturesMatch(nonna), [`piece-${moon}`, `piece-${tp.Ada}`].sort());
+
+  // Cloudflare saying no to this person waits for the next one; saying no
+  // for now, or anything else going wrong, tries again next hour.
+  for (const [fail, retried] of [['E_RECIPIENT_NOT_ALLOWED', false], ['E_RATE_LIMIT_EXCEEDED', true], ['plain', true]]) {
+    await on(GRAN);
+    await sendDigests(mailEnv(mailbox(fail), { DIGESTS: 'everyone' }), Date.now());
+    assert.equal((await personRow(GRAN)).digest_at === yesterday, retried, fail);
+  }
+  // Not set up: nothing at all.
+  await on(GRAN);
+  const none = mailbox();
+  await sendDigests({ ...mailEnv(none, { DIGESTS: 'everyone' }), DIGEST_FROM: '' }, Date.now());
+  assert.equal(none.sent.length, 0);
+  assert.equal((await personRow(GRAN)).digest_at, yesterday);
 });

@@ -253,6 +253,11 @@ function person(email, env) {
   return { email: me, canEdit, families, artist: kid?.artist === me ? kid.name : null, kid: kid?.name ?? null, sees };
 }
 
+// Who someone is when nobody's signing in: the `who` they'd get signing in
+// with this address themselves, for the email digest (worker.js,
+// sendDigests), which goes by the same rules as the page.
+export const signedInAs = (env, email) => person(email, env);
+
 // The kids' own addresses (artists' and devices'), each to its kid's name,
 // leaving out parents' addresses, as person() does. For naming the people
 // behind comments and stickers.

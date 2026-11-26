@@ -32,8 +32,24 @@ migrations_dir = "migrations"
 binding = "ART"
 bucket_name = "fridge-art"
 
+# The email digest (worker.js, sendDigests): Cloudflare's Email Service
+# sends it, from DIGEST_FROM below, only to verified destination addresses.
+[[send_email]]
+name = "EMAIL"
+
+# Every hour, the digests that are due go.
+[triggers]
+crons = ["0 * * * *"]
+
 [vars]
 # The deploy fills these in from the repo's Actions variables, which infra
 # sets. Left empty, the Worker turns everyone away.
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# The address the digest comes from, at the fridge's own domain, where its
+# links go too. The deploy fills it in from infra's DIGEST_FROM; left empty,
+# the fridge sends no email.
+DIGEST_FROM = ""
+# Who can have the digest: "owners" (ADMINS) while it's tried out, then
+# "everyone" (but a kid's devices). Anything else is nobody.
+DIGESTS = "owners"
