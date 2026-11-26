@@ -120,10 +120,42 @@ on either family's art.
   whoever gave a sticker takes it back. Someone can post 10 comments in 10
   minutes, and a piece holds 200.
 - **What's new.** Home's **Latest comments** shows the most recent, marking
-  the ones that came in since you last opened the fridge, and each piece on
-  the walls shows its comments and stickers, with **New** when someone else
-  has commented since then. Frame shows none of it. There are no emails.
+  the ones that came in since you last caught up, and each piece on the
+  walls shows its comments and stickers, with **New** when someone else
+  has commented since then. Frame shows none of it. The bell has what's
+  new for you (see [What's new for you](#whats-new-for-you)). There are no
+  emails.
 - Taking a piece off the fridge takes its comments and stickers with it.
+
+## What's new for you
+
+The bell at the top of the page has what's new for whoever's signed in,
+with a red magnet counting what came since they last looked. Tap it to see
+the list, newest first; tap a line to open its piece, at its comments.
+
+- **New art**, from either family, unless you put it up yourself. A day's
+  art by one person for one kid is one line, so an import of forty is one.
+- **Stickers and comments on your art, or your kids' art**: a parent's kids
+  are the ones they look after (their families', and kids in no family),
+  and a kid's art is their own. A day's stickers from one person on one
+  piece are one line.
+- **Replies**: comments on a piece after you commented on it.
+- **A kid's own sign-in** (their artist address, or their iPad's) gets only
+  what's about their own art: put up by someone else, and said or stuck on
+  by anyone else. It's in big stickers and few words ("Grandma gave your
+  “Rocket” a gold star"), for kids who are only starting to read.
+- **Someone who only looks**, like a grandparent, gets new art from all the
+  kids, and replies after they commented.
+- **A sign-in two people share** is one reader: what's new for either is
+  new for both, and read when either looks.
+
+Opening the bell catches you up. So does opening the fridge when nothing's
+waiting in the bell; when something is, it waits, and so do the walls'
+**New** marks, until you open the bell. The page checks for more every
+minute while it's in sight. Nothing is stored for any of this but how far
+each sign-in has caught up: the list is worked out from the art, comments
+and stickers each time, so it follows `FAMILIES` and `NAMES`, and a line
+goes when its piece, comment or sticker does. It shows the last 60 days.
 
 ## Setting it up
 
@@ -288,7 +320,9 @@ Each pull request from a branch in this repo gets a public preview at
 `fridge-preview-pr-<number>.<subdomain>.workers.dev`, linked from a comment
 on the pull request. It's the branch's page with two made-up families, Ada
 and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings,
-comments and stickers that `preview/worker.js` makes up. Stickers and
+comments, stickers and notifications that `preview/worker.js` makes up.
+Links across the top show it as each kind of person: the parents, a
+grandparent, a kid's iPad and a kid who's an artist. Stickers and
 comments added there stay in the page until it's reloaded. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request

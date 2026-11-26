@@ -59,7 +59,9 @@ history on `main` is permanent.
 - `public/pdfjs/`: a pinned copy of pdf.js, for PDFs in Add art. See "pdf.js"
   below.
 - `preview/`: a public preview of the page for pull requests. `worker.js`
-  makes up the kids, the art, its drawings, comments and stickers, and
+  makes up the kids, the art, its drawings, comments, stickers and
+  notifications, lets the page be seen as each kind of person (a cookie
+  its strip's links set, which picks a made-up person and nothing else), and
   refuses every change (the page keeps what's added there to itself);
   `wrangler.toml` gives it no bindings. `.github/workflows/preview.yml`
   deploys one per pull request and deletes it when the pull request closes.
@@ -120,6 +122,14 @@ workers.dev only because they're a separate Worker with nothing real on it.
   only from infra (`NAMES`, `FAMILIES`): don't add a route that sets them.
   Comments and stickers are deleted with their piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
   piece) in the Worker.
+- Notifications (`notifications()` in `worker.js`, the bell in `app.js`)
+  are worked out from the art, comments and stickers each time they're
+  asked for, under the same rules as everything else, so they go when
+  their piece, comment or sticker does. Nothing is stored but how far each
+  sign-in has caught up (`people.seen_at`), which the walls' New marks go
+  by too: don't add a second "seen". Names only, never addresses, even in
+  a notification's `key`. Only what's from before the current second is
+  listed, so catching up to `as_of` never passes over something unlisted.
 - Escape everything that came from the database before putting it in HTML
   (`esc()` in `app.js`), comments and names included.
 - The preview Worker never gets a binding, a sign-in or anything real:
