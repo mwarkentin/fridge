@@ -109,8 +109,8 @@ on either family's art.
   whose art it is: one on their own family's kids' art ("Mom") and one on
   everyone else's ("Aunt Pine"). Everyone sees the same name on a piece,
   the parent included. A kid's own addresses are that kid: their artist
-  address, and any `devices` listed for them in `FAMILIES` (see [Families](#families)),
-  such as their iPad's. The page only ever gets names, never addresses.
+  address, and any `devices` listed for them in `FAMILIES` (see
+  [Families](#families)), such as their iPad's. The page only ever gets names, never addresses.
   Nobody can have a kid's name, and no two people share one. Someone `NAMES`
   doesn't list shows as the part of their address before the @.
 - **Who can change what.** People edit and delete their own comments (on a
