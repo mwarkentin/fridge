@@ -1,7 +1,8 @@
 // The fridge's page: reads the gallery from /api/gallery, draws it, and lets
 // parents edit details, mark favourites and add new pieces, for the kids in
 // their own families (and kids in none), and lets a kid who's an artist add
-// their own art and change the pieces they added.
+// their own art and change the pieces they added. Everyone can give a piece
+// stickers and comment on it.
 
 import { arrange } from './families.js';
 
@@ -11,6 +12,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let KIDS = [];
 let PIECES = [];
 let CAN_EDIT = false;
+// The public preview of a pull request (preview/worker.js), which saves nothing.
+let PREVIEW = false;
 // The kids by family, the viewer's own first (families.js). Until families
 // are set up there are none, and the page is as it was before them.
 let GROUPED = false;
@@ -188,7 +191,7 @@ function tile(p, opts = {}) {
   const kid = kidOf(p);
   const meta = opts.own ? `${ageLabel(kid.born, p.made)} · ${madeShort(p)}` : `${kid.name} · ${ageLabel(kid.born, p.made)}`;
   const fav = p.favourite ? icon('heart', 'filled fav-mark') : '';
-  return `<figure>${pieceButton(p)}<figcaption><span class="t${p.title ? '' : ' untitled'}">${esc(titleOf(p))}${fav}</span><span class="m">${opts.own ? '' : avatar(kid)}<span>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></span></figcaption></figure>`;
+  return `<figure>${pieceButton(p)}<figcaption><span class="t${p.title ? '' : ' untitled'}">${esc(titleOf(p))}${fav}</span><span class="m">${opts.own ? '' : avatar(kid)}<span>${esc(meta)}${opts.ago ? ` · ${opts.ago(p)}` : ''}</span></span>${talkLine(p)}</figcaption></figure>`;
 }
 const wall = (list, opts) => `<div class="wall">${list.map((p) => tile(p, opts)).join('')}</div>`;
 // A filter button, with a kid's magnet or an icon beside the word.
@@ -268,6 +271,7 @@ function viewHome() {
     </section>
     ${otd.length ? `<section data-scope><div class="sec-head"><h2>This time of year${squiggle()}</h2><span class="count">${now.toLocaleDateString(undefined, { month: 'long' })}, in other years</span></div>${wall(otd, { ago })}</section>` : ''}
     <section data-scope><div class="sec-head"><h2>Just added${squiggle()}</h2><a href="#timeline">See everything${icon('right')}</a></div>${wall(newest)}</section>
+    ${latestComments()}
     ${tags.length ? `<section class="tag-sec" aria-labelledby="tags-h"><div class="sec-head"><h2 id="tags-h">Tags${squiggle()}</h2><span class="count">${plural(tags.length, 'tag')}, tap one to see them all</span></div>${tagCloud(tags)}</section>` : ''}
     <p class="footnote"><svg class="doodle" aria-hidden="true"><use href="#i-heart"/></svg>Only family can see the fridge. <a href="/cdn-cgi/access/logout">${icon('door')}Sign out</a></p>`;
 }
@@ -511,16 +515,19 @@ function buildChrome() {
     }
   }
   // Only the kids this parent (or artist) can add art for, or move a piece to.
-  const mine = KIDS.filter(canAddFor);
+  const mine = addableKids();
   $('#f-kid').innerHTML = mine.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('');
-  $('#a-who').innerHTML = `<legend>Who made it?</legend>${mine.map((k, i) => `<label class="who-opt" style="${kidStyle(k)}"><input type="radio" name="who" value="${k.id}"${i === 0 ? ' checked' : ''}><span class="who-card">${avatar(k)}${esc(k.name)}</span></label>`).join('')}`;
   $('#open-add').hidden = !mine.length;
   $('#open-frame').hidden = !PIECES.length;
 }
 
 async function load() {
-  const [session, data] = await Promise.all([api('/api/session'), api('/api/gallery')]);
+  // Without comments (a database from before them), the page is as it was.
+  const [session, data, talk] = await Promise.all([api('/api/session'), api('/api/gallery'), api('/api/comments').catch(() => null)]);
+  TALK = talk;
+  if (TALK && SEEN === null) SEEN = TALK.me.seen ?? Infinity;
   CAN_EDIT = session.canEdit;
+  PREVIEW = Boolean(session.preview);
   MY_FAMILIES = session.families || [];
   ARTIST = session.artist ?? null;
   MINE = new Set(data.mine || []);
@@ -530,6 +537,11 @@ async function load() {
   PIECES = data.pieces;
   buildChrome();
   render();
+  // What's on the page now has been seen: next time, only newer comments are new.
+  if (TALK && !PREVIEW && TALK.newest > (TALK.me.seen ?? 0)) {
+    const seen = TALK.newest;
+    api('/api/me', { method: 'PATCH', json: { seen } }).then(() => (TALK.me.seen = seen), () => {});
+  }
 }
 
 // ---- Piece view ----
@@ -538,18 +550,24 @@ const form = $('#d-form');
 const lock = (on) => {
   document.documentElement.style.overflow = on ? 'hidden' : '';
 };
-function openDetail(id, list) {
+function openDetail(id, list, { toTalk = false } = {}) {
   listCtx = list;
   opener = document.activeElement;
   showPiece(id);
   detail.hidden = false;
   lock(true);
   $('#d-close').focus();
+  if (toTalk) $('#talk')?.scrollIntoView({ block: 'start' });
 }
 function closeDetail({ refocus = true } = {}) {
   detail.hidden = true;
   lock(false);
-  if (refocus) opener?.focus?.();
+  editing = null;
+  if (!refocus || !opener) return;
+  // The wall may have been drawn again behind the piece: find its button anew.
+  const id = opener.dataset?.id || opener.dataset?.open;
+  const again = opener.isConnected ? opener : id && $(`#view [data-id="${id}"], #view [data-open="${id}"]`);
+  again?.focus?.();
 }
 function showPiece(id) {
   const p = (current = PIECES.find((x) => x.id === id));
@@ -574,9 +592,11 @@ function showPiece(id) {
       <button class="btn" type="button" id="d-edit">${icon('pencil')}Edit details</button>` : ''}
       <a class="btn" href="${img(p, 'original')}" download>${icon('download')}Save full scan</a>
     </div>
+    ${TALK ? talkSection(p) : ''}
     ${p.source_name ? `<p class="d-source">From ${esc(p.source_name)}</p>` : ''}</div>`;
   $('#d-read').hidden = false;
   form.hidden = true;
+  if (TALK) loadPieceTalk(p);
 }
 function step(n) {
   const i = listCtx.indexOf(current.id);
@@ -657,6 +677,375 @@ $('#f-delete').onclick = async () => {
   toast('Removed');
 };
 
+// ---- Stickers and comments ----
+// Everyone signed in can give a piece stickers and comment on it. The Worker
+// has the rules (talk() in worker.js) and says what each person may do
+// (`mine`, `can_remove`); the page only shows what it would allow. TALK is
+// /api/comments: each piece's counts, the latest comments, and who's looking
+// (`me`: their names from infra, or their kid, and how far they'd read). On
+// a sign-in two people share, they pick which of them is commenting, and the
+// page remembers it on this device. The preview saves nothing, so there
+// what's added lives in the page until a reload.
+const STICKERS = [
+  { kind: 'heart', label: 'Love it' },
+  { kind: 'star', label: 'Gold star' },
+  { kind: 'wow', label: 'Wow!' },
+  { kind: 'smile', label: 'Smiley' },
+  { kind: 'rainbow', label: 'Colours' },
+];
+const COMMENT_MAX = 500;
+let TALK = null;
+let SEEN = null; // the newest comment seen before this visit: newer ones are new
+const opened = new Set(); // pieces looked at this visit, so no longer new
+const drafts = new Map(); // what someone was writing, by piece
+let talking = null; // the open piece's { id, comments, stickers }, once loaded
+let editing = null; // the id of the comment being reworded
+let previewIds = 1e6;
+let choosingAs = false; // whether a shared sign-in's names are open to pick from
+const AS_KEY = 'fridge-as';
+
+// Which person on a shared sign-in is commenting (their `as`), or '' for
+// anyone else's. Each of TALK.me.names is { as, name }: what to send, and
+// how they see themselves ("Mom").
+function speaking() {
+  const people = TALK?.me.names || [];
+  if (people.length < 2) return '';
+  let saved = null;
+  try {
+    saved = localStorage.getItem(AS_KEY);
+  } catch {}
+  return (people.find((p) => p.as === saved) || people[0]).as;
+}
+// What the preview shows for what its visitor adds.
+const myName = () => TALK.me.names.find((p) => p.as === speaking())?.name || TALK.me.kid || TALK.me.names[0]?.name || 'You';
+
+const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
+const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
+const commentIsNew = (c) => c.id > SEEN && !c.mine && !opened.has(c.piece_id);
+const stamp = (d = new Date()) => d.toISOString().slice(0, 19).replace('T', ' ');
+const when = (s) => new Date(`${s.replace(' ', 'T')}Z`);
+function ago(s) {
+  const d = when(s);
+  const mins = Math.round((Date.now() - d) / 6e4);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${plural(hours, 'hour')} ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+}
+const timeTag = (s) => `<time datetime="${esc(when(s).toISOString())}">${esc(ago(s))}</time>`;
+// "Gran", "Gran and Pop", "Gran, Pop and 2 more".
+function names(list) {
+  const all = [...new Set(list)];
+  if (all.length <= 3) return all.length > 1 ? `${all.slice(0, -1).join(', ')} and ${all.at(-1)}` : (all[0] ?? '');
+  return `${all.slice(0, 2).join(', ')} and ${all.length - 2} more`;
+}
+// A kid's own magnet, or for a grown-up a plain one with their initial.
+const commenterKid = (c) => (c.kid_id == null ? null : KIDS.find((k) => k.id === c.kid_id) || null);
+const whoMagnet = (c) => {
+  const kid = commenterKid(c);
+  return kid ? avatar(kid) : `<i class="av av-grown" aria-hidden="true">${esc((Array.from(c.by.trim())[0] || '?').toLocaleUpperCase())}</i>`;
+};
+
+// Under a piece on the walls: how many comments and stickers, and whether
+// there's something new.
+function talkLine(p) {
+  if (!TALK) return '';
+  const { comments, stickers } = countsOf(p.id);
+  if (!comments && !stickers) return '';
+  const fresh = isNew(p);
+  const words = [comments && plural(comments, 'comment'), stickers && plural(stickers, 'sticker'), fresh && 'new'].filter(Boolean).join(', ');
+  return `<span class="talk-n"><span class="sr">${words}</span><span class="talk-c" aria-hidden="true">${comments ? `<span>${icon('bubble')}${comments}</span>` : ''}${stickers ? `<span>${icon('star')}${stickers}</span>` : ''}${fresh ? '<b class="new">New</b>' : ''}</span></span>`;
+}
+
+// Home: the latest comments anywhere on the fridge. Each opens its piece.
+function latestComments() {
+  const all = (TALK?.latest || []).filter((c) => PIECES.some((p) => p.id === c.piece_id));
+  // Four, or up to six when that many are new: on a phone they stack.
+  const fresh = all.slice(0, 6).filter(commentIsNew).length;
+  const list = all.slice(0, Math.max(4, fresh));
+  if (!list.length) return '';
+  return `<section class="latest-sec" data-scope aria-labelledby="latest-h"><div class="sec-head"><h2 id="latest-h">Latest comments${squiggle()}</h2>${fresh ? `<span class="count">${fresh} new since you last looked</span>` : ''}</div><ul class="latest">${list.map(noteCard).join('')}</ul></section>`;
+}
+function noteCard(c) {
+  const p = PIECES.find((x) => x.id === c.piece_id);
+  const kid = kidOf(p);
+  const fresh = commentIsNew(c);
+  return `<li style="${kidStyle(kid)}"><button class="note${commenterKid(c) ? ' by-kid' : ''}${fresh ? ' is-new' : ''}" type="button" data-id="${p.id}"><img src="${img(p, 'thumb')}" alt="" loading="lazy"><span class="note-copy"><span class="note-by">${whoMagnet(c)}<span><b>${esc(c.by)}</b> on ${esc(titleOf(p))}</span></span><span class="note-body">${esc(c.body)}</span><span class="note-meta">${timeTag(c.created_at)}${fresh ? '<b class="new">New</b>' : ''}</span></span></button></li>`;
+}
+
+// The piece view's part: stickers, then comments, then somewhere to write.
+// Drawn once per piece, then its parts are drawn again as things change, so
+// what's being written stays put.
+function talkSection(p) {
+  const kid = kidOf(p);
+  const own = TALK.me.kid_id != null && TALK.me.kid_id === kid.id;
+  const people = TALK.me.names;
+  const shared = people.length > 1;
+  // On a shared sign-in, who's commenting, above the comment box, and their
+  // names to pick from once Change is tapped. Stickers go by the same choice.
+  const asLine = shared ? `<p class="as-line" id="t-as">Commenting as <b id="t-as-name"></b><span aria-hidden="true">·</span><button class="as-change" type="button" id="t-as-change" aria-expanded="false" aria-controls="t-as-pick">Change</button></p>` : '';
+  const asPick = shared
+    ? `<div class="as-pick" id="t-as-pick" role="group" aria-labelledby="t-as-h" hidden><p class="as-h" id="t-as-h">Who’s commenting?</p><div class="as-opts">${people.map((p) => `<button class="as-card" type="button" data-as="${esc(p.as)}" aria-pressed="false">${icon('check')}${esc(p.name)}</button>`).join('')}</div></div>`
+    : '';
+  const unnamed = !people.length && !TALK.me.kid ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>' : '';
+  return `<section class="talk" id="talk" aria-labelledby="talk-h">
+    ${unnamed}
+    <h3 class="talk-h" id="talk-h">Stickers</h3>
+    <div class="stickers" id="t-stickers" role="group" aria-label="Stickers: tap one to give it, and again to take it back"></div>
+    <p class="st-from" id="t-from"></p>
+    <h3 class="talk-h">Comments<span class="count" id="t-count"></span></h3>
+    <ol class="c-list" id="t-list" aria-label="Comments"></ol>
+    <form class="c-form" id="t-form">
+      ${PREVIEW ? '<p class="hint">This is a preview with a made-up family, so stickers and comments you add aren’t saved. They’re gone when you reload.</p>' : ''}
+      ${asLine}
+      ${asPick}
+      <label class="sr" for="t-text">Write a comment</label>
+      <textarea id="t-text" rows="2" maxlength="${COMMENT_MAX}" placeholder="${esc(own ? 'Tell everyone about it' : `Tell ${kid.name} what you like about it`)}"></textarea>
+      <div class="c-send"><span class="c-left" id="t-left" aria-live="polite"></span><button class="btn primary" type="submit" id="t-send">${icon('bubble')}Send</button></div>
+    </form>
+  </section>`;
+}
+
+async function loadPieceTalk(p) {
+  const id = p.id;
+  $('#t-text').value = drafts.get(id) || '';
+  showLeft();
+  editing = null;
+  choosingAs = false;
+  if (talking?.id !== id) talking = { id, comments: null, stickers: null };
+  drawTalk();
+  try {
+    const data = await api(`/api/pieces/${id}/comments`);
+    if (current?.id !== id) return;
+    talking = { id, ...data };
+  } catch (e) {
+    if (current?.id !== id) return;
+    if (!talking.comments) talking.error = e.message;
+  }
+  drawTalk();
+  // Looked at: its comments aren't new any more, here or on the walls.
+  if (!opened.has(id) && isNew(p)) {
+    opened.add(id);
+    render();
+  }
+  opened.add(id);
+}
+
+function drawTalk() {
+  drawAs();
+  drawStickers();
+  drawComments();
+}
+// "Commenting as Poppa", and which name is picked once Change is open.
+function drawAs() {
+  const name = $('#t-as-name');
+  if (!name) return;
+  const as = speaking();
+  name.textContent = TALK.me.names.find((p) => p.as === as)?.name || '';
+  $('#t-as-change').setAttribute('aria-expanded', String(choosingAs));
+  $('#t-as-pick').hidden = !choosingAs;
+  for (const b of $('#t-as-pick').querySelectorAll('[data-as]')) b.setAttribute('aria-pressed', String(b.dataset.as === as));
+}
+function drawStickers() {
+  const box = $('#t-stickers');
+  if (!box || !talking) return;
+  const loaded = Boolean(talking.stickers);
+  const as = speaking();
+  box.innerHTML = STICKERS.map((s) => {
+    const st = talking.stickers?.find((x) => x.kind === s.kind) || { count: 0, mine: [] };
+    return `<button class="stk" type="button" data-sticker="${s.kind}" aria-pressed="${st.mine.includes(as)}" aria-label="${esc(s.label)}${st.count ? `, ${st.count}` : ''}"${loaded ? '' : ' disabled'}><svg class="stk-art" aria-hidden="true"><use href="#s-${s.kind}"/></svg><span class="stk-l" aria-hidden="true">${esc(s.label)}</span>${st.count ? `<b class="stk-n" aria-hidden="true">${st.count}</b>` : ''}</button>`;
+  }).join('');
+  const givers = (talking.stickers || []).flatMap((s) => s.by);
+  $('#t-from').textContent = !loaded ? '' : givers.length ? `Stickers from ${names(givers)}` : 'No stickers yet. Tap one to give it.';
+}
+function drawComments() {
+  const list = $('#t-list');
+  if (!list || !talking) return;
+  const p = PIECES.find((x) => x.id === talking.id);
+  if (!p) return;
+  const comments = talking.comments;
+  $('#t-count').textContent = comments?.length ? String(comments.length) : '';
+  if (!comments) {
+    list.innerHTML = `<li class="c-empty">${talking.error ? esc(talking.error) : 'Getting the comments…'}</li>`;
+    return;
+  }
+  list.innerHTML = comments.length ? comments.map((c) => commentHtml(c, p)).join('') : `<li class="c-empty">${doodle('heart')}Nobody’s said anything yet. Be the first!</li>`;
+}
+function commentHtml(c, p) {
+  const kid = commenterKid(c);
+  const artist = kid && kid.id === p.kid_id;
+  const actions = c.mine
+    ? `<button type="button" data-c-edit="${c.id}">${icon('pencil')}Edit</button><button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Delete</button>`
+    : c.can_remove
+      ? `<button type="button" class="danger" data-c-remove="${c.id}">${icon('trash')}Remove</button>`
+      : '';
+  const body =
+    editing === c.id
+      ? `<form class="c-edit" data-c-save="${c.id}"><label class="sr" for="c-edit-${c.id}">Change your comment</label><textarea id="c-edit-${c.id}" rows="3" maxlength="${COMMENT_MAX}">${esc(c.body)}</textarea><div class="row"><button class="btn primary" type="submit">${icon('check')}Save</button><button class="btn" type="button" data-c-cancel>Cancel</button></div></form>`
+      : `<p class="c-body">${esc(c.body)}</p>`;
+  return `<li class="c-item${kid ? ' c-kid' : ''}${artist ? ' c-artist' : ''}"${kid ? ` style="${kidStyle(kid)}"` : ''}>
+    <p class="c-top">${whoMagnet(c)}<b class="c-by">${esc(c.by)}</b>${artist ? '<span class="c-badge">the artist</span>' : ''}${timeTag(c.created_at)}${c.unsaved ? '<span class="c-note">not saved</span>' : c.edited ? '<span class="c-note">edited</span>' : ''}</p>
+    ${body}
+    ${actions && editing !== c.id ? `<p class="c-act">${actions}</p>` : ''}
+  </li>`;
+}
+function showLeft() {
+  const n = [...($('#t-text')?.value || '')].length;
+  const left = $('#t-left');
+  if (left) left.textContent = n > COMMENT_MAX - 100 ? `${Math.max(0, COMMENT_MAX - n)} letters left` : '';
+}
+
+// Keep the walls' counts and Home's latest comments up with a change here.
+function counted(id, change) {
+  const c = (TALK.counts[id] ||= { comments: 0, stickers: 0, newest: 0 });
+  change(c);
+  render();
+}
+
+async function giveSticker(kind) {
+  const id = talking?.id;
+  const st = talking?.stickers?.find((s) => s.kind === kind);
+  if (!st) return;
+  const as = speaking();
+  const on = !st.mine.includes(as);
+  let stickers;
+  try {
+    if (PREVIEW) {
+      const name = myName();
+      stickers = talking.stickers.map((s) => (s.kind !== kind ? s : { ...s, mine: on ? [...s.mine, as] : s.mine.filter((n) => n !== as), count: s.count + (on ? 1 : -1), by: on ? [...s.by, name] : s.by.filter((n) => n !== name) }));
+    } else stickers = (await api(`/api/pieces/${id}/stickers/${kind}${as ? `?as=${encodeURIComponent(as)}` : ''}`, { method: on ? 'POST' : 'DELETE' })).stickers;
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (talking?.id !== id) return;
+  talking.stickers = stickers;
+  drawStickers();
+  const b = $(`#t-stickers [data-sticker="${kind}"]`);
+  b?.focus();
+  if (on) b?.classList.add('popped');
+  counted(id, (c) => (c.stickers = stickers.reduce((n, s) => n + s.count, 0)));
+  if (PREVIEW) toast('Stuck on here only: the preview doesn’t save it');
+}
+
+async function sendComment() {
+  const id = talking?.id;
+  const text = $('#t-text').value.trim();
+  if (!text) {
+    $('#t-text').focus();
+    return;
+  }
+  if (!talking?.comments) return;
+  const send = $('#t-send');
+  send.disabled = true;
+  const as = speaking();
+  let comment;
+  try {
+    comment = PREVIEW
+      ? { id: ++previewIds, piece_id: id, body: text, created_at: stamp(), edited: false, by: myName(), kid_id: TALK.me.kid_id, mine: true, can_remove: true, unsaved: true }
+      : (await api(`/api/pieces/${id}/comments`, { method: 'POST', json: as ? { body: text, as } : { body: text } })).comment;
+  } catch (e) {
+    toast(e.message);
+    return;
+  } finally {
+    send.disabled = false;
+  }
+  drafts.delete(id);
+  TALK.latest = [comment, ...TALK.latest].slice(0, 8);
+  if (talking?.id === id) {
+    talking.comments.push(comment);
+    $('#t-text').value = '';
+    showLeft();
+    drawComments();
+  }
+  counted(id, (c) => c.comments++);
+  toast(PREVIEW ? 'Added here only: the preview doesn’t save it' : 'Sent');
+}
+
+async function saveComment(cid, text) {
+  const c = talking.comments.find((x) => x.id === cid);
+  if (!c) return;
+  let changed;
+  try {
+    changed = PREVIEW ? { ...c, body: text.trim(), edited: c.edited || text.trim() !== c.body } : (await api(`/api/comments/${cid}`, { method: 'PATCH', json: { body: text } })).comment;
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  Object.assign(c, changed);
+  TALK.latest = TALK.latest.map((x) => (x.id === cid ? { ...x, ...changed } : x));
+  editing = null;
+  drawComments();
+  render();
+  toast('Saved');
+}
+
+async function removeComment(cid) {
+  const id = talking.id;
+  const c = talking.comments.find((x) => x.id === cid);
+  if (!c || !confirm(c.mine ? 'Delete your comment?' : `Remove ${c.by}’s comment? It can’t be brought back.`)) return;
+  try {
+    if (!PREVIEW) await api(`/api/comments/${cid}`, { method: 'DELETE' });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (talking?.id === id) talking.comments = talking.comments.filter((x) => x.id !== cid);
+  TALK.latest = TALK.latest.filter((x) => x.id !== cid);
+  drawComments();
+  $('#t-text').focus({ preventScroll: true });
+  counted(id, (n) => n.comments--);
+  toast(c.mine ? 'Deleted' : 'Removed');
+}
+
+$('#d-read').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-sticker], [data-c-edit], [data-c-remove], [data-c-cancel]');
+  if (!b || !talking) return;
+  if (b.dataset.sticker) giveSticker(b.dataset.sticker);
+  else if (b.dataset.cEdit) {
+    editing = Number(b.dataset.cEdit);
+    drawComments();
+    const area = $(`#c-edit-${editing}`);
+    area?.focus();
+    area?.setSelectionRange(area.value.length, area.value.length);
+  } else if (b.dataset.cRemove) removeComment(Number(b.dataset.cRemove));
+  else if (b.matches('[data-c-cancel]')) {
+    editing = null;
+    drawComments();
+  }
+});
+$('#d-read').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.target.id === 't-form') sendComment();
+  else if (e.target.dataset.cSave) saveComment(Number(e.target.dataset.cSave), e.target.querySelector('textarea').value);
+});
+$('#d-read').addEventListener('input', (e) => {
+  if (e.target.id !== 't-text' || !talking) return;
+  drafts.set(talking.id, e.target.value);
+  showLeft();
+});
+// Who's commenting, on a shared sign-in: Change shows their names, and the
+// one picked is remembered on this device.
+$('#d-read').addEventListener('click', (e) => {
+  const b = e.target.closest('#t-as-change, [data-as]');
+  if (!b) return;
+  if (b.dataset.as != null) {
+    try {
+      localStorage.setItem(AS_KEY, b.dataset.as);
+    } catch {}
+    choosingAs = false;
+  } else choosingAs = !choosingAs;
+  drawAs();
+  drawStickers();
+  if (b.dataset.as != null) $('#t-as-change').focus();
+  else if (choosingAs) $('#t-as-pick [aria-pressed="true"]')?.focus();
+});
+$('#d-read').addEventListener('animationend', (e) => e.target.closest?.('.stk')?.classList.remove('popped'));
+
 // ---- Frame mode ----
 const frame = $('#frame');
 const layers = frame.querySelectorAll('.stage img');
@@ -725,97 +1114,54 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---- Add art (parents) ----
+// The sheet is add/sheet.js, loaded the first time it opens, so people who
+// only look never fetch it. It takes several pictures and PDFs at once.
 const add = $('#add');
-const addForm = $('#add-form');
-const ORIGINAL_TYPES = ['image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp', 'image/tiff', 'image/gif'];
+
+// ---- Add art: who made it ----
+// The kids Add art offers, for a whole batch and for each piece: the ones
+// this parent can add art for (their families' and kids in none), or an
+// artist's own name (canAddFor). add/sheet.js draws the pickers from this
+// list and nothing else; the Worker checks each piece again.
+const addableKids = () => KIDS.filter(canAddFor);
+
+let addArt = null;
 function openAdd() {
-  addForm.reset();
-  $('#a-made').value = todayISO;
-  $('#a-preview').hidden = true;
-  $('#a-icon').removeAttribute('hidden');
-  $('#a-file-label').textContent = 'Take a photo or choose a scan';
-  $('#a-error').hidden = true;
-  add.hidden = false;
-  lock(true);
-  $('#a-file').focus();
+  addArt ||= import('./add/sheet.js');
+  addArt
+    .then((sheet) =>
+      sheet.open({
+        kids: addableKids(),
+        // Only parents import: they can ask what's on the fridge already and
+        // record skips. An artist adds their own art without either.
+        parent: CAN_EDIT,
+        preview: PREVIEW,
+        today: todayISO,
+        api,
+        esc,
+        icon,
+        avatar,
+        kidStyle,
+        lock,
+        toast,
+        refresh: load,
+        // After adding: a kid's wall if it was all one kid's, else the timeline.
+        show(kidIds) {
+          const ids = [...new Set(kidIds)];
+          const kid = ids.length === 1 && KIDS.find((k) => k.id === ids[0]);
+          const to = kid ? kid.slug : 'timeline';
+          if (location.hash === `#${to}`) render();
+          else location.hash = to;
+        },
+      }),
+    )
+    .catch(() => {
+      addArt = null;
+      toast('Add art didn’t open. Check the connection and try again.');
+    });
 }
-function closeAdd() {
-  add.hidden = true;
-  lock(false);
-}
-function addError(msg) {
-  $('#a-error').textContent = msg;
-  $('#a-error').hidden = false;
-}
-// A JPEG no bigger than `max` on its long side, turned the right way up.
-async function shrink(file, max, quality) {
-  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
-  const w = Math.round(bmp.width * scale);
-  const h = Math.round(bmp.height * scale);
-  const cv = document.createElement('canvas');
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bmp, 0, 0, w, h);
-  bmp.close();
-  const blob = await new Promise((resolve) => cv.toBlob(resolve, 'image/jpeg', quality));
-  return { blob, w, h };
-}
+const closeAdd = () => addArt?.then((sheet) => sheet.close());
 $('#open-add').onclick = openAdd;
-$('#add-close').onclick = closeAdd;
-add.addEventListener('click', (e) => {
-  if (e.target === add) closeAdd();
-});
-$('#a-file').addEventListener('change', () => {
-  const f = $('#a-file').files[0];
-  if (!f) return;
-  const preview = $('#a-preview');
-  if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src);
-  preview.src = URL.createObjectURL(f);
-  preview.hidden = false;
-  $('#a-icon').setAttribute('hidden', '');
-  $('#a-file-label').textContent = f.name;
-  $('#a-error').hidden = true;
-});
-addForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = $('#a-file').files[0];
-  if (!file) return addError('Choose a photo or scan first.');
-  if (!ORIGINAL_TYPES.includes(file.type)) return addError('That isn’t a picture the fridge can take. Try a JPEG, PNG or HEIC.');
-  const kidId = Number(addForm.querySelector('input[name="who"]:checked')?.value);
-  const button = $('#a-submit');
-  button.disabled = true;
-  button.textContent = 'Adding…';
-  try {
-    let display, thumb;
-    try {
-      display = await shrink(file, 2000, 0.85);
-      thumb = await shrink(file, 480, 0.8);
-    } catch {
-      throw new Error('This browser can’t open that picture. Try a JPEG or PNG.');
-    }
-    const body = new FormData();
-    body.set('meta', JSON.stringify({ kid_id: kidId, made: $('#a-made').value || todayISO, made_precision: 'day', title: $('#a-title').value.trim(), story: $('#a-story').value.trim(), width: display.w, height: display.h }));
-    body.set('original', file);
-    body.set('display', display.blob, 'display.jpg');
-    body.set('thumb', thumb.blob, 'thumb.jpg');
-    await api('/api/pieces', { method: 'POST', body });
-    closeAdd();
-    await load();
-    const kid = KIDS.find((k) => k.id === kidId);
-    if (location.hash === `#${kid.slug}`) render();
-    else location.hash = kid.slug;
-    toast(`Added to ${kid.name}’s wall`);
-  } catch (err) {
-    addError(err.message);
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Add to the fridge';
-  }
-});
 
 // ---- Shared ----
 let toastTimer;
@@ -827,7 +1173,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 3200);
 }
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('#view .piece, #view [data-open], #view [data-filter], #view [data-frame], #view [data-add]');
+  const b = e.target.closest('#view .piece, #view .note, #view [data-open], #view [data-filter], #view [data-frame], #view [data-add]');
   if (!b) return;
   if (b.matches('[data-filter]')) {
     filter = b.dataset.filter;
@@ -845,10 +1191,11 @@ document.addEventListener('click', (e) => {
   const id = Number(b.dataset.id || b.dataset.open);
   const scope = b.closest('[data-scope]');
   let list = scope
-    ? [...new Set([...scope.querySelectorAll('.piece')].map((x) => Number(x.dataset.id)))]
+    ? [...new Set([...scope.querySelectorAll('.piece, .note')].map((x) => Number(x.dataset.id)))]
     : PIECES.filter((p) => p.favourite).sort(byMadeDesc).map((p) => p.id);
   if (!list.includes(id)) list = [...PIECES].sort(byMadeDesc).map((p) => p.id);
-  openDetail(id, list);
+  // From a comment on Home, straight to what's being said.
+  openDetail(id, list, { toTalk: b.matches('.note') });
 });
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
@@ -864,7 +1211,10 @@ document.addEventListener('keydown', (e) => {
   } else if (!detail.hidden) {
     if (e.key === 'Escape') {
       if (!form.hidden) $('#f-cancel').click();
-      else closeDetail();
+      else if (editing) {
+        editing = null;
+        drawComments();
+      } else closeDetail();
     } else if (!typing && e.key === 'ArrowLeft') step(-1);
     else if (!typing && e.key === 'ArrowRight') step(1);
   }
