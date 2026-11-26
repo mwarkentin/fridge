@@ -1289,8 +1289,11 @@ function drawMail() {
   mailToggle.hidden = !d || (!d.can && !VIEWING);
   mailBox.hidden = mailToggle.hidden || !mailOpen;
   if (mailToggle.hidden) return;
-  // Folded, the button says how it's set, in a word.
-  $('#bm-sum').textContent = d.every === 'weekly' ? 'Sundays' : d.every === 'daily' ? 'Daily' : 'Email';
+  // Folded, the button says how it's set, in a word, or Verify when the
+  // last one didn't go because Cloudflare hasn't verified their address.
+  const unverified = d.unverified && d.every !== 'off';
+  $('#bm-sum').textContent = unverified && !VIEWING ? 'Verify' : d.every === 'weekly' ? 'Sundays' : d.every === 'daily' ? 'Daily' : 'Email';
+  mailToggle.classList.toggle('warn', unverified && !VIEWING);
   mailToggle.setAttribute('aria-label', `${VIEWING ? `${VIEWING.name}’s email` : 'Email me what’s new'}: ${scheduleWords(d.every, d.hour)}`);
   $('#bm-pick').hidden = Boolean(VIEWING);
   mailEvery.value = d.every;
@@ -1303,7 +1306,10 @@ function drawMail() {
       : `${capital(scheduleWords(d.every, d.hour))}, their time.`
     : d.every === 'off'
       ? 'What’s new, with the pictures, in your inbox.'
-      : `${capital(scheduleWords(d.every, d.hour))}, to ${MY_EMAIL}. Choose Never to stop it.`;
+      : unverified
+        ? `The last one didn’t go: Cloudflare hasn’t verified ${MY_EMAIL} yet. Look for its email and click Verify email address, and the next one will.`
+        : `${capital(scheduleWords(d.every, d.hour))}, to ${MY_EMAIL}. Choose Never to stop it.`;
+  $('#bm-note').classList.toggle('warn', unverified && !VIEWING);
   $('#bm-see-lbl').textContent = VIEWING ? 'See theirs' : 'See it';
   $('#bm-send').hidden = !OWNER || Boolean(VIEWING);
 }

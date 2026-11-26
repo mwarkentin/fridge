@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, canSee, identify, isArtistOf, isOwner, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily, signedInAs, viewable, viewedAs } from './auth.js';
+import { canChangeKid, canSee, identify, isArtistOf, isOwner, kidAddresses, readDigestTo, readFamilies, readNames, sameName, seesEverything, seesFamily, signedInAs, viewable, viewedAs } from './auth.js';
 // The page's own modules, for the email digest: its words and colours are the page's.
 import { digestMail } from '../public/digest.js';
 import { arrange } from '../public/families.js';
@@ -676,7 +676,7 @@ async function stickersOut(env, who, pieceId, kid) {
 // their email digest (`digest`, digestSettings), or null where the fridge
 // can't email them.
 async function me(env, who) {
-  const row = await env.DB.prepare('SELECT seen_at, digest, digest_hour, digest_zone FROM people WHERE email = ?').bind(who.email).first();
+  const row = await env.DB.prepare('SELECT seen_at, digest, digest_hour, digest_zone, digest_error FROM people WHERE email = ?').bind(who.email).first();
   const by = (await namesFor(env, who))({ author: who.email, name: '' });
   const people = who.kid ? [] : readNames(env).get(who.email) || [];
   return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen_at ?? null, digest: digestSettings(env, who, row) };
@@ -920,11 +920,15 @@ async function notifications(env, who) {
 // Who can have it: nobody until it's set up, with the EMAIL binding and the
 // address it comes from (DIGEST_FROM, which infra gives the deploy, at the
 // fridge's own domain, where its links go too); never a kid's devices, whose
-// notifications are in the bell; and while it's being tried out (DIGESTS,
-// "owners" in wrangler.toml) only the owners, until DIGESTS is "everyone".
-// Turning it off is always allowed, and is how it stops: there's no
-// unsubscribe link. Cloudflare's Email Service sends it, only to verified
-// destination addresses: each person clicks its "Verify email address" once.
+// notifications are in the bell; and while it's being tried out, only the
+// owners (DIGESTS = "owners" in wrangler.toml), or the owners and whoever
+// infra's DIGEST_TO lists ("listed"), until DIGESTS is "everyone". Turning
+// it off is always allowed, and is how it stops: there's no unsubscribe
+// link. Cloudflare's Email Service sends it, only to verified destination
+// addresses: each person clicks its "Verify email address" once. When
+// Cloudflare says no because someone hasn't, it's remembered
+// (people.digest_error), so their bell can say so.
+const NOT_VERIFIED_CODES = new Set(['E_RECIPIENT_NOT_ALLOWED', 'E_RECIPIENT_PLAN_RESTRICTED']);
 const DIGEST_EVERY = { daily: 1, weekly: 7 }; // days
 const DIGEST_HOUR = 8; // until they choose, in their time
 const DAY_MS = 86_400_000;
@@ -940,15 +944,30 @@ const digestOffered = (env, who) => emailReady(env) && !(who.kid && !who.artist)
 function mayDigest(env, who) {
   if (!digestOffered(env, who)) return false;
   const phase = String(env.DIGESTS ?? '').trim();
-  return phase === 'everyone' || (phase === 'owners' && isOwner(env, who));
+  if (phase === 'everyone') return true;
+  if (phase !== 'owners' && phase !== 'listed') return false;
+  if (isOwner(env, who)) return true;
+  if (phase !== 'listed') return false;
+  try {
+    return readDigestTo(env).includes(who.email);
+  } catch (e) {
+    console.error('DIGEST_TO', e);
+    return false;
+  }
 }
 // For the page (me): null where the fridge can't email them, else `can`,
-// whether they may turn it on now, and their settings: `every` (off, daily
-// or weekly), `hour`, and `zone`, null until they first turn it on.
+// whether they may turn it on now, their settings: `every` (off, daily or
+// weekly), `hour`, and `zone`, null until they first turn it on, and
+// `unverified`, whether the last one didn't go because Cloudflare hasn't
+// verified their address.
 function digestSettings(env, who, row) {
   if (!digestOffered(env, who)) return null;
-  return { can: mayDigest(env, who), every: row?.digest ?? 'off', hour: row?.digest_hour ?? DIGEST_HOUR, zone: row?.digest_zone ?? null };
+  return { can: mayDigest(env, who), every: row?.digest ?? 'off', hour: row?.digest_hour ?? DIGEST_HOUR, zone: row?.digest_zone ?? null, unverified: row?.digest_error === 'unverified' };
 }
+// Whether Cloudflare sent the last one, for the bell: `error` is
+// 'unverified' when it said no for want of the Verify click, else cleared.
+const digestOutcome = (env, email, error) =>
+  env.DB.prepare('INSERT INTO people (email, digest_error) VALUES (?1, ?2) ON CONFLICT (email) DO UPDATE SET digest_error = ?2').bind(email, error).run();
 
 // A clock for each time zone, made once: making one takes a while, and the
 // hourly run has little time.
@@ -1077,10 +1096,14 @@ export async function sendDigests(env, now = Date.now()) {
       if (!mayDigest(env, who)) continue;
       const since = [r.seen_at ?? '', r.digest_at ?? '', stampOf(msOf(due) - DIGEST_EVERY[r.digest] * DAY_MS)].sort().at(-1);
       const { as_of, mail } = await digestFor(env, who, { since, every: r.digest, hour, zone });
-      if (mail) await sendDigest(env, who, mail);
+      if (mail) {
+        await sendDigest(env, who, mail);
+        await digestOutcome(env, r.email, null);
+      }
       await done(as_of > due ? as_of : due);
     } catch (e) {
       console.error('digest not sent', e?.code ?? '', e?.message ?? e);
+      if (NOT_VERIFIED_CODES.has(e?.code)) await digestOutcome(env, r.email, 'unverified').catch(() => {});
       if (e?.code && !RETRY.has(e.code)) await done(due).catch(() => {});
     }
   }
@@ -1101,8 +1124,10 @@ async function testDigest(env, who) {
     await sendDigest(env, who, mail);
   } catch (e) {
     console.error('test digest not sent', e?.code ?? '', e?.message ?? e);
+    if (NOT_VERIFIED_CODES.has(e?.code)) await digestOutcome(env, who.email, 'unverified').catch(() => {});
     throw new HttpError(502, sendTrouble(e));
   }
+  await digestOutcome(env, who.email, null);
   return { sent: true, items: count, pictures: mail.pictures.length };
 }
 const NOT_VERIFIED = 'Cloudflare won’t send to your address yet: it has to be a verified destination address. Infra adds it, and you click Verify in the email Cloudflare sends.';

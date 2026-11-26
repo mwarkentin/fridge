@@ -231,14 +231,17 @@ kept for it but each sign-in's settings and how far its last email got.
 **See it** shows the email as it would go (with everything from the last
 week, seen or not), and an owner viewing as someone sees theirs.
 
-While it's being tried out (`DIGESTS = "owners"` in `wrangler.toml`), only
-the fridge's owners can have it, and they can **Send me one now** to try
-it: the last week's, marked as a test, which changes nothing about the
-next one. To open it to everyone, set `DIGESTS = "everyone"`. A kid's iPad
-never gets one: its news is in the bell. Cloudflare's Email Service sends
-it, only to addresses Cloudflare has verified, so each person clicks
-**Verify email address** in an email from Cloudflare once (see [Setting it
-up](#setting-it-up)). An hourly job sends whatever's due.
+While it's being tried out (`DIGESTS = "listed"` in `wrangler.toml`), only
+the fridge's owners and whoever infra's `DIGEST_TO` lists (its people
+file's `digest`) can have it. Owners can **Send me one now** to try it:
+the last week's, marked as a test, which changes nothing about the next
+one. `DIGESTS = "owners"` keeps it to the owners, and `"everyone"` opens it
+to everyone. A kid's iPad never gets one: its news is in the bell.
+Cloudflare's Email Service sends it, only to addresses Cloudflare has
+verified, so each person clicks **Verify email address** in an email from
+Cloudflare once (see [Setting it up](#setting-it-up)). If someone hasn't
+and theirs doesn't go, the envelope button in their bell says **Verify**,
+and says why, until one does. An hourly job sends whatever's due.
 
 ## View as
 

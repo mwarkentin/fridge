@@ -287,6 +287,19 @@ export const canSee = (who, kid) => (kid.family == null ? seesEverything(who) : 
 export const canChangeKid = (who, kid) => who.canEdit && (kid.family === null || who.families.includes(kid.family));
 export const isArtistOf = (who, kid) => who.artist !== null && sameName(who.artist, kid.name);
 
+// Who else can have the email digest while it's tried out (worker.js,
+// DIGESTS = "listed"), besides the owners: DIGEST_TO, a Worker secret infra
+// hands to the deploy, sign-in addresses separated by commas like ADMINS.
+// Missing or empty means nobody else. One that can't be read throws, and
+// then nobody else can (worker.js, mayDigest), rather than the wrong people.
+export function readDigestTo(env) {
+  const raw = (env.DIGEST_TO || '').trim();
+  if (!raw) return [];
+  const list = raw.split(',').map((e) => e.trim().toLowerCase());
+  if (!list.every(isEmail)) throw new Error('DIGEST_TO must be sign-in addresses separated by commas.');
+  return [...new Set(list)];
+}
+
 // ---- Viewing as someone else ----
 // The fridge's owners, from ADMINS: a Worker secret infra hands to the
 // deploy, sign-in addresses separated by commas like PARENT_EMAILS, each one
