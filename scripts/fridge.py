@@ -5,7 +5,7 @@
 #     "httpx==0.28.1",
 #     "pillow==13.0.0",
 #     "pillow-heif==1.8.1",
-#     "pypdfium2==5.14.0",
+#     "pypdfium2==5.15.2",
 # ]
 # ///
 """Bring scans into the fridge.
