@@ -30,12 +30,6 @@ async function handle(request, env) {
   const url = new URL(request.url);
   const { pathname } = url;
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
-  // The strip's links: look at the page as someone else, remembered in a
-  // cookie that only picks which made-up person the API answers for.
-  if (pathname === '/' && url.searchParams.has('as')) {
-    const as = PERSONAS[url.searchParams.get('as')] ? url.searchParams.get('as') : 'parents';
-    return new Response(null, { status: 302, headers: { Location: '/', 'Set-Cookie': `${COOKIE}=${as}; Path=/; Max-Age=86400; SameSite=Lax; Secure; HttpOnly`, 'Cache-Control': 'no-store' } });
-  }
   const who = persona(request);
   const now = new Date();
   if (pathname === '/api/session') return json({ email: 'visitor@example.com', canEdit: who.canEdit, preview: true, families: who.families, artist: who.artist });
@@ -45,13 +39,13 @@ async function handle(request, env) {
   const talk = pathname.match(/^\/api\/pieces\/(\d+)\/comments$/);
   if (talk) {
     const id = Number(talk[1]);
-    if (!PIECES.some((p) => p.id === id)) return json({ error: 'That isn’t on the fridge.' }, 404);
+    if (!seenPieces(who).some((p) => p.id === id)) return json({ error: 'That isn’t on the fridge.' }, 404);
     return json(pieceTalk(now, who, id));
   }
   if (pathname.startsWith('/api/')) return json({ error: 'There’s nothing at that address.' }, 404);
   const img = pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
   if (img) {
-    const piece = PIECES.find((p) => p.id === Number(img[1]));
+    const piece = seenPieces(who).find((p) => p.id === Number(img[1]));
     if (!piece) return json({ error: 'There’s no piece with that id.' }, 404);
     return new Response(drawing(piece), { headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' } });
   }
@@ -78,14 +72,14 @@ async function markAsPreview(res, who) {
 // Dates count back from today, so ages stay put and "This time of year"
 // always has something in it.
 const FAMILIES = [
+  { id: 'pines', name: 'The Pines' },
   { id: 'oaks', name: 'The Oaks' },
-  { id: 'willows', name: 'The Willows' },
 ];
 const KIDS = [
-  { id: 1, name: 'Ada', family: 'oaks', born: [8, 64] },
-  { id: 2, name: 'Bo', family: 'oaks', born: [5, 288] },
-  { id: 3, name: 'Cy', family: 'willows', born: [7, 150] },
-  { id: 4, name: 'Dee', family: 'willows', born: [3, 200] },
+  { id: 1, name: 'Ada', family: 'pines', born: [8, 64] },
+  { id: 2, name: 'Bo', family: 'pines', born: [5, 288] },
+  { id: 3, name: 'Cy', family: 'oaks', born: [7, 150] },
+  { id: 4, name: 'Dee', family: 'oaks', born: [3, 200] },
 ];
 // [id, kid, drawing, width, height, [years, days] ago, precision, title, what they said, medium, tags, favourite]
 const PIECES = [
@@ -121,63 +115,82 @@ function back(today, [years, days]) {
 // The same shape as the real /api/gallery, kids oldest first like the real
 // one. `mine` is what an artist added, which they can change.
 function gallery(today, who) {
-  const kids = KIDS.map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
-  const pieces = PIECES.map(({ kind, ago, ...p }) => {
+  const kids = KIDS.filter((k) => seesKid(who, k.id)).map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
+  const pieces = seenPieces(who).map(({ kind, ago, ...p }) => {
     const d = back(today, ago);
     if (p.made_precision === 'month') d.setUTCDate(15);
     if (p.made_precision === 'year') d.setUTCMonth(6, 1);
     return { ...p, made: iso(d > today ? today : d), source_name: null, created_at: addedAt(today, p.id) };
   }).sort((a, b) => (a.made < b.made ? 1 : a.made > b.made ? -1 : b.id - a.id));
-  return { families: FAMILIES, kids, pieces, mine: who.artist ? PIECES.filter((p) => addedBy(p.id) === who.signin).map((p) => p.id) : [] };
+  return { families: FAMILIES.filter((f) => who.sees === null || who.sees.includes(f.id)), kids, pieces, mine: who.artist ? PIECES.filter((p) => addedBy(p.id) === who.signin).map((p) => p.id) : [] };
 }
 
 // ---- Made-up people, comments and stickers ----
 // In the real Worker's shapes (talk() and notifications() in src/worker.js).
 // The page can be seen as each kind of person (PERSONAS, from the strip's
 // links). By default the visitor is a sign-in shared by two parents in the
-// first family: Mum and Dad on its kids' art, and Aunt Oak and Uncle Oak on
-// the other family's, so the page says which of them is commenting. The page
+// first family: Mum and Dad on its kids' art, and Aunt Pine and Uncle Pine
+// on the other family's, so the page says which of them is commenting.
+// Nonna, a grandparent on their side, sees only the first family (as SEES
+// has it in the real Worker): not the other family, its kids, their art,
+// what's said about it, nor their names, which are "Family" to her. The page
 // keeps what the visitor adds to itself: the Worker above refuses every change.
 //
 // Everyone's sign-in, by a made-up key: a family's parents, people who only
 // look, and the kids, who are their kid.
 const SIGNINS = {
-  oaks: { family: 'oaks', people: [{ name: 'Aunt Oak', home: 'Mum' }, { name: 'Uncle Oak', home: 'Dad' }] },
-  willows: { family: 'willows', people: [{ name: 'Uncle Willow', home: 'Papa' }] },
+  pines: { family: 'pines', people: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }] },
+  oaks: { family: 'oaks', people: [{ name: 'Aunt Oak', home: 'Mama' }] },
   grandma: { people: [{ name: 'Grandma' }] },
   pop: { people: [{ name: 'Pop' }] },
   nana: { people: [{ name: 'Nana' }] },
   jo: { people: [{ name: 'Auntie Jo' }] },
+  nonna: { people: [{ name: 'Nonna' }] },
   ada: { kid: 1 },
   bo: { kid: 2 },
   cy: { kid: 3 },
   dee: { kid: 4 },
 };
-// Who the page is for, and how far they'd caught up, minutes ago.
+// Who the page is for: what they see (null for everything), and how far
+// they'd caught up, minutes ago.
 const PERSONAS = {
-  parents: { label: 'Mum and Dad', signin: 'oaks', canEdit: true, families: ['oaks'], artist: null, seen: 420 },
-  grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, seen: 500 },
-  ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, seen: 1440 },
-  dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', seen: 1440 },
+  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420 },
+  grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, sees: null, seen: 500 },
+  nonna: { label: 'Nonna, who sees only the Pines', signin: 'nonna', canEdit: false, families: [], artist: null, sees: ['pines'], seen: 1000 },
+  ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440 },
+  dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', sees: null, seen: 1440 },
 };
-const COOKIE = 'fridge_preview_as';
+// Who's looking: ?as= on the page's address, which its own requests carry as
+// their Referer. Nothing is remembered, and nothing signs anyone in.
 function persona(request) {
-  const m = (request.headers.get('Cookie') || '').match(new RegExp(`(?:^|;\\s*)${COOKIE}=([a-z]+)`));
-  return PERSONAS[m?.[1]] || PERSONAS.parents;
+  const url = new URL(request.url);
+  let from = url;
+  if (!url.searchParams.has('as')) {
+    try {
+      const referer = new URL(request.headers.get('Referer'));
+      if (referer.origin === url.origin) from = referer;
+    } catch {}
+  }
+  return PERSONAS[from.searchParams.get('as')] || PERSONAS.parents;
 }
+const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
+const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
 // Who put each piece up, and when, minutes ago. The rest went up months ago,
 // by their family's parents.
-const ADDED = { 20: [100, 'willows'], 8: [70, 'oaks'], 18: [360, 'dee'], 3: [600, 'oaks'], 7: [600, 'oaks'], 13: [1300, 'willows'], 21: [1300, 'willows'], 12: [1600, 'oaks'], 1: [3100, 'oaks'], 4: [4400, 'oaks'] };
+const ADDED = { 20: [100, 'oaks'], 8: [70, 'pines'], 18: [360, 'dee'], 3: [600, 'pines'], 7: [600, 'pines'], 13: [1300, 'oaks'], 21: [1300, 'oaks'], 12: [1600, 'pines'], 1: [3100, 'pines'], 4: [4400, 'pines'] };
 const kidOf = (pieceId) => KIDS.find((k) => k.id === PIECES.find((p) => p.id === pieceId).kid_id);
-const addedBy = (id) => ADDED[id]?.[1] ?? (kidOf(id).family === 'oaks' ? 'oaks' : 'willows');
+const addedBy = (id) => ADDED[id]?.[1] ?? kidOf(id).family;
 const stamp = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
 const ago = (today, minutes) => stamp(new Date(today.getTime() - minutes * 6e4));
 const addedAt = (today, id) => ago(today, ADDED[id]?.[0] ?? 60 * 24 * 90 + id * 60);
 // The name everyone sees for someone, on a piece: as the real Worker names
 // them (namesFor), a kid as the kid, and a parent by their family name on
 // their own family's kids' art. On a shared sign-in, the person who spoke.
-function shown(signin, as, pieceId) {
+// To someone who doesn't see their family, anyone in it is "Family".
+function shown(signin, as, pieceId, who) {
   const s = SIGNINS[signin];
+  const family = s.family ?? (s.kid && KIDS.find((k) => k.id === s.kid).family);
+  if (who && family && who.sees !== null && !who.sees.includes(family)) return { name: 'Family', kid_id: null };
   if (s.kid) return { name: KIDS.find((k) => k.id === s.kid).name, kid_id: s.kid };
   const home = s.family && s.family === kidOf(pieceId).family;
   const name = (p) => (home && p.home) || p.name;
@@ -192,7 +205,7 @@ const COMMENTS = [
   [4, 12, 'jo', '', 1560, 'Crunchy is my new favourite dinosaur.'],
   [5, 12, 'bo', '', 1500, 'He is very hungry'],
   [6, 13, 'nana', '', 1200, 'What a brave sailor! Where’s the island?'],
-  [7, 13, 'oaks', 'Aunt Oak', 1170, 'Love the flag. Can we come sailing too?'],
+  [7, 13, 'pines', 'Aunt Pine', 1170, 'Love the flag. Can we come sailing too?'],
   [8, 13, 'ada', '', 1150, 'I like the flag'],
   [9, 13, 'cy', '', 400, 'Yes! Everybody can come'],
   [10, 18, 'grandma', '', 300, 'One for everybody! Is there one for me?'],
@@ -200,17 +213,20 @@ const COMMENTS = [
   [12, 1, 'pop', '', 180, 'That hat is very like Grandma’s.'],
   [13, 8, 'jo', '', 50, 'Hot! Hot! Hot! made me laugh out loud.'],
   [14, 20, 'cy', '', 20, 'Blub!'],
+  [15, 2, 'dee', '', 15, 'Can you draw my house next?'],
+  [16, 10, 'oaks', '', 12, 'These would cheer anyone up.'],
+  [17, 4, 'nonna', '', 8, 'What a rocket! Save me a seat.'],
 ].map(([id, piece_id, signin, as, minutes, body]) => ({ id, piece_id, signin, as, minutes, body }));
 const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
 // Who gave which stickers to each piece, and when: [kind, who, which of them, minutes ago].
 const GIVEN = [
-  [1, 'heart', 'grandma', '', 3000], [1, 'heart', 'pop', '', 2950], [1, 'heart', 'nana', '', 2000], [1, 'heart', 'jo', '', 1700],
+  [1, 'heart', 'grandma', '', 3000], [1, 'heart', 'pop', '', 2950], [1, 'heart', 'nana', '', 2000], [1, 'heart', 'jo', '', 1700], [1, 'heart', 'nonna', '', 150],
   [3, 'rainbow', 'grandma', '', 590], [3, 'rainbow', 'cy', '', 580],
-  [4, 'star', 'grandma', '', 4300], [4, 'heart', 'grandma', '', 4300], [4, 'star', 'pop', '', 2890], [4, 'wow', 'bo', '', 1400], [4, 'star', 'nana', '', 1190], [4, 'wow', 'cy', '', 600],
+  [4, 'star', 'grandma', '', 4300], [4, 'heart', 'grandma', '', 4300], [4, 'star', 'pop', '', 2890], [4, 'wow', 'bo', '', 1400], [4, 'star', 'nana', '', 1190], [4, 'wow', 'cy', '', 600], [4, 'star', 'nonna', '', 140],
   [8, 'smile', 'jo', '', 50], [8, 'smile', 'bo', '', 30],
   [12, 'wow', 'jo', '', 1555], [12, 'smile', 'pop', '', 1450], [12, 'wow', 'ada', '', 1000],
   [13, 'star', 'nana', '', 1200], [13, 'rainbow', 'grandma', '', 310],
-  [16, 'star', 'oaks', 'Aunt Oak', 2000],
+  [16, 'star', 'pines', 'Aunt Pine', 2000],
   [19, 'heart', 'nana', '', 2900],
   [18, 'heart', 'grandma', '', 300], [18, 'heart', 'dee', '', 230], [18, 'rainbow', 'pop', '', 170], [18, 'rainbow', 'jo', '', 160], [18, 'rainbow', 'ada', '', 90],
   [20, 'smile', 'cy', '', 20], [20, 'smile', 'dee', '', 15],
@@ -218,14 +234,14 @@ const GIVEN = [
 
 function comment(today, who, c) {
   const kid = kidOf(c.piece_id);
-  const by = shown(c.signin, c.as, c.piece_id);
+  const by = shown(c.signin, c.as, c.piece_id, who);
   const mine = c.signin === who.signin;
   return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: ago(today, c.minutes), edited: false, by: by.name, kid_id: by.kid_id, mine, can_remove: mine || (who.canEdit && who.families.includes(kid.family)) };
 }
 const stickersOn = (id, who) =>
   STICKERS.map((kind) => {
     const given = GIVEN.filter((g) => g.piece_id === id && g.kind === kind).sort((a, b) => b.minutes - a.minutes);
-    return { kind, count: given.length, mine: given.filter((g) => g.signin === who.signin).map((g) => g.as), by: given.map((g) => shown(g.signin, g.as, id).name) };
+    return { kind, count: given.length, mine: given.filter((g) => g.signin === who.signin).map((g) => g.as), by: given.map((g) => shown(g.signin, g.as, id, who).name) };
   });
 function me(today, who) {
   const s = SIGNINS[who.signin];
@@ -234,13 +250,13 @@ function me(today, who) {
 }
 function talkSummary(today, who) {
   const counts = {};
-  for (const p of PIECES) {
+  for (const p of seenPieces(who)) {
     const on = COMMENTS.filter((c) => c.piece_id === p.id);
     const stickers = GIVEN.filter((g) => g.piece_id === p.id).length;
     const others = on.filter((c) => c.signin !== who.signin);
     if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: others.length ? ago(today, Math.min(...others.map((c) => c.minutes))) : '' };
   }
-  const latest = [...COMMENTS].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, who, c));
+  const latest = COMMENTS.filter((c) => seesKid(who, kidOf(c.piece_id).id)).sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, who, c));
   return { me: me(today, who), counts, latest };
 }
 const pieceTalk = (today, who, id) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, who, c)), stickers: stickersOn(id, who) });
@@ -249,19 +265,21 @@ const pieceTalk = (today, who, id) => ({ comments: COMMENTS.filter((c) => c.piec
 // (only their own, for a kid), and stickers and comments on their art or
 // their kids', or after they commented. A day's art by one person for one
 // kid is one notification, and so is a day's stickers from one person on one
-// piece. Nothing here is from the current second, so as_of is a second ago.
+// piece. Only about kids they see, and the people in families they don't
+// see are "Family". Nothing here is from the current second, so as_of is a
+// second ago.
 function notifications(today, who) {
   const s = SIGNINS[who.signin];
-  const theirs = s.kid ? [s.kid] : who.canEdit ? KIDS.filter((k) => who.families.includes(k.family)).map((k) => k.id) : [];
+  const theirs = (s.kid ? [s.kid] : who.canEdit ? KIDS.filter((k) => who.families.includes(k.family)).map((k) => k.id) : []).filter((id) => seesKid(who, id));
   const groups = new Map();
   const day = (minutes) => ago(today, minutes).slice(0, 10);
   const base = (pieceId, minutes, signin, as) => {
-    const by = shown(signin, as, pieceId);
+    const by = shown(signin, as, pieceId, who);
     const p = PIECES.find((x) => x.id === pieceId);
     return { at: ago(today, minutes), piece_id: pieceId, kid_id: p.kid_id, title: p.title, by: by.name, by_kid_id: by.kid_id };
   };
   const recent = (minutes) => minutes < 60 * 24 * 60;
-  for (const p of [...PIECES].sort((a, b) => (ADDED[a.id]?.[0] ?? 1e9) - (ADDED[b.id]?.[0] ?? 1e9) || b.id - a.id)) {
+  for (const p of [...seenPieces(who)].sort((a, b) => (ADDED[a.id]?.[0] ?? 1e9) - (ADDED[b.id]?.[0] ?? 1e9) || b.id - a.id)) {
     const minutes = ADDED[p.id]?.[0] ?? 60 * 24 * 90 + p.id * 60;
     if (!recent(minutes) || addedBy(p.id) === who.signin || (s.kid && p.kid_id !== s.kid)) continue;
     const group = `${p.kid_id}:${addedBy(p.id)}:${day(minutes)}`;
@@ -273,7 +291,7 @@ function notifications(today, who) {
     } else groups.set(group, { key: `art:${p.id}`, kind: 'art', ...base(p.id, minutes, addedBy(p.id), ''), count: 1, pieces: [p.id] });
   }
   for (const c of COMMENTS) {
-    if (c.signin === who.signin) continue;
+    if (c.signin === who.signin || !seesKid(who, kidOf(c.piece_id).id)) continue;
     const onTheirs = theirs.includes(kidOf(c.piece_id).id);
     const after = COMMENTS.some((m) => m.piece_id === c.piece_id && m.id < c.id && m.signin === who.signin);
     if (onTheirs || after) groups.set(`c${c.id}`, { key: `comment:${c.id}`, kind: onTheirs ? 'comment' : 'reply', ...base(c.piece_id, c.minutes, c.signin, c.as), body: c.body });

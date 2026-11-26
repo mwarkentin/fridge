@@ -23,7 +23,8 @@ old iPad on the counter. Only family can see it.
   token on every request too, and has no workers.dev address, so there's no
   way around the sign-in. Parents can change things (with families set up,
   only their own family's: see [Families](#families)); everyone else can
-  look.
+  look. Someone in no family can be shown only some families' art (see
+  [Who sees what](#who-sees-what)).
   The one thing anyone can fetch is the app icons in `public/icons/`, since
   iOS fetches Home Screen icons without the sign-in. They're in this repo
   for anyone to see anyway.
@@ -50,8 +51,9 @@ Nothing about the family is in this repo, which is public. See AGENTS.md.
 ## Families
 
 The fridge can hold more than one family's kids. Everyone signed in sees
-everything, but a parent can add, edit, favourite and remove art only for
-their own family's kids, and change only those kids. A kid in no family is
+everything (unless they're shown only some families: see
+[Who sees what](#who-sees-what)), but a parent can add, edit, favourite and
+remove art only for their own family's kids, and change only those kids. A kid in no family is
 any parent's to change, as everything was before families. The page shows
 each parent only what they can change, and the Worker refuses the rest.
 
@@ -59,9 +61,10 @@ Everything about who's who is in one place: infra's
 `fridge_people.auto.tfvars`, which lists each family once, with its name,
 its parents and its kids, and each kid with their birthday. Infra hands
 this repo `PARENT_EMAILS` (every family's parents), `FAMILIES` (each
-family with its parents and kids) and `NAMES` (what everyone but the kids
-is called beside comments, by sign-in address) as Actions secrets, and the
-Deploy workflow gives them to the Worker.
+family with its parents and kids), `NAMES` (what everyone but the kids
+is called beside comments, by sign-in address) and `SEES` (who sees only
+some families) as Actions secrets, and the Deploy workflow gives them to
+the Worker.
 
 - **The kids** are the ones `FAMILIES` lists. The Worker adds a kid it
   doesn't have yet, and copies over a changed birthday or spelling, the
@@ -86,11 +89,48 @@ repo's Deploy workflow. Without `FAMILIES` there are no families, and
 every parent can change everything. Taking a family out of infra's file
 does the same for its kids.
 
+## Who sees what
+
+Everyone signed in sees every family's art, unless infra's file says
+otherwise. Someone in no family, like grandparents on one family's side,
+can be shown only some families: they see those families' kids and art,
+and nothing of the rest. Parents and kids always see everything, so only
+people in no family can be limited.
+
+For someone shown only some families, the others aren't on the fridge:
+
+- not their kids, nor their art, nor its pictures, at any size, even by a
+  picture's own address;
+- not the comments and stickers on their art, nor their place in **Latest
+  comments** and the **New** counts;
+- not the tags only their art has, nor their place on the timeline, in
+  "This time of year" or in Frame.
+
+A piece they don't see answers like one that isn't there. With one family
+to see, the page shows its kids without family names, like a fridge with
+one family.
+
+When someone from a family they don't see (a parent, a kid or a kid's
+iPad) comments on art they do see, or gives it a sticker, it says
+**Family**, not their name. So does anyone whose name has the name of a
+kid they don't see in it ("Cy's Nana"). What a comment says is shown as
+it was written, so a comment that names a kid is seen by everyone who sees
+the art it's on. Pieces and comments are numbered across the whole fridge,
+so the numbers in a picture's address skip the ones they don't see.
+
+Who's shown what comes from infra's file, as `SEES`: each limited sign-in
+address with the ids of the families it sees. Missing or empty, everyone
+sees everything, as before it. To limit someone, list them in infra's file
+as a viewer with the families they see, merge it, then run this repo's
+Deploy workflow, and tell them about the fridge only after that: until the
+deploy, the fridge doesn't know they're limited.
+
 ## Comments and stickers
 
 Everyone signed in can give a piece stickers and comment on it, from the
 piece's own page: grandparents, the kids' iPads, the kids and the parents,
-on either family's art.
+on either family's art (any art they see: see
+[Who sees what](#who-sees-what)).
 
 - **Stickers** are for kids who can't write yet, and anyone in a hurry: a
   heart, a gold star, a sparkly wow, a smiley and a rainbow. One tap gives
@@ -133,7 +173,8 @@ The bell at the top of the page has what's new for whoever's signed in,
 with a red magnet counting what came since they last looked. Tap it to see
 the list, newest first; tap a line to open its piece, at its comments.
 
-- **New art**, from either family, unless you put it up yourself. A day's
+- **New art**, from either family (or only the families you see), unless
+  you put it up yourself. A day's
   art by one person for one kid is one line, so an import of forty is one.
 - **Stickers and comments on your art, or your kids' art**: a parent's kids
   are the ones they look after (their families', and kids in no family),
@@ -145,7 +186,7 @@ the list, newest first; tap a line to open its piece, at its comments.
   by anyone else. It's in big stickers and few words ("Grandma gave your
   “Rocket” a gold star"), for kids who are only starting to read.
 - **Someone who only looks**, like a grandparent, gets new art from all the
-  kids, and replies after they commented.
+  kids they see, and replies after they commented.
 - **A sign-in two people share** is one reader: what's new for either is
   new for both, and read when either looks.
 
@@ -155,7 +196,9 @@ waiting in the bell; when something is, it waits, and so do the walls'
 minute while it's in sight. Nothing is stored for any of this but how far
 each sign-in has caught up: the list is worked out from the art, comments
 and stickers each time, so it follows `FAMILIES` and `NAMES`, and a line
-goes when its piece, comment or sticker does. It shows the last 60 days.
+goes when its piece, comment or sticker does. It's never about a kid
+someone doesn't see, nor names anyone they don't. It shows the last 60
+days.
 
 ## Setting it up
 
@@ -299,7 +342,13 @@ FAMILIES='[{"id":"pine","name":"The Pines","parents":["you@example.com"],"kids":
 and, to see names beside comments (a list for a shared sign-in):
 
 ```sh
-NAMES='{"you@example.com":{"name":"Aunt Pine","family":"Mom"},"gran@example.com":["Grandma","Pop"]}'
+NAMES='{"you@example.com":{"name":"Aunt Pine","family":"Mom"},"gran@example.com":["Grandma","Pop"],"nonna@example.com":"Nonna"}'
+```
+
+and, to show someone only one family:
+
+```sh
+SEES='{"nonna@example.com":["pine"]}'
 ```
 
 Then:
@@ -311,8 +360,8 @@ uv run scripts/fridge.py --url http://localhost:8787 import path/to/some/picture
 ```
 
 `DEV_EMAIL` counts only on localhost and is never deployed. To try the page
-as someone else (a grandparent, or Ada's iPad above), start it as them:
-`npm run dev -- --var DEV_EMAIL:gran@example.com`.
+as someone else (a grandparent, Ada's iPad, or Nonna, who sees only the
+Pines), start it as them: `npm run dev -- --var DEV_EMAIL:gran@example.com`.
 
 ## Previews
 
@@ -322,7 +371,8 @@ on the pull request. It's the branch's page with two made-up families, Ada
 and Bo's and Cy and Dee's, signed in as a parent in the first, and drawings,
 comments, stickers and notifications that `preview/worker.js` makes up.
 Links across the top show it as each kind of person: the parents, a
-grandparent, a kid's iPad and a kid who's an artist. Stickers and
+grandparent, Nonna (a grandparent who sees only the first family), a kid's
+iPad and a kid who's an artist. Stickers and
 comments added there stay in the page until it's reloaded. It has no database,
 bucket or sign-in, so there's nothing private on it, and it refuses every
 change. It's updated on every push and deleted when the pull request

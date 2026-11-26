@@ -1,5 +1,7 @@
 // The public preview (preview/worker.js): two made-up families, nothing
-// private it could reach, and no way to change anything.
+// private it could reach, and no way to change anything. It's seen as a
+// parent in the first family, or, with ?as= on the page's address, as each
+// kind of person, including Nonna, who sees only that family.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -15,7 +17,7 @@ const env = {
         : new Response('a file from public/', { headers: { 'Content-Type': 'text/plain' } }),
   },
 };
-const call = (path, init) => preview.fetch(new Request(`https://fridge-preview-pr-1.example.workers.dev${path}`, { redirect: 'manual', ...init }), env);
+const call = (path, init) => preview.fetch(new Request(`https://fridge-preview-pr-1.example.workers.dev${path}`, init), env);
 
 test('has nothing to reach but the page: no bindings, no imports, no build', () => {
   const toml = readFileSync('preview/wrangler.toml', 'utf8');
@@ -100,7 +102,7 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
   // The same keys as the real Worker's (tests/worker.test.js, COMMENT_KEYS).
   const KEYS = ['body', 'by', 'can_remove', 'created_at', 'edited', 'id', 'kid_id', 'mine', 'piece_id'];
   assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me']);
-  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Aunt Oak', home: 'Mum' }, { name: 'Uncle Oak', home: 'Dad' }], families: ['oaks'], kid: null, kid_id: null, seen: null }, 'a shared sign-in, so the page says which of them it is');
+  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: null }, 'a shared sign-in, so the page says which of them it is');
   assert.match(s.me.seen, TIME);
   assert.equal(s.latest.length, 8);
   assert.deepEqual(s.latest.map((c) => c.id), [...s.latest.map((c) => c.id)].sort((a, b) => b - a), 'newest first');
@@ -127,31 +129,29 @@ test('serves made-up comments and stickers, in the real Worker’s shapes', asyn
   }
   assert.ok(all.some((c) => c.kid_id != null && c.kid_id === pieces.find((p) => p.id === c.piece_id).kid_id), 'an artist answers on their own art');
   assert.ok(all.some((c) => c.kid_id != null && c.kid_id !== pieces.find((p) => p.id === c.piece_id).kid_id), 'and a kid on someone else’s');
-  assert.ok(all.some((c) => c.mine && c.by === 'Aunt Oak'), 'a parent is their name on the other family’s art');
+  assert.ok(all.some((c) => c.mine && c.by === 'Aunt Pine'), 'a parent is their name on the other family’s art');
   assert.doesNotMatch(JSON.stringify({ s, all }), /@/, 'no addresses, even made up');
   assert.equal((await call('/api/pieces/999/comments')).status, 404);
 });
 
 const TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
-const as = (persona, path) => call(path, { headers: { Cookie: `fridge_preview_as=${persona}` } });
+// The page's own requests carry its address, with ?as=, as their Referer.
+const as = (persona, path) => call(path, { headers: { Referer: `https://fridge-preview-pr-1.example.workers.dev/?as=${persona}#home` } });
 
 test('can be seen as each kind of person, from links in its strip', async () => {
   const page = await (await call('/')).text();
   const links = [...page.matchAll(/<a href="\/\?as=([a-z]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(links, ['parents', 'grandma', 'ada', 'dee']);
-  for (const key of links) {
-    const res = await call(`/?as=${key}`);
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get('Location'), '/');
-    assert.match(res.headers.get('Set-Cookie'), new RegExp(`^fridge_preview_as=${key}; Path=/; .*HttpOnly`));
-    assert.match(await (await as(key, '/')).text(), new RegExp(`<a href="/\\?as=${key}"[^>]*aria-current="page"`));
-  }
-  assert.match((await call('/?as=nobody')).headers.get('Set-Cookie'), /^fridge_preview_as=parents;/, 'anyone else is the default');
+  assert.deepEqual(links, ['parents', 'grandma', 'nonna', 'ada', 'dee']);
+  for (const key of links) assert.match(await (await call(`/?as=${key}`)).text(), new RegExp(`<a href="/\\?as=${key}"[^>]*aria-current="page"`));
+  assert.match(page, /<a href="\/\?as=parents"[^>]*aria-current="page"/, 'the parents by default');
+  assert.match(page, />Nonna, who sees only the Pines</);
   const session = async (key) => (await as(key, '/api/session')).json();
   assert.deepEqual(await session('grandma'), { email: 'visitor@example.com', canEdit: false, preview: true, families: [], artist: null });
   assert.deepEqual(await session('ada'), { email: 'visitor@example.com', canEdit: false, preview: true, families: [], artist: null });
   assert.deepEqual(await session('dee'), { email: 'visitor@example.com', canEdit: false, preview: true, families: [], artist: 'Dee' });
-  assert.deepEqual(await session('nobody'), await session('parents'));
+  assert.deepEqual(await session('nobody'), await session('parents'), 'anyone else is the default');
+  // Nothing is remembered: without the page's address, it's the default.
+  assert.deepEqual(await (await call('/api/session')).json(), await session('parents'));
   const me = async (key) => {
     const m = (await (await as(key, '/api/comments')).json()).me;
     return { ...m, seen: m.seen.length };
@@ -168,7 +168,7 @@ test('serves made-up notifications for each kind of person, in the real Worker�
   const KEYS = { art: ['count', 'pieces'], comment: ['body'], reply: ['body'], sticker: ['stickers'] };
   const { kids, pieces } = await (await call('/api/gallery')).json();
   const kidOf = (id) => kids.find((k) => k.id === pieces.find((p) => p.id === id).kid_id);
-  for (const key of ['parents', 'grandma', 'ada', 'dee']) {
+  for (const key of ['parents', 'grandma', 'nonna', 'ada', 'dee']) {
     const n = await (await as(key, '/api/notifications')).json();
     assert.deepEqual(Object.keys(n).sort(), ['as_of', 'items', 'seen', 'unread'], key);
     assert.match(n.as_of, TIME);
@@ -190,9 +190,12 @@ test('serves made-up notifications for each kind of person, in the real Worker�
       for (const kind of ['art', 'comment', 'sticker']) assert.ok(kinds.has(kind), `${key} gets ${kind}`);
     } else if (key === 'grandma') {
       assert.deepEqual([...kinds].sort(), ['art', 'reply'], 'someone who only looks: new art, and replies');
+    } else if (key === 'nonna') {
+      assert.ok(n.items.every((x) => kidOf(x.piece_id).family === 'pines'), 'only the family she sees');
+      assert.doesNotMatch(JSON.stringify(n), OAKS);
     } else {
       for (const kind of ['art', 'comment', 'reply', 'sticker']) assert.ok(kinds.has(kind), `parents get ${kind}`);
-      assert.ok(n.items.filter((x) => x.kind === 'sticker' || x.kind === 'comment').every((x) => kidOf(x.piece_id).family === 'oaks'), 'on their own kids’ art');
+      assert.ok(n.items.filter((x) => x.kind === 'sticker' || x.kind === 'comment').every((x) => kidOf(x.piece_id).family === 'pines'), 'on their own kids’ art');
     }
   }
   // Ada's iPad: a sticker group, and a reply after she commented elsewhere.
@@ -212,4 +215,66 @@ test('says it’s a preview, with the real Worker’s security headers', async (
   for (const res of [page, await call('/img/1/thumb'), await call('/api/gallery'), await call('/app.js')]) {
     for (const h of ['Content-Security-Policy', 'Referrer-Policy', 'X-Content-Type-Options']) assert.equal(res.headers.get(h), real.headers.get(h), h);
   }
+});
+
+// Nonna's page asks with its own address as the Referer, as a browser does.
+const page = 'https://fridge-preview-pr-1.example.workers.dev/?as=nonna';
+const asNonna = (path, init = {}) => call(path, { ...init, headers: { Referer: `${page}#home`, ...init.headers } });
+// Anything that would say who's in the Oaks.
+const OAKS = /\b(Cy|Dee)\b|\boaks?\b|Aunt Oak/i;
+
+test('as Nonna, shows only the first family: its kids, art, tags and pictures', async () => {
+  const all = await (await call('/api/gallery')).json();
+  const g = await (await asNonna('/api/gallery')).json();
+  assert.deepEqual(g.families, [all.families[0]]);
+  assert.deepEqual(g.kids.map((k) => k.name), ['Ada', 'Bo']);
+  assert.ok(g.kids.every((k) => k.family === all.families[0].id));
+  assert.deepEqual(g.pieces, all.pieces.filter((p) => g.kids.some((k) => k.id === p.kid_id)));
+  // Some tags are only on the other family's art (winter, party), so they aren't there.
+  const theirs = new Set(g.pieces.flatMap((p) => p.tags));
+  assert.ok(all.pieces.flatMap((p) => p.tags).filter((t) => !theirs.has(t)).length > 0);
+  assert.ok(!theirs.has('winter') && !theirs.has('party') && theirs.has('animals'));
+  assert.doesNotMatch(JSON.stringify(g), OAKS);
+
+  const session = await (await asNonna('/api/session')).json();
+  assert.deepEqual([session.canEdit, session.families, session.preview], [false, [], true]);
+
+  const missing = await asNonna('/img/999/thumb');
+  for (const p of all.pieces) {
+    const res = await asNonna(`/img/${p.id}/display`);
+    if (g.pieces.some((q) => q.id === p.id)) assert.equal(res.status, 200, `piece ${p.id}`);
+    else assert.deepEqual([res.status, await res.text()], [404, await missing.clone().text()], `piece ${p.id}`);
+  }
+  // Only the page's own address counts.
+  assert.equal((await call('/api/gallery', { headers: { Referer: 'https://elsewhere.example.com/?as=nonna' } }).then((r) => r.json())).kids.length, 4);
+  assert.equal((await call('/api/gallery?as=nonna').then((r) => r.json())).kids.length, 2);
+});
+
+test('as Nonna, shows comments and stickers only on that family’s art, and the other family’s people as Family', async () => {
+  const all = await (await call('/api/gallery')).json();
+  const { pieces } = await (await asNonna('/api/gallery')).json();
+  const s = await (await asNonna('/api/comments')).json();
+  assert.deepEqual({ ...s.me, seen: null }, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null });
+  assert.match(s.me.seen, TIME);
+  assert.ok(Object.keys(s.counts).every((id) => pieces.some((p) => p.id === Number(id))));
+  assert.ok(s.latest.length && s.latest.every((c) => pieces.some((p) => p.id === c.piece_id)));
+  assert.ok(s.latest.some((c) => c.created_at > s.me.seen && !c.mine), 'some are new');
+  let said = [];
+  for (const p of all.pieces) {
+    const res = await asNonna(`/api/pieces/${p.id}/comments`);
+    if (!pieces.some((q) => q.id === p.id)) {
+      assert.equal(res.status, 404, `piece ${p.id}`);
+      continue;
+    }
+    const { comments, stickers } = await res.json();
+    for (const c of comments) assert.equal(c.can_remove, c.mine, 'she removes only her own');
+    said = said.concat(comments, stickers);
+  }
+  const words = JSON.stringify({ s, said });
+  assert.doesNotMatch(words, OAKS);
+  assert.match(words, /"by":"Family","kid_id":null/, 'a kid from the other family, on her family’s art');
+  assert.ok(said.some((x) => Array.isArray(x.by) && x.by.includes('Family')), 'and their stickers');
+  assert.ok(said.some((c) => c.by === 'Nonna' && c.mine && c.can_remove), 'her own');
+  // To the parents, they're who they are.
+  assert.match(JSON.stringify((await (await call('/api/comments')).json()).latest), /"by":"Aunt Oak"/);
 });
