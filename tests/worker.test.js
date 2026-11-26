@@ -981,3 +981,237 @@ test('a kid’s devices in FAMILIES are checked like the rest of it', async (t) 
   const parentToo = { ...familyEnv(TALK_FAMILIES), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${ADA_IPAD}` };
   assert.deepEqual((await call('/api/comments', { as: ADA_IPAD, localEnv: parentToo }).then((r) => r.json())).me, { names: [], families: [], kid: null, kid_id: null, seen: null });
 });
+
+// ---- Who sees what ----
+// Nonna is a grandparent on the Pines' side (SEES lists her with the Pines
+// only): she sees Ada and Bo, and nothing of the Oaks or of Di, a kid in no
+// family. Gran, a grandparent who isn't listed, sees everything, as do the
+// parents in either family, Dee (an artist) and Ada's iPad. Without SEES,
+// Nonna sees everything too, as everyone did before it. Cy's Nana's name
+// says a kid's name Nonna doesn't see.
+const NONNA = 'nonna@example.com';
+const CY_NANA = 'cys.nana@example.com';
+const SEE_NAMES = { ...NAMES, [NONNA]: 'Nonna', [CY_NANA]: 'Cy’s Nana' };
+const seeEnv = (sees = { [NONNA]: ['pine'] }) => ({ ...talkEnv(SEE_NAMES), SEES: JSON.stringify(sees) });
+const unrestricted = () => ({ ...talkEnv(SEE_NAMES), SEES: undefined });
+const s = (path, opts = {}) => call(path, { localEnv: seeEnv(), ...opts });
+const EVERYONE_ELSE = [GRAN, PINE, OAK, BOTH, DEE, ADA_IPAD];
+// Anything that would say who's in the families Nonna doesn't see.
+const HIDDEN = /\b(Cy|Dee|Di)\b|\boaks?\b|Oak Dad|@/i;
+
+test('someone SEES lists sees only those families: their kids, art, tags and pictures', async () => {
+  await clean();
+  // A tag only the Oaks' art has, and one both families' art has.
+  assert.equal((await s(`/api/pieces/${tp.Cy}`, { as: OAK, method: 'PATCH', json: { tags: ['boats', 'shared'] } })).status, 200);
+  assert.equal((await s(`/api/pieces/${tp.Ada}`, { as: PINE, method: 'PATCH', json: { tags: ['shared'] } })).status, 200);
+
+  const gallery = async (as, localEnv = seeEnv()) => (await call('/api/gallery', { as, localEnv })).json();
+  const nonna = await gallery(NONNA);
+  assert.deepEqual(nonna.families, [{ id: 'pine', name: 'The Pines' }]);
+  assert.deepEqual(nonna.kids.map((k) => k.name), ['Ada', 'Bo']);
+  assert.ok(nonna.pieces.length && nonna.pieces.every((p) => p.kid_id === fk.Ada || p.kid_id === fk.Bo), 'only their art');
+  assert.ok(nonna.pieces.some((p) => p.id === tp.Ada) && !nonna.pieces.some((p) => [tp.Cy, tp.Dee, tp.Di].includes(p.id)));
+  const tags = new Set(nonna.pieces.flatMap((p) => p.tags));
+  assert.ok(tags.has('shared') && !tags.has('boats'), 'tags only the Oaks’ art has aren’t there');
+  assert.deepEqual(nonna.mine, []);
+  assert.doesNotMatch(JSON.stringify(nonna), HIDDEN);
+  // She's a viewer like any other, and the page isn't told who sees what.
+  assert.deepEqual(await (await s('/api/session', { as: NONNA })).json(), { email: NONNA, canEdit: false, families: [], artist: null });
+
+  // Everyone else sees every family and kid, and so does Nonna without SEES.
+  const all = await gallery(GRAN, unrestricted());
+  assert.deepEqual(all.kids.map((k) => k.name).sort(), ['Ada', 'Bo', 'Cy', 'Dee', 'Di']);
+  assert.equal(all.families.length, 2);
+  for (const as of EVERYONE_ELSE) {
+    const g = await gallery(as);
+    assert.deepEqual([g.families, g.kids, g.pieces], [all.families, all.kids, all.pieces], as);
+  }
+  const before = await gallery(NONNA, unrestricted());
+  assert.deepEqual([before.families, before.kids, before.pieces], [all.families, all.kids, all.pieces], 'no SEES: everything');
+  for (const SEES of [undefined, '', ' ', '{}']) assert.equal((await gallery(NONNA, { ...seeEnv(), SEES })).kids.length, 5, String(SEES));
+
+  // Pictures: every size, even by their address, are as if they weren't there.
+  const missing = await s('/img/99999/thumb', { as: NONNA });
+  assert.equal(missing.status, 404);
+  const nothing = [missing.headers.get('Content-Type'), await missing.text()];
+  for (const id of [tp.Cy, tp.Dee, tp.Di]) {
+    for (const variant of ['thumb', 'display', 'original']) {
+      const res = await s(`/img/${id}/${variant}`, { as: NONNA });
+      assert.equal(res.status, 404, `${id} ${variant}`);
+      assert.deepEqual([res.headers.get('Content-Type'), await res.text()], nothing);
+      assert.equal(res.headers.get('Content-Disposition'), null);
+      assert.equal((await s(`/img/${id}/${variant}`, { as: NONNA, method: 'HEAD' })).status, 404);
+      for (const as of EVERYONE_ELSE) assert.equal((await s(`/img/${id}/${variant}`, { as })).status, 200, `${as}: ${id} ${variant}`);
+      assert.equal((await call(`/img/${id}/${variant}`, { as: NONNA, localEnv: unrestricted() })).status, 200, 'no SEES');
+    }
+  }
+  for (const variant of ['thumb', 'display', 'original']) assert.equal((await s(`/img/${tp.Ada}/${variant}`, { as: NONNA })).status, 200);
+
+  // Seeing both families is everything but kids in no family.
+  const both = await gallery(NONNA, seeEnv({ [NONNA]: ['oak', 'pine'] }));
+  assert.deepEqual(both.kids.map((k) => k.name).sort(), ['Ada', 'Bo', 'Cy', 'Dee']);
+  assert.equal(both.families.length, 2);
+  // Addresses and ids are read as everywhere else.
+  assert.deepEqual((await gallery(NONNA, seeEnv({ 'Nonna@Example.com ': [' pine ', 'pine'] }))).kids.map((k) => k.name), ['Ada', 'Bo']);
+});
+
+test('comments and stickers on art someone doesn’t see aren’t there for them, and its people aren’t named', async () => {
+  await clean();
+  const noSees = unrestricted();
+  // Said before SEES listed Nonna, on what she no longer sees.
+  const oldOnCy = (await (await call(`/api/pieces/${tp.Cy}/comments`, { as: NONNA, method: 'POST', json: { body: 'Old news' }, localEnv: noSees })).json()).comment;
+  assert.equal((await call(`/api/pieces/${tp.Dee}/stickers/heart`, { as: NONNA, method: 'POST', localEnv: noSees })).status, 200);
+
+  const post = async (as, piece, body) => {
+    const res = await s(`/api/pieces/${piece}/comments`, { as, method: 'POST', json: { body } });
+    assert.equal(res.status, 201, `${as} on ${piece}`);
+    return (await res.json()).comment;
+  };
+  const fromGran = await post(GRAN, tp.Ada, 'Gorgeous colours');
+  const fromDee = await post(DEE, tp.Ada, 'I like the purple'); // an artist in the Oaks
+  const fromOak = await post(OAK, tp.Bo, 'So cheerful'); // a parent in the Oaks
+  const fromBoth = await post(BOTH, tp.Ada, 'From a parent in both');
+  const fromCyNana = await post(CY_NANA, tp.Ada, 'Wonderful');
+  const fromIpad = await post(ADA_IPAD, tp.Ada, 'I made it');
+  const fromNonna = await post(NONNA, tp.Ada, 'Bellissimo');
+  for (const as of [GRAN, DEE, OAK]) assert.equal((await s(`/api/pieces/${tp.Ada}/stickers/star`, { as, method: 'POST' })).status, 200);
+  const onCy = await post(GRAN, tp.Cy, 'The newest of all');
+  await s(`/api/pieces/${tp.Cy}/stickers/wow`, { as: GRAN, method: 'POST' });
+
+  // What she sees on the Pines' art: grown-ups and kids in the Oaks only are
+  // Family, and so is anyone whose name says a kid she doesn't see.
+  const onAda = await (await s(`/api/pieces/${tp.Ada}/comments`, { as: NONNA })).json();
+  const by = (c) => onAda.comments.find((x) => x.id === c.id);
+  assert.deepEqual([fromGran, fromDee, fromBoth, fromCyNana, fromIpad, fromNonna].map((c) => [by(c).by, by(c).kid_id]), [
+    ['Gran', null],
+    ['Family', null],
+    ['both', null],
+    ['Family', null],
+    ['Ada', fk.Ada],
+    ['Nonna', null],
+  ]);
+  assert.deepEqual([by(fromNonna).mine, by(fromNonna).can_remove, by(fromGran).can_remove], [true, true, false]);
+  assert.deepEqual(onAda.stickers.find((x) => x.kind === 'star').by, ['Gran', 'Family', 'Family']);
+  assert.equal((await (await s(`/api/pieces/${tp.Bo}/comments`, { as: NONNA })).json()).comments.find((c) => c.id === fromOak.id).by, 'Family');
+  // To everyone else they're who they are.
+  for (const as of [GRAN, PINE, DEE]) {
+    const theirs = await (await s(`/api/pieces/${tp.Ada}/comments`, { as })).json();
+    const of = (c) => theirs.comments.find((x) => x.id === c.id);
+    assert.deepEqual([of(fromDee).by, of(fromDee).kid_id, of(fromCyNana).by], ['Dee', fk.Dee, 'Cy’s Nana'], as);
+    assert.deepEqual(theirs.stickers.find((x) => x.kind === 'star').by, ['Gran', 'Dee', 'Oak Dad'], as);
+  }
+  // And to Nonna too, without SEES.
+  assert.equal((await (await call(`/api/pieces/${tp.Ada}/comments`, { as: NONNA, localEnv: noSees })).json()).comments.find((c) => c.id === fromDee.id).by, 'Dee');
+
+  // The whole page's: counts, Latest comments and the newest comment, only on the Pines' art.
+  const summary = async (as, localEnv = seeEnv()) => (await call('/api/comments', { as, localEnv })).json();
+  const hers = await summary(NONNA);
+  assert.deepEqual(Object.keys(hers.counts).map(Number).sort((a, b) => a - b), [tp.Ada, tp.Bo]);
+  assert.deepEqual(hers.counts[tp.Ada], { comments: 6, stickers: 3, newest: fromIpad.id });
+  assert.ok(hers.latest.length && hers.latest.every((c) => c.piece_id === tp.Ada || c.piece_id === tp.Bo));
+  assert.equal(hers.newest, fromNonna.id, 'not the newest on art she doesn’t see');
+  assert.deepEqual(hers.me, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null });
+  for (const as of EVERYONE_ELSE) {
+    const theirs = await summary(as);
+    assert.equal(theirs.newest, onCy.id, as);
+    assert.deepEqual([theirs.counts[tp.Cy], theirs.counts[tp.Dee]?.stickers], [{ comments: 2, stickers: 1, newest: as === GRAN ? oldOnCy.id : onCy.id }, 1], as);
+    assert.equal(theirs.latest[0].id, onCy.id, as);
+  }
+  assert.equal((await summary(NONNA, noSees)).newest, onCy.id, 'no SEES: everything');
+  assert.equal((await s('/api/me', { as: NONNA, method: 'PATCH', json: { seen: hers.newest } })).status, 200);
+
+  // A piece she doesn't see is one that isn't there, whatever's asked of it,
+  // her own old comment and sticker included: 404, and the same words.
+  const asked = [
+    ['GET', (id) => `/api/pieces/${id}/comments`],
+    ['POST', (id) => `/api/pieces/${id}/comments`, { body: 'Hello?' }],
+    ['POST', (id) => `/api/pieces/${id}/stickers/heart`],
+    ['DELETE', (id) => `/api/pieces/${id}/stickers/heart`],
+  ];
+  for (const [method, path, json] of asked) {
+    const gone = await s(path(99999), { as: NONNA, method, json });
+    assert.equal(gone.status, 404, `${method} ${path(99999)}`);
+    const words = await errorOf(gone);
+    for (const id of [tp.Cy, tp.Dee, tp.Di]) {
+      const res = await s(path(id), { as: NONNA, method, json });
+      assert.deepEqual([res.status, await errorOf(res)], [404, words], `${method} ${path(id)}`);
+    }
+  }
+  for (const [method, json] of [['PATCH', { body: 'Changed' }], ['DELETE']]) {
+    const gone = await s('/api/comments/99999', { as: NONNA, method, json });
+    const words = [gone.status, await errorOf(gone)];
+    assert.equal(words[0], 404);
+    for (const c of [oldOnCy, onCy]) {
+      const res = await s(`/api/comments/${c.id}`, { as: NONNA, method, json });
+      assert.deepEqual([res.status, await errorOf(res)], words, `${method} ${c.id}`);
+    }
+  }
+  assert.equal((await (await s(`/api/pieces/${tp.Cy}/comments`, { as: GRAN })).json()).comments.length, 2, 'still there for everyone else');
+  assert.equal((await (await s(`/api/pieces/${tp.Dee}/comments`, { as: GRAN })).json()).stickers.find((x) => x.kind === 'heart').count, 1);
+  // Without SEES, her own are hers again.
+  assert.equal((await call(`/api/comments/${oldOnCy.id}`, { as: NONNA, method: 'PATCH', json: { body: 'Still old news' }, localEnv: noSees })).status, 200);
+
+  // Nothing she's sent says who's in the families she doesn't see. (Her
+  // session, with her own address, is checked above.)
+  const everything = [
+    await (await s('/api/gallery', { as: NONNA })).text(),
+    await (await s('/api/comments', { as: NONNA })).text(),
+    ...(await Promise.all([tp.Ada, tp.Bo].map(async (id) => (await s(`/api/pieces/${id}/comments`, { as: NONNA })).text()))),
+  ];
+  for (const body of everything) assert.doesNotMatch(body, HIDDEN);
+});
+
+test('someone who sees only some families changes nothing, and a piece they don’t see is no different from one that isn’t there', async () => {
+  for (const [method, json] of [['PATCH', { favourite: true }], ['DELETE']]) {
+    const answers = [];
+    for (const id of [tp.Ada, tp.Cy, 99999]) {
+      const res = await s(`/api/pieces/${id}`, { as: NONNA, method, json });
+      answers.push([res.status, await errorOf(res)]);
+    }
+    assert.equal(answers[0][0], 403);
+    assert.deepEqual(answers, [answers[0], answers[0], answers[0]], method);
+  }
+  assert.equal((await s('/api/pieces', { as: NONNA, method: 'POST', form: pieceForm({ kid_id: fk.Cy, made: '2025-09-01' }) })).status, 403);
+  // The importer's routes are parents', and parents see every family.
+  assert.equal((await s('/api/imported', { as: NONNA })).status, 403);
+  assert.equal((await s('/api/skipped', { as: NONNA, method: 'POST', json: { add: ['e'.repeat(64)] } })).status, 403);
+  for (const as of [PINE, OAK]) {
+    const { hashes } = await (await s('/api/imported', { as })).json();
+    assert.deepEqual(hashes, (await (await call('/api/imported', { as, localEnv: unrestricted() })).json()).hashes, as);
+  }
+  // A parent's and an artist's rights are as they were.
+  assert.equal((await s(`/api/pieces/${tp.Cy}`, { as: OAK, method: 'PATCH', json: { title: 'Cy’s talk piece' } })).status, 200);
+  assert.equal((await s(`/api/pieces/${tp.Cy}`, { as: PINE, method: 'PATCH', json: { title: 'Nope' } })).status, 403);
+  assert.equal((await s(`/api/pieces/${tp.Dee}`, { as: DEE, method: 'PATCH', json: { title: 'Nope' } })).status, 403);
+});
+
+test('a SEES that can’t be read turns everyone away', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const broken = [
+    '{',
+    '[]',
+    '["pine"]',
+    JSON.stringify({ 'not an address': ['pine'] }),
+    JSON.stringify({ [NONNA]: [] }),
+    JSON.stringify({ [NONNA]: 'pine' }),
+    JSON.stringify({ [NONNA]: ['willow'] }), // no such family
+    JSON.stringify({ [NONNA]: [7] }),
+    JSON.stringify({ [NONNA]: ['pine'], 'NONNA@example.com': ['oak'] }),
+    JSON.stringify({ [PINE]: ['pine'] }), // a parent
+    JSON.stringify({ [LONER]: ['pine'] }), // a parent in no family
+    JSON.stringify({ [NAMED_ONLY]: ['oak'] }), // named in a family's parents
+    JSON.stringify({ [DEE]: ['oak'] }), // an artist
+    JSON.stringify({ [ADA_IPAD]: ['pine'] }), // a kid's iPad
+  ];
+  for (const SEES of broken) {
+    for (const as of [NONNA, GRAN, PINE]) {
+      for (const path of ['/api/session', '/api/gallery', `/img/${tp.Ada}/thumb`, '/']) {
+        const res = await call(path, { as, localEnv: { ...seeEnv(), SEES } });
+        assert.equal(res.status, 503, `${SEES} as ${as}: ${path}`);
+      }
+    }
+  }
+  // Families it names that FAMILIES no longer has.
+  assert.equal((await call('/api/gallery', { as: GRAN, localEnv: { ...seeEnv(), FAMILIES: undefined } })).status, 503);
+  assert.equal((await call('/api/gallery', { as: GRAN, localEnv: { ...seeEnv(), FAMILIES: JSON.stringify([OAKS]) } })).status, 503);
+});

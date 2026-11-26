@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName } from './auth.js';
+import { canChangeKid, canSee, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName, seesEverything, seesFamily } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -63,7 +63,7 @@ async function handle(request, env) {
     const img = url.pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
     if (img) {
       if (request.method !== 'GET' && request.method !== 'HEAD') throw new HttpError(405, 'Images can only be fetched.');
-      return await image(env, Number(img[1]), img[2]);
+      return await image(env, who, Number(img[1]), img[2]);
     }
     return await env.ASSETS.fetch(request);
   } catch (e) {
@@ -106,15 +106,15 @@ async function api(request, env, who, url) {
     const id = Number(m[1]);
     if (method === 'PATCH') {
       const fields = pieceFields(await body(request), true);
-      const piece = await pieceOwner(env, id);
+      const piece = await pieceOwner(env, who, id);
       mayChange(who, piece);
       // Moving it to another kid needs rights over both.
-      if ('kid_id' in fields && fields.kid_id !== piece.kid.id) mayAddFor(who, await kidById(env, fields.kid_id));
+      if ('kid_id' in fields && fields.kid_id !== piece.kid.id) mayAddFor(who, await kidById(env, who, fields.kid_id));
       await update(env, 'pieces', id, fields);
       return json({ ok: true });
     }
     if (method === 'DELETE') {
-      mayChange(who, await pieceOwner(env, id));
+      mayChange(who, await pieceOwner(env, who, id));
       await deletePiece(env, id);
       return new Response(null, { status: 204 });
     }
@@ -122,18 +122,22 @@ async function api(request, env, who, url) {
   throw new HttpError(404, 'There’s nothing at that address.');
 }
 
-// `mine` lists the pieces an artist added, which they can change.
+// The families, kids and pieces this person sees (canSee): for someone who
+// sees only some families, the rest aren't there, so neither are their tags,
+// their place on the timeline, nor Frame's slides. `mine` lists the pieces an
+// artist added, which they can change.
 async function gallery(env, who) {
   const families = readFamilies(env);
-  const kids = (await syncKids(env, families)).map((k) => ({ ...k, family: familyOf(families, k) }));
+  const kids = (await syncKids(env, families)).map((k) => ({ ...k, family: familyOf(families, k) })).filter((k) => canSee(who, k));
+  const seen = new Set(kids.map((k) => k.id));
   const rows = (
     await env.DB.prepare(
       'SELECT id, kid_id, made, made_precision, title, story, medium, tags, favourite, width, height, source_name, created_at FROM pieces ORDER BY made DESC, id DESC',
     ).all()
-  ).results;
+  ).results.filter((p) => seen.has(p.kid_id));
   const pieces = rows.map(({ tags, favourite, ...p }) => ({ ...p, tags: JSON.parse(tags), favourite: Boolean(favourite) }));
   const mine = who.artist ? (await env.DB.prepare('SELECT id FROM pieces WHERE added_by = ?').bind(who.email).all()).results.map((r) => r.id) : [];
-  return { kids, pieces, families: families.map(({ id, name }) => ({ id, name })), mine };
+  return { kids, pieces, families: families.filter((f) => seesFamily(who, f.id)).map(({ id, name }) => ({ id, name })), mine };
 }
 
 // ---- Validation ----
@@ -228,17 +232,45 @@ async function findKid(env, id) {
   const kid = await env.DB.prepare('SELECT id, name FROM kids WHERE id = ?').bind(id).first();
   return kid && { ...kid, family: familyOf(readFamilies(env), kid) };
 }
-// The kid with that id, or a 400: they were named in what was sent.
-async function kidById(env, id) {
+// The kid with that id, or a 400: they were named in what was sent. A kid
+// this person doesn't see (canSee) isn't there for them either.
+async function kidById(env, who, id) {
   const kid = await findKid(env, id);
-  if (!kid) bad('There’s no kid with that id.');
+  if (!kid || !canSee(who, kid)) bad('There’s no kid with that id.');
   return kid;
 }
-// A piece's kid, and who added it.
-async function pieceOwner(env, pieceId) {
+
+// ---- Who sees what ----
+// canSee (auth.js) decides; these apply it. Someone who sees only some
+// families gets the same answer about the others' kids, pieces, pictures,
+// comments and stickers as about ones that aren't on the fridge at all:
+// a 404 where a piece is named, and nothing in a list.
+
+// The kids this person sees, by id, each with their family, and `only`:
+// their ids as JSON, to bind for SQL (seenSql), or null for someone who sees
+// every kid.
+async function seenKids(env, who) {
+  const families = readFamilies(env);
+  const rows = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
+  const kids = new Map(rows.map((k) => [k.id, { ...k, family: familyOf(families, k) }]).filter(([, k]) => canSee(who, k)));
+  return { kids, only: seesEverything(who) ? null : JSON.stringify([...kids.keys()]) };
+}
+// A WHERE condition keeping the rows of pieces (`p`) this person sees, with
+// seenKids' `only` bound to parameter n.
+const seenSql = (n) => `(?${n} IS NULL OR p.kid_id IN (SELECT value FROM json_each(?${n})))`;
+
+// A piece's kid, and who added it, or null if it isn't on the fridge or this
+// person doesn't see it.
+async function seenPiece(env, who, pieceId) {
   const row = await env.DB.prepare('SELECT kid_id, added_by FROM pieces WHERE id = ?').bind(pieceId).first();
-  if (!row) throw new HttpError(404, 'That isn’t on the fridge.');
-  return { kid: await kidById(env, row.kid_id), addedBy: row.added_by };
+  const kid = row && (await findKid(env, row.kid_id));
+  return kid && canSee(who, kid) ? { kid, addedBy: row.added_by } : null;
+}
+// The same, or a 404.
+async function pieceOwner(env, who, pieceId) {
+  const piece = await seenPiece(env, who, pieceId);
+  if (!piece) throw new HttpError(404, 'That isn’t on the fridge.');
+  return piece;
 }
 
 // The rules (auth.js), as refusals. A parent can add and change a kid's art
@@ -288,7 +320,7 @@ async function addPiece(env, who, request) {
   }
   if (!meta || typeof meta !== 'object') bad('The piece’s details are missing.');
   const fields = pieceFields(meta, false);
-  mayAddFor(who, await kidById(env, fields.kid_id));
+  mayAddFor(who, await kidById(env, who, fields.kid_id));
   const width = int(meta.width, 'width');
   const height = int(meta.height, 'height');
 
@@ -380,12 +412,19 @@ async function deletePiece(env, id) {
 // other can too: the fridge can't tell them apart. Someone NAMES doesn't
 // list shows as the part of their address before the @. The page gets
 // names, never addresses.
+//
+// Someone who sees only some families (SEES) gets nothing about the others:
+// no comments or stickers on their art, nor counts, nor a place in Latest
+// comments. What the others' people say on art they do see is there, from
+// FAMILY: never a kid's name they don't see, nor a hidden family's parents'
+// names, which can carry one ("Cy's mum").
 const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
 const COMMENT_MAX = 500; // characters: a few sentences
 const RATE_COUNT = 10; // comments per sign-in...
 const RATE_MINUTES = 10; // ...in this many minutes
 const PIECE_MAX = 200; // comments a piece can hold
 const COMMENT_COLS = 'id, piece_id, author, name, body, created_at, edited_at';
+const FAMILY = 'Family'; // who someone is, to a person who doesn't see their family
 
 async function talk(request, env, who, url) {
   const { method } = request;
@@ -440,12 +479,16 @@ function speaker(env, who, as) {
 // it; and anyone else is the part of their address before the @. On a
 // shared sign-in, it's the person who spoke, or, for what was said before
 // NAMES listed them, all of them.
-async function namesFor(env) {
+//
+// To someone who sees only some families, everyone in only the others (their
+// parents, kids and kids' devices) is FAMILY, and so is anyone whose name
+// would say the name of a kid they don't see.
+async function namesFor(env, who) {
   const kidsByAddress = kidAddresses(env);
   const names = readNames(env);
   const families = readFamilies(env);
   const kids = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
-  return (r, family = null) => {
+  const label = (r, family) => {
     const kidName = kidsByAddress.get(r.author);
     if (kidName) {
       const kid = kids.find((k) => sameName(k.name, kidName));
@@ -457,12 +500,38 @@ async function namesFor(env) {
     const spoke = r.name && people.find((p) => sameName(p.name, r.name));
     return { name: spoke ? shown(spoke) : r.name || people.map(shown).join(' & ') || r.author.split('@')[0], kid_id: null };
   };
+  if (seesEverything(who)) return (r, family = null) => label(r, family);
+  const strangers = unseenPeople(families, who);
+  const unseenKids = [...kids.filter((k) => !canSee(who, { family: familyOf(families, k) })), ...families.filter((f) => !seesFamily(who, f.id)).flatMap((f) => f.kids)].map((k) => k.name);
+  return (r, family = null) => {
+    const by = strangers.has(r.author) ? null : label(r, family);
+    return by && !unseenKids.some((n) => mentions(by.name, n)) ? by : { name: FAMILY, kid_id: null };
+  };
+}
+
+// The addresses of everyone in a family (its parents, its kids' own and
+// their devices') who's in none of the families this person sees.
+function unseenPeople(families, who) {
+  const member = new Map();
+  for (const f of families) {
+    for (const address of [...f.parents, ...f.kids.flatMap((k) => [k.artist, ...k.devices])]) if (address) member.set(address, [...(member.get(address) || []), f.id]);
+  }
+  return new Set([...member].filter(([, ids]) => !ids.some((id) => seesFamily(who, id))).map(([address]) => address));
+}
+
+// Whether `text` has `name` in it as words, ignoring case and accents:
+// "Cy’s Nana" has Cy, "Cyril" doesn't.
+const words = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+function mentions(text, name) {
+  const t = words(text);
+  const n = words(name);
+  return n.length > 0 && t.some((_, i) => n.every((w, j) => t[i + j] === w));
 }
 
 // Comments as the page gets them. `kidFor` gives each one's piece's kid, for
 // whether this person may remove it.
 async function commentsOut(env, who, rows, kidFor) {
-  const label = await namesFor(env);
+  const label = await namesFor(env, who);
   return rows.map((r) => {
     const kid = kidFor(r);
     const by = label(r, kid?.family);
@@ -476,7 +545,7 @@ async function commentsOut(env, who, rows, kidFor) {
 // for anyone else's sign-in.
 async function stickersOut(env, who, pieceId, kid) {
   const rows = (await env.DB.prepare('SELECT sticker, author, name FROM stickers WHERE piece_id = ? ORDER BY created_at, rowid').bind(pieceId).all()).results;
-  const label = await namesFor(env);
+  const label = await namesFor(env, who);
   return STICKERS.map((kind) => {
     const given = rows.filter((r) => r.sticker === kind);
     return { kind, count: given.length, mine: given.filter((r) => r.author === who.email).map((r) => r.name), by: given.map((r) => label(r, kid?.family).name) };
@@ -490,36 +559,31 @@ async function stickersOut(env, who, pieceId, kid) {
 // page has shown them.
 async function me(env, who) {
   const row = await env.DB.prepare('SELECT seen FROM people WHERE email = ?').bind(who.email).first();
-  const by = (await namesFor(env))({ author: who.email, name: '' });
+  const by = (await namesFor(env, who))({ author: who.email, name: '' });
   const people = who.kid ? [] : readNames(env).get(who.email) || [];
   return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
 }
 
-async function kidsById(env) {
-  const families = readFamilies(env);
-  const rows = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
-  return new Map(rows.map((k) => [k.id, { ...k, family: familyOf(families, k) }]));
-}
-
 // For the whole page: comments and stickers on each piece (`newest` is the
 // id of its newest comment from another sign-in, for marking it new), the
-// latest comments anywhere, and the newest comment's id.
+// latest comments anywhere, and the newest comment's id: all of them only on
+// the pieces this person sees.
 async function talkSummary(env, who) {
+  const { kids, only } = await seenKids(env, who);
   const [counts, stickers, latest, newest] = await env.DB.batch([
-    env.DB.prepare('SELECT piece_id, COUNT(*) AS n, MAX(CASE WHEN author != ? THEN id END) AS other FROM comments GROUP BY piece_id').bind(who.email),
-    env.DB.prepare('SELECT piece_id, COUNT(*) AS n FROM stickers GROUP BY piece_id'),
-    env.DB.prepare(`SELECT ${COMMENT_COLS.split(', ').map((c) => `c.${c}`).join(', ')}, p.kid_id FROM comments c JOIN pieces p ON p.id = c.piece_id ORDER BY c.id DESC LIMIT 8`),
-    env.DB.prepare('SELECT MAX(id) AS id FROM comments'),
+    env.DB.prepare(`SELECT c.piece_id, COUNT(*) AS n, MAX(CASE WHEN c.author != ?1 THEN c.id END) AS other FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(2)} GROUP BY c.piece_id`).bind(who.email, only),
+    env.DB.prepare(`SELECT s.piece_id, COUNT(*) AS n FROM stickers s JOIN pieces p ON p.id = s.piece_id WHERE ${seenSql(1)} GROUP BY s.piece_id`).bind(only),
+    env.DB.prepare(`SELECT ${COMMENT_COLS.split(', ').map((c) => `c.${c}`).join(', ')}, p.kid_id FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(1)} ORDER BY c.id DESC LIMIT 8`).bind(only),
+    env.DB.prepare(`SELECT MAX(c.id) AS id FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(1)}`).bind(only),
   ]);
   const byPiece = {};
   for (const r of counts.results) byPiece[r.piece_id] = { comments: r.n, stickers: 0, newest: r.other ?? 0 };
   for (const r of stickers.results) (byPiece[r.piece_id] ||= { comments: 0, stickers: 0, newest: 0 }).stickers = r.n;
-  const kids = await kidsById(env);
   return { me: await me(env, who), newest: newest.results[0]?.id ?? 0, counts: byPiece, latest: await commentsOut(env, who, latest.results, (r) => kids.get(r.kid_id)) };
 }
 
 async function pieceTalk(env, who, pieceId) {
-  const { kid } = await pieceOwner(env, pieceId);
+  const { kid } = await pieceOwner(env, who, pieceId);
   const rows = (await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE piece_id = ? ORDER BY id`).bind(pieceId).all()).results;
   return { comments: await commentsOut(env, who, rows, () => kid), stickers: await stickersOut(env, who, pieceId, kid) };
 }
@@ -537,7 +601,7 @@ function commentText(v) {
 }
 
 async function addComment(env, who, pieceId, b) {
-  const { kid } = await pieceOwner(env, pieceId);
+  const { kid } = await pieceOwner(env, who, pieceId);
   const text = commentText(b.body);
   const name = speaker(env, who, b.as);
   // In one statement, so two at once can't both slip under a limit. The
@@ -559,27 +623,28 @@ async function addComment(env, who, pieceId, b) {
   return (await commentsOut(env, who, [row], () => kid))[0];
 }
 
-async function commentRow(env, id) {
+// A comment and its piece's kid, or a 404: for one that isn't there, and for
+// one on a piece this person doesn't see, before anything says whose it is.
+async function commentRow(env, who, id) {
   const row = await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE id = ?`).bind(id).first();
-  if (!row) throw new HttpError(404, 'That comment isn’t there any more.');
-  return row;
+  const piece = row && (await seenPiece(env, who, row.piece_id));
+  if (!piece) throw new HttpError(404, 'That comment isn’t there any more.');
+  return { row, kid: piece.kid };
 }
 
 // Only its author can reword a comment: nobody puts words in anyone's mouth.
 // On a shared sign-in, that's either of them.
 async function editComment(env, who, id, b) {
-  const row = await commentRow(env, id);
+  const { row, kid } = await commentRow(env, who, id);
   if (row.author !== who.email) throw new HttpError(403, 'You can change only what you wrote yourself.');
   const text = commentText(b.body);
   if (text !== row.body) await env.DB.prepare("UPDATE comments SET body = ?, edited_at = datetime('now') WHERE id = ?").bind(text, id).run();
-  const { kid } = await pieceOwner(env, row.piece_id);
-  return (await commentsOut(env, who, [await commentRow(env, id)], () => kid))[0];
+  return (await commentsOut(env, who, [(await commentRow(env, who, id)).row], () => kid))[0];
 }
 
 async function removeComment(env, who, id) {
-  const row = await commentRow(env, id);
+  const { row, kid } = await commentRow(env, who, id);
   if (row.author !== who.email) {
-    const { kid } = await pieceOwner(env, row.piece_id);
     if (!canChangeKid(who, kid)) {
       throw new HttpError(403, who.canEdit ? `Only ${kid.name}’s family’s parents can remove other people’s comments on ${kid.name}’s art.` : 'You can remove only what you wrote yourself.');
     }
@@ -589,7 +654,7 @@ async function removeComment(env, who, id) {
 
 async function setSticker(env, who, pieceId, kind, on, as) {
   if (!STICKERS.includes(kind)) bad('There’s no sticker like that.');
-  const { kid } = await pieceOwner(env, pieceId);
+  const { kid } = await pieceOwner(env, who, pieceId);
   const name = speaker(env, who, as);
   const sql = on ? 'INSERT OR IGNORE INTO stickers (piece_id, author, name, sticker) VALUES (?, ?, ?, ?)' : 'DELETE FROM stickers WHERE piece_id = ? AND author = ? AND name = ? AND sticker = ?';
   await env.DB.prepare(sql).bind(pieceId, who.email, name, kind).run();
@@ -606,9 +671,15 @@ async function changeMe(env, who, b) {
   return { me: await me(env, who) };
 }
 
-async function image(env, id, variant) {
+// Someone who sees only some families gets none of the others' pictures, at
+// any size or by any address: the same 404 as for a piece that isn't there.
+// So each one is looked up for them; everyone else's come straight from the
+// bucket, as before.
+async function image(env, who, id, variant) {
+  const missing = () => text('That picture isn’t on the fridge.', 404);
+  if (!seesEverything(who) && !(await seenPiece(env, who, id))) return missing();
   const obj = await env.ART.get(keyFor(id, variant));
-  if (!obj) return text('That picture isn’t on the fridge.', 404);
+  if (!obj) return missing();
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   headers.set('ETag', obj.httpEtag);
