@@ -432,37 +432,28 @@ function speaker(env, who, as) {
   return people.find((p) => sameName(p.name, given)).name;
 }
 
-// The families someone looks from: a parent's own, or a kid's.
-function familiesOf(env, who) {
-  const families = readFamilies(env);
-  const kids = who.kid ? families.filter((f) => f.kids.some((k) => sameName(k.name, who.kid))).map((f) => f.id) : [];
-  return [...who.families, ...kids];
-}
-
-// What `who` sees for the person behind a comment or sticker: a kid's own
-// address is that kid (with their id, so the page draws their magnet); a
-// parent is their family name to their own family ("Mom") and their name to
-// everyone else; someone with a name has it; and anyone else is the part of
-// their address before the @. On a shared sign-in, it's the person who
-// spoke, or, for what was said before NAMES listed them, all of them.
-async function namesFor(env, who) {
+// The name everyone sees for the person behind a comment or sticker, on a
+// piece by a kid in `family` (an id, or null): a kid's own address is that
+// kid (with their id, so the page draws their magnet); a parent is their
+// family name ("Mom") on their own family's kids' art and their name
+// everywhere else, to everyone, themselves included; someone with a name has
+// it; and anyone else is the part of their address before the @. On a
+// shared sign-in, it's the person who spoke, or, for what was said before
+// NAMES listed them, all of them.
+async function namesFor(env) {
   const kidsByAddress = kidAddresses(env);
   const names = readNames(env);
   const families = readFamilies(env);
-  const mine = familiesOf(env, who);
   const kids = (await env.DB.prepare('SELECT id, name FROM kids').all()).results;
-  const seen = (author) => {
-    const own = families.some((f) => f.parents.includes(author) && mine.includes(f.id));
-    return (p) => (own && p.family) || p.name;
-  };
-  return (r) => {
+  return (r, family = null) => {
     const kidName = kidsByAddress.get(r.author);
     if (kidName) {
       const kid = kids.find((k) => sameName(k.name, kidName));
       return { name: kid?.name ?? kidName, kid_id: kid?.id ?? null };
     }
     const people = names.get(r.author) || [];
-    const shown = seen(r.author);
+    const home = family != null && families.some((f) => f.id === family && f.parents.includes(r.author));
+    const shown = (p) => (home && p.family) || p.name;
     const spoke = r.name && people.find((p) => sameName(p.name, r.name));
     return { name: spoke ? shown(spoke) : r.name || people.map(shown).join(' & ') || r.author.split('@')[0], kid_id: null };
   };
@@ -471,11 +462,11 @@ async function namesFor(env, who) {
 // Comments as the page gets them. `kidFor` gives each one's piece's kid, for
 // whether this person may remove it.
 async function commentsOut(env, who, rows, kidFor) {
-  const label = await namesFor(env, who);
+  const label = await namesFor(env);
   return rows.map((r) => {
-    const by = label(r);
-    const mine = r.author === who.email;
     const kid = kidFor(r);
+    const by = label(r, kid?.family);
+    const mine = r.author === who.email;
     return { id: r.id, piece_id: r.piece_id, body: r.body, created_at: r.created_at, edited: r.edited_at != null, by: by.name, kid_id: by.kid_id, mine, can_remove: mine || Boolean(kid && canChangeKid(who, kid)) };
   });
 }
@@ -483,24 +474,25 @@ async function commentsOut(env, who, rows, kidFor) {
 // Each kind of sticker on a piece: how many, who gave them (first first),
 // and `mine`: which people on a shared sign-in gave one (their `as`), or ''
 // for anyone else's sign-in.
-async function stickersOut(env, who, pieceId) {
+async function stickersOut(env, who, pieceId, kid) {
   const rows = (await env.DB.prepare('SELECT sticker, author, name FROM stickers WHERE piece_id = ? ORDER BY created_at, rowid').bind(pieceId).all()).results;
-  const label = await namesFor(env, who);
+  const label = await namesFor(env);
   return STICKERS.map((kind) => {
     const given = rows.filter((r) => r.sticker === kind);
-    return { kind, count: given.length, mine: given.filter((r) => r.author === who.email).map((r) => r.name), by: given.map((r) => label(r).name) };
+    return { kind, count: given.length, mine: given.filter((r) => r.author === who.email).map((r) => r.name), by: given.map((r) => label(r, kid?.family).name) };
   });
 }
 
-// The signed-in person: the people on their sign-in, each as they'd see
-// themselves (`name`) with what to send as `as` (a kid has their kid
-// instead), and the newest comment the page has shown them.
+// The signed-in person: the people on their sign-in, each with the name
+// everyone sees (`name`, what to send as `as`) and, for a parent, the one
+// shown on their own families' kids' art (`home`, or null), with those
+// families' ids; a kid has their kid instead. And the newest comment the
+// page has shown them.
 async function me(env, who) {
   const row = await env.DB.prepare('SELECT seen FROM people WHERE email = ?').bind(who.email).first();
-  const label = await namesFor(env, who);
-  const by = label({ author: who.email, name: '' });
+  const by = (await namesFor(env))({ author: who.email, name: '' });
   const people = who.kid ? [] : readNames(env).get(who.email) || [];
-  return { names: people.map((p) => ({ as: p.name, name: label({ author: who.email, name: p.name }).name })), kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
+  return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
 }
 
 async function kidsById(env) {
@@ -529,7 +521,7 @@ async function talkSummary(env, who) {
 async function pieceTalk(env, who, pieceId) {
   const { kid } = await pieceOwner(env, pieceId);
   const rows = (await env.DB.prepare(`SELECT ${COMMENT_COLS} FROM comments WHERE piece_id = ? ORDER BY id`).bind(pieceId).all()).results;
-  return { comments: await commentsOut(env, who, rows, () => kid), stickers: await stickersOut(env, who, pieceId) };
+  return { comments: await commentsOut(env, who, rows, () => kid), stickers: await stickersOut(env, who, pieceId, kid) };
 }
 
 // Without the characters that can hide or reorder text, with tidy line
@@ -597,11 +589,11 @@ async function removeComment(env, who, id) {
 
 async function setSticker(env, who, pieceId, kind, on, as) {
   if (!STICKERS.includes(kind)) bad('There’s no sticker like that.');
-  await pieceOwner(env, pieceId);
+  const { kid } = await pieceOwner(env, pieceId);
   const name = speaker(env, who, as);
   const sql = on ? 'INSERT OR IGNORE INTO stickers (piece_id, author, name, sticker) VALUES (?, ?, ?, ?)' : 'DELETE FROM stickers WHERE piece_id = ? AND author = ? AND name = ? AND sticker = ?';
   await env.DB.prepare(sql).bind(pieceId, who.email, name, kind).run();
-  return stickersOut(env, who, pieceId);
+  return stickersOut(env, who, pieceId, kid);
 }
 
 // { seen }: the newest comment the page has shown this sign-in. Names are

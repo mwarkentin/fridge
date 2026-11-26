@@ -704,9 +704,11 @@ let previewIds = 1e6;
 let choosingAs = false; // whether a shared sign-in's names are open to pick from
 const AS_KEY = 'fridge-as';
 
-// Which person on a shared sign-in is commenting (their `as`), or '' for
-// anyone else's. Each of TALK.me.names is { as, name }: what to send, and
-// how they see themselves ("Mom").
+// Which person on a shared sign-in is commenting (the name everyone sees,
+// which is what's sent as `as`), or '' for anyone else's. Each of
+// TALK.me.names is { name, home }: home ("Mom") is what a parent shows as on
+// their own families' kids' art, and name everywhere else, as the Worker
+// names them.
 function speaking() {
   const people = TALK?.me.names || [];
   if (people.length < 2) return '';
@@ -714,10 +716,15 @@ function speaking() {
   try {
     saved = localStorage.getItem(AS_KEY);
   } catch {}
-  return (people.find((p) => p.as === saved) || people[0]).as;
+  return (people.find((p) => p.name === saved) || people[0]).name;
 }
 // What the preview shows for what its visitor adds.
-const myName = () => TALK.me.names.find((p) => p.as === speaking())?.name || TALK.me.kid || TALK.me.names[0]?.name || 'You';
+const shownOn = (person, kid) => (person.home && kid && TALK.me.families.includes(kid.family) && person.home) || person.name;
+const talkKid = () => kidOf(PIECES.find((x) => x.id === talking?.id) || {});
+const myName = () => {
+  const person = TALK.me.names.find((p) => p.name === speaking()) || TALK.me.names[0];
+  return TALK.me.kid || (person ? shownOn(person, talkKid()) : 'You');
+};
 
 const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
 const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
@@ -789,7 +796,7 @@ function talkSection(p) {
   // names to pick from once Change is tapped. Stickers go by the same choice.
   const asLine = shared ? `<p class="as-line" id="t-as">Commenting as <b id="t-as-name"></b><span aria-hidden="true">·</span><button class="as-change" type="button" id="t-as-change" aria-expanded="false" aria-controls="t-as-pick">Change</button></p>` : '';
   const asPick = shared
-    ? `<div class="as-pick" id="t-as-pick" role="group" aria-labelledby="t-as-h" hidden><p class="as-h" id="t-as-h">Who’s commenting?</p><div class="as-opts">${people.map((p) => `<button class="as-card" type="button" data-as="${esc(p.as)}" aria-pressed="false">${icon('check')}${esc(p.name)}</button>`).join('')}</div></div>`
+    ? `<div class="as-pick" id="t-as-pick" role="group" aria-labelledby="t-as-h" hidden><p class="as-h" id="t-as-h">Who’s commenting?</p><div class="as-opts">${people.map((p) => `<button class="as-card" type="button" data-as="${esc(p.name)}" aria-pressed="false">${icon('check')}${esc(shownOn(p, kid))}</button>`).join('')}</div></div>`
     : '';
   const unnamed = !people.length && !TALK.me.kid ? '<p class="hint as-none">Your comments show the first part of your email address until a parent adds your name to the fridge.</p>' : '';
   return `<section class="talk" id="talk" aria-labelledby="talk-h">
@@ -845,7 +852,8 @@ function drawAs() {
   const name = $('#t-as-name');
   if (!name) return;
   const as = speaking();
-  name.textContent = TALK.me.names.find((p) => p.as === as)?.name || '';
+  const person = TALK.me.names.find((p) => p.name === as);
+  name.textContent = person ? shownOn(person, talkKid()) : '';
   $('#t-as-change').setAttribute('aria-expanded', String(choosingAs));
   $('#t-as-pick').hidden = !choosingAs;
   for (const b of $('#t-as-pick').querySelectorAll('[data-as]')) b.setAttribute('aria-pressed', String(b.dataset.as === as));

@@ -39,9 +39,10 @@ history on `main` is permanent.
   addresses (their artist address and `devices`) are that kid's for comments
   and stickers (`kid`, `kidAddresses`); everyone else's names come from the
   `NAMES` Worker secret (`readNames`), one or more people per sign-in
-  address, and a parent's own family can see them by another name ("Mom"). It
-  fails closed: with no Access settings, or a `FAMILIES` it can't read,
-  nobody gets in; with a `NAMES` it can't read, comments are off.
+  address, and a parent can go by another name ("Mom") on their own
+  family's kids' art, the same to everyone. It fails closed: with no Access
+  settings, or a `FAMILIES` it can't read, nobody gets in; with a `NAMES` it
+  can't read, comments are off.
 - `migrations/`: D1 schema. Add a new numbered file; never edit one that has
   been deployed.
 - `public/`: the page. Plain HTML, CSS and JavaScript modules, with no build
