@@ -1106,6 +1106,15 @@ test('notifications: new art, and stickers and comments on someone’s art or af
 
   // Names, never addresses.
   for (const as of [PINE, OAK, GRAN, SHARED, NANA, ADA_IPAD, DEE]) assert.doesNotMatch(JSON.stringify(await notes(as)), /@/, as);
+  // Nothing about a piece or kid someone doesn't see (canSee): every
+  // notification's pieces and kid are in their own gallery.
+  for (const as of [PINE, OAK, BOTH, LONER, GRAN, SHARED, NANA, ADA_IPAD, DEE]) {
+    const g = await (await call('/api/gallery', { as, localEnv: talkEnv() })).json();
+    for (const n of (await notes(as)).items) {
+      for (const id of n.pieces ?? [n.piece_id]) assert.ok(g.pieces.some((p) => p.id === id && p.kid_id === n.kid_id), `${as}: ${n.key}`);
+      assert.ok(g.kids.some((k) => k.id === n.kid_id), `${as}: ${n.key}`);
+    }
+  }
 });
 
 test('notifications: caught up per sign-in, by time, and never past what was listed', async () => {

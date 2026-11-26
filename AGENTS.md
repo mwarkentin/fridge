@@ -127,7 +127,9 @@ workers.dev only because they're a separate Worker with nothing real on it.
   asked for, under the same rules as everything else, so they go when
   their piece, comment or sticker does. Nothing is stored but how far each
   sign-in has caught up (`people.seen_at`), which the walls' New marks go
-  by too: don't add a second "seen". Names only, never addresses, even in
+  by too: don't add a second "seen". They're only about kids someone sees
+  (`canSee` in `auth.js`), so no notification, count or link gives away a
+  piece or kid they couldn't open. Names only, never addresses, even in
   a notification's `key`. Only what's from before the current second is
   listed, so catching up to `as_of` never passes over something unlisted.
 - Escape everything that came from the database before putting it in HTML

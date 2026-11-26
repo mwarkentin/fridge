@@ -227,4 +227,9 @@ export function kidAddresses(env) {
 // the kid is in one of their families or in none. An artist can add their
 // own art, and change only the pieces they added (worker.js, mayChange).
 export const canChangeKid = (who, kid) => who.canEdit && (kid.family === null || who.families.includes(kid.family));
+// Whether someone sees a kid and their art at all. Everyone signed in sees
+// every kid for now; showing someone only some families' art is a change
+// of its own, and it changes only this. Notifications (worker.js) take
+// every kid, piece and count from it.
+export const canSee = (who, kid) => Boolean(who && kid);
 export const isArtistOf = (who, kid) => who.artist !== null && sameName(who.artist, kid.name);

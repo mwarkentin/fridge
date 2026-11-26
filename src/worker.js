@@ -2,7 +2,7 @@
 // asking (auth.js), then serves the page (public/), a small JSON API for it
 // and the importer, and the scans themselves from the ART bucket.
 
-import { canChangeKid, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName } from './auth.js';
+import { canChangeKid, canSee, identify, isArtistOf, kidAddresses, readFamilies, readNames, sameName } from './auth.js';
 
 const MAX_UPLOAD = 90 * 1024 * 1024; // under the Workers plan's 100 MB request limit
 const ORIGINAL_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/heic': '.heic', 'image/heif': '.heif', 'image/webp': '.webp', 'image/tiff': '.tif', 'image/gif': '.gif', 'application/pdf': '.pdf' };
@@ -629,9 +629,10 @@ async function changeMe(env, who, b) {
 //   - comments and stickers from anyone else on their art.
 //   - comments from anyone else on a piece after they commented on it.
 // A sign-in two people share is one reader: what's new for either of them
-// is new for both, and read when either reads it. Everyone signed in sees
-// every piece, so there's nothing here someone couldn't open themselves;
-// names only, never addresses.
+// is new for both, and read when either reads it. Only kids someone sees
+// (canSee, auth.js) are in it at all, so no notification, count or link is
+// about a piece or kid they couldn't open themselves; names only, never
+// addresses.
 //
 // Only what's from before the current second is listed, with `as_of` the
 // second before this ran. The database does one thing at a time, so by then
@@ -641,7 +642,8 @@ const NOTE_DAYS = 60; // how far back the list goes
 const NOTE_MAX = 40; // how many it lists
 
 async function notifications(env, who) {
-  const kids = await kidsById(env);
+  const kids = new Map([...(await kidsById(env))].filter(([, k]) => canSee(who, k)));
+  const visible = JSON.stringify([...kids.keys()]);
   const theirs = [...kids.values()].filter((k) => (who.kid ? sameName(k.name, who.kid) : canChangeKid(who, k))).map((k) => k.id);
   const addresses = who.kid ? [...kidAddresses(env)].filter(([, name]) => sameName(name, who.kid)).map(([a]) => a) : [];
   const me = JSON.stringify([...new Set([who.email, ...addresses])]);
@@ -654,17 +656,19 @@ async function notifications(env, who) {
         `SELECT id, kid_id, title, added_by, created_at FROM pieces
          WHERE ${recent} AND (added_by IS NULL OR added_by NOT IN (SELECT value FROM json_each(?1)))
            AND (?3 = 0 OR kid_id IN (SELECT value FROM json_each(?2)))
+           AND kid_id IN (SELECT value FROM json_each(?4))
          ORDER BY created_at DESC, id DESC LIMIT 1000`,
-      ).bind(me, mine, who.kid ? 1 : 0),
+      ).bind(me, mine, who.kid ? 1 : 0, visible),
       env.DB.prepare(
         `SELECT c.id, c.piece_id, c.author, c.name, c.body, c.created_at, p.kid_id, p.title,
                 p.kid_id IN (SELECT value FROM json_each(?2)) AS on_theirs
          FROM comments c JOIN pieces p ON p.id = c.piece_id
          WHERE ${recent.replace(/created_at/g, 'c.created_at')} AND c.author NOT IN (SELECT value FROM json_each(?1))
+           AND p.kid_id IN (SELECT value FROM json_each(?3))
            AND (p.kid_id IN (SELECT value FROM json_each(?2))
              OR EXISTS (SELECT 1 FROM comments m WHERE m.piece_id = c.piece_id AND m.id < c.id AND m.author IN (SELECT value FROM json_each(?1))))
          ORDER BY c.created_at DESC, c.id DESC LIMIT ${NOTE_MAX}`,
-      ).bind(me, mine),
+      ).bind(me, mine, visible),
       env.DB.prepare(
         `SELECT s.rowid AS rid, s.piece_id, s.author, s.name, s.sticker, s.created_at, p.kid_id, p.title
          FROM stickers s JOIN pieces p ON p.id = s.piece_id
