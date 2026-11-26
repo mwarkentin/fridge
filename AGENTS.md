@@ -100,7 +100,7 @@ mwarkentin/infra (`fridge.tf`) owns everything around the Worker: the
 policies, the custom domain, the deploy token, and this repo's Actions
 secrets and variables (`CLOUDFLARE_API_TOKEN`, `PARENT_EMAILS`, `FAMILIES`,
 `NAMES`, `SEES`, `ADMINS`, `KID_NAMES`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`,
-`ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`, `DIGEST_FROM`), and the email around it:
+`ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`, `DIGEST_FROM`, `DIGEST_TO`), and the email around it:
 the domain onboarded for Email Sending and the verified destination
 addresses. Keep addresses out of `wrangler.toml` (no
 `allowed_destination_addresses`): who gets email is the people's choice,
@@ -174,9 +174,12 @@ workers.dev only because they're a separate Worker with nothing real on it.
   see, names (`namesFor`) and never addresses, in the subject, the HTML,
   the text and the pictures alike. Nothing is stored but each sign-in's
   settings and how far its last one got (`people.digest`, `digest_hour`,
-  `digest_zone`, `digest_at`): don't add a second "seen". Nobody gets one
-  without the `EMAIL` binding and `DIGEST_FROM`; never a kid's devices; and
-  only the owners while `DIGESTS` is `"owners"`. Never (in the bell) is
+  `digest_zone`, `digest_at`, and `digest_error`, whether Cloudflare last
+  refused their address for want of the Verify click): don't add a second
+  "seen". Nobody gets one without the `EMAIL` binding and `DIGEST_FROM`;
+  never a kid's devices; only the owners while `DIGESTS` is `"owners"`, and
+  the owners and whoever infra's `DIGEST_TO` lists (`readDigestTo` in
+  `auth.js`, failing closed to the owners) while it's `"listed"`. Never (in the bell) is
   always allowed and is how it stops: don't add an unsubscribe route that
   skips `auth.js`. The test (`POST /api/digest`) is the owners' only, and
   changes nothing. The pictures go as they are (`ArrayBuffer`), so a run

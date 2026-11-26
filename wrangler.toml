@@ -50,6 +50,7 @@ ACCESS_AUD = ""
 # links go too. The deploy fills it in from infra's DIGEST_FROM; left empty,
 # the fridge sends no email.
 DIGEST_FROM = ""
-# Who can have the digest: "owners" (ADMINS) while it's tried out, then
+# Who can have the digest: "owners" (ADMINS); "listed", the owners and
+# whoever infra's DIGEST_TO secret lists, while it's tried out; then
 # "everyone" (but a kid's devices). Anything else is nobody.
-DIGESTS = "owners"
+DIGESTS = "listed"

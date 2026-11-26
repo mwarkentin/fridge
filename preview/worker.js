@@ -157,11 +157,11 @@ const SIGNINS = {
 };
 // Who the page is for: what they see (null for everything), how far they'd
 // caught up, minutes ago, and their email digest, as the real Worker's me
-// has it while it's tried out: only the owners can turn it on, and a kid's
-// iPad never gets one.
-const NO_EMAIL_YET = { can: false, every: 'off', hour: 8, zone: null };
+// has it while it's tried out: only the owners (and anyone infra lists) can
+// turn it on, and a kid's iPad never gets one.
+const NO_EMAIL_YET = { can: false, every: 'off', hour: 8, zone: null, unverified: false };
 const PERSONAS = {
-  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420, digest: { can: true, every: 'weekly', hour: 8, zone: 'Europe/London' } },
+  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420, digest: { can: true, every: 'weekly', hour: 8, zone: 'Europe/London', unverified: false } },
   grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, sees: null, seen: 500, digest: NO_EMAIL_YET },
   nonna: { label: 'Nonna, who sees only the Pines', signin: 'nonna', canEdit: false, families: [], artist: null, sees: ['pines'], seen: 1000, digest: NO_EMAIL_YET },
   ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440, digest: null },

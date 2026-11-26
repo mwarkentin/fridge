@@ -548,6 +548,9 @@ textarea { resize: vertical; }
 .bm-toggle .chev { width: 16px; height: 16px; color: var(--muted); transition: transform 0.15s ease; }
 .bm-toggle[aria-expanded="true"] { background: var(--bg-soft); }
 .bm-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.bm-toggle.warn { border-color: var(--accent); color: var(--accent); box-shadow: 0 2px 0 var(--accent); }
+.bm-toggle.warn .i { color: var(--accent); }
+#bm-note.warn { color: var(--accent); }
 .bell-mail { display: grid; gap: 10px; margin: 0 0 12px; padding: 4px 6px 14px; border-bottom: 2px dashed var(--line); }
 .bm-head { margin: 0; font: 600 1.15rem/1.2 var(--display); }
 .bm-pick { display: flex; flex-wrap: wrap; gap: 8px; }

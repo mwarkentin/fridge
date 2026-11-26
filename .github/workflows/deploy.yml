@@ -48,7 +48,7 @@ jobs:
       - name: Apply database migrations
         run: npx wrangler d1 migrations apply fridge --remote
 
-      # PARENT_EMAILS, FAMILIES, NAMES, SEES and ADMINS go up as Worker secrets, in a
+      # PARENT_EMAILS, FAMILIES, NAMES, SEES, ADMINS and DIGEST_TO go up as Worker secrets, in a
       # file so they're never on a command line. The Access settings aren't
       # secret. FAMILIES (the families, their parents and their kids, from
       # infra's fridge_people.auto.tfvars) can be missing, which means no
@@ -58,9 +58,10 @@ jobs:
       # name yet. So can SEES (who sees only some families, from the same
       # file), which means everyone sees every family. So can ADMINS (the
       # owners, who can view the fridge as someone else, from the same file),
-      # which means nobody can. DIGEST_FROM (the address the email digest
-      # comes from, an Actions variable) can be missing too, which means no
-      # email.
+      # which means nobody can. So can DIGEST_TO (who else gets the email
+      # digest while it's tried out, from the same file), which means only
+      # the owners. DIGEST_FROM (the address the email digest comes from, an
+      # Actions variable) can be missing too, which means no email.
       - name: Deploy
         env:
           PARENT_EMAILS: ${{ secrets.PARENT_EMAILS }}
@@ -68,6 +69,7 @@ jobs:
           NAMES: ${{ secrets.NAMES }}
           SEES: ${{ secrets.SEES }}
           ADMINS: ${{ secrets.ADMINS }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
           DIGEST_FROM: ${{ vars.DIGEST_FROM }}
@@ -132,7 +134,14 @@ jobs:
             echo "::error::The ADMINS secret isn't sign-in addresses separated by commas, each one of PARENT_EMAILS. Fix fridge_people.auto.tfvars in mwarkentin/infra."
             exit 1
           fi
-          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" --arg a "${ADMINS:-}" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s, ADMINS: $a}' > "$RUNNER_TEMP/secrets.json"
+          # A bad DIGEST_TO emails nobody but the owners, so it stops here too:
+          # sign-in addresses separated by commas.
+          if ! jq -n -e --arg d "${DIGEST_TO:-}" '
+            $d | test("^\\s*$") or (split(",") | map(gsub("^\\s+|\\s+$"; "")) | all(test("^[^@\\s]+@[^@\\s]+$")))' > /dev/null 2>&1; then
+            echo "::error::The DIGEST_TO secret isn't sign-in addresses separated by commas. Fix fridge_people.auto.tfvars in mwarkentin/infra."
+            exit 1
+          fi
+          jq -n --arg p "$PARENT_EMAILS" --arg f "$families" --arg n "$names" --arg s "$sees" --arg a "${ADMINS:-}" --arg d "${DIGEST_TO:-}" '{PARENT_EMAILS: $p, FAMILIES: $f, NAMES: $n, SEES: $s, ADMINS: $a, DIGEST_TO: $d}' > "$RUNNER_TEMP/secrets.json"
           # The address the email digest comes from, if infra has given one.
           # Without it the fridge sends no email.
           from=()

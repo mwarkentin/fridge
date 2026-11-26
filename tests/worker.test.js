@@ -1815,9 +1815,9 @@ test('digest: nobody gets one until it’s set up, never a kid’s iPad, and onl
   // While it's tried out: the owner can; everyone else sees it's coming, but
   // a kid's iPad never gets one.
   const owners = mailEnv();
-  assert.deepEqual((await meOf(PINE, owners)).digest, { can: true, every: 'off', hour: 8, zone: null });
+  assert.deepEqual((await meOf(PINE, owners)).digest, { can: true, every: 'off', hour: 8, zone: null, unverified: false });
   for (const as of [GRAN, OAK, DEE, NONNA]) {
-    assert.deepEqual((await meOf(as, owners)).digest, { can: false, every: 'off', hour: 8, zone: null }, as);
+    assert.deepEqual((await meOf(as, owners)).digest, { can: false, every: 'off', hour: 8, zone: null, unverified: false }, as);
     const res = await turnOn(as, weekly, owners);
     assert.equal(res.status, 403, as);
     assert.match((await res.json()).error, /only for the fridge’s owners/);
@@ -1849,13 +1849,13 @@ test('digest: its settings are checked, and turning it on starts from when it wo
   const before = Date.now();
   const res = await turnOn(PINE, { every: 'weekly', hour: 8, zone: 'America/Toronto' }, localEnv);
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json()).me.digest, { can: true, every: 'weekly', hour: 8, zone: 'America/Toronto' });
+  assert.deepEqual((await res.json()).me.digest, { can: true, every: 'weekly', hour: 8, zone: 'America/Toronto', unverified: false });
   const row = await personRow(PINE);
   assert.ok([lastDue(before, 'weekly', 8, 'America/Toronto'), lastDue(Date.now(), 'weekly', 8, 'America/Toronto')].includes(row.digest_at), 'from when it would have gone last');
   // Off keeps when, for next time; seen can go with it.
   const seen = minutesAgo(1);
   assert.equal((await call('/api/me', { as: PINE, method: 'PATCH', json: { digest: { every: 'off' }, seen }, localEnv })).status, 200);
-  assert.deepEqual((await meOf(PINE, localEnv)).digest, { can: true, every: 'off', hour: 8, zone: 'America/Toronto' });
+  assert.deepEqual((await meOf(PINE, localEnv)).digest, { can: true, every: 'off', hour: 8, zone: 'America/Toronto', unverified: false });
   assert.equal((await personRow(PINE)).seen_at, seen);
   // A bad seen changes nothing, the digest included.
   assert.equal((await call('/api/me', { as: PINE, method: 'PATCH', json: { digest: { every: 'daily', hour: 7, zone: 'UTC' }, seen: 'soon' }, localEnv })).status, 400);
@@ -1866,7 +1866,7 @@ test('digest: its settings are checked, and turning it on starts from when it wo
     assert.equal((await call(path, { as: PINE, method, json, headers: { Cookie: cookie }, localEnv })).status, 403, path);
   }
   // ... and the settings shown are that person's.
-  assert.deepEqual((await (await call('/api/comments', { as: PINE, headers: { Cookie: cookie }, localEnv })).json()).me.digest, { can: false, every: 'off', hour: 8, zone: null });
+  assert.deepEqual((await (await call('/api/comments', { as: PINE, headers: { Cookie: cookie }, localEnv })).json()).me.digest, { can: false, every: 'off', hour: 8, zone: null, unverified: false });
 });
 
 test('digest: when each is due, on a clock in its own time zone', () => {
@@ -2040,4 +2040,71 @@ test('digest: only for whom it’s for, under the bell’s rules, and Cloudflare
   await sendDigests({ ...mailEnv(none, { DIGESTS: 'everyone' }), DIGEST_FROM: '' }, Date.now());
   assert.equal(none.sent.length, 0);
   assert.equal((await personRow(GRAN)).digest_at, yesterday);
+});
+
+test('digest: while it’s tried out with "listed", the owners and whoever DIGEST_TO lists, never a kid’s iPad', async () => {
+  await clean();
+  const weekly = { every: 'weekly', hour: 8, zone: 'UTC' };
+  const listed = (DIGEST_TO) => mailEnv(mailbox(), { DIGESTS: 'listed', DIGEST_TO });
+  // Listed, written loosely: Gran and Dee (an artist) can; the owner still can; nobody else.
+  const localEnv = listed(` ${GRAN.toUpperCase()} ,${DEE}`);
+  for (const [as, can] of [[PINE, true], [GRAN, true], [DEE, true], [OAK, false], [NONNA, false]]) {
+    assert.equal((await meOf(as, localEnv)).digest.can, can, as);
+    assert.equal((await turnOn(as, weekly, localEnv)).status, can ? 200 : 403, as);
+  }
+  // A kid's iPad, even listed, never.
+  assert.equal((await meOf(ADA_IPAD, listed(ADA_IPAD))).digest, null);
+  assert.equal((await turnOn(ADA_IPAD, weekly, listed(ADA_IPAD))).status, 403);
+  // The test email stays the owners'.
+  assert.equal((await call('/api/digest', { as: GRAN, method: 'POST', localEnv })).status, 403);
+  // Missing, or one that can't be read: only the owners.
+  for (const DIGEST_TO of [undefined, '', 'not an address', `${GRAN};${DEE}`]) {
+    assert.equal((await meOf(GRAN, listed(DIGEST_TO))).digest.can, false, String(DIGEST_TO));
+    assert.equal((await meOf(PINE, listed(DIGEST_TO))).digest.can, true, String(DIGEST_TO));
+  }
+  // "owners" ignores DIGEST_TO.
+  assert.equal((await meOf(GRAN, mailEnv(mailbox(), { DIGESTS: 'owners', DIGEST_TO: GRAN }))).digest.can, false);
+  // And the hourly run goes by it too: listed Gran gets hers, Oak (set straight in the database) doesn't.
+  await oldArt();
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  await at('pieces', kite, 10);
+  const yesterday = lastDue(Date.now() - DAY, 'daily', pastHour(), 'UTC');
+  await env.DB.batch([GRAN, OAK].map((email) => env.DB.prepare("INSERT INTO people (email, digest, digest_hour, digest_zone, digest_at) VALUES (?, 'daily', ?, 'UTC', ?) ON CONFLICT (email) DO UPDATE SET digest = 'daily', digest_hour = excluded.digest_hour, digest_zone = 'UTC', digest_at = excluded.digest_at").bind(email, pastHour(), yesterday)));
+  const box = mailbox();
+  await sendDigests(mailEnv(box, { DIGESTS: 'listed', DIGEST_TO: GRAN }), Date.now());
+  assert.deepEqual(box.sent.map((m) => m.to), [GRAN]);
+});
+
+test('digest: when Cloudflare hasn’t verified someone’s address, their bell says so until one goes', async () => {
+  await clean();
+  await oldArt();
+  const localEnv = (box) => mailEnv(box, { DIGESTS: 'listed', DIGEST_TO: GRAN });
+  assert.equal((await turnOn(GRAN, { every: 'daily', hour: pastHour(), zone: 'UTC' }, localEnv(mailbox()))).status, 200);
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  await at('pieces', kite, 10);
+  const due = lastDue(Date.now(), 'daily', pastHour(), 'UTC');
+  const back = () => env.DB.prepare('UPDATE people SET digest_at = ? WHERE email = ?').bind(lastDue(Date.now() - DAY, 'daily', pastHour(), 'UTC'), GRAN).run();
+  assert.equal((await meOf(GRAN, localEnv(mailbox()))).digest.unverified, false);
+  // Cloudflare says no for want of the Verify click: remembered, and that one's done.
+  for (const code of ['E_RECIPIENT_NOT_ALLOWED', 'E_RECIPIENT_PLAN_RESTRICTED']) {
+    await back();
+    await sendDigests(localEnv(mailbox(code)), Date.now());
+    assert.equal((await personRow(GRAN)).digest_at, due, code);
+    assert.equal((await meOf(GRAN, localEnv(mailbox()))).digest.unverified, true, code);
+  }
+  // Saying no for another reason, or nothing new to send, leaves it as it was.
+  await back();
+  await sendDigests(localEnv(mailbox('E_RATE_LIMIT_EXCEEDED')), Date.now());
+  assert.equal((await meOf(GRAN, localEnv(mailbox()))).digest.unverified, true);
+  // Once one goes, it's cleared.
+  const box = mailbox();
+  await sendDigests(localEnv(box), Date.now());
+  assert.equal(box.sent.length, 1);
+  assert.equal((await meOf(GRAN, localEnv(mailbox()))).digest.unverified, false);
+  // An owner's test does the same, both ways.
+  const owner = (box) => mailEnv(box);
+  assert.equal((await call('/api/digest', { as: PINE, method: 'POST', localEnv: owner(mailbox('E_RECIPIENT_NOT_ALLOWED')) })).status, 502);
+  assert.equal((await meOf(PINE, owner(mailbox()))).digest.unverified, true);
+  assert.equal((await call('/api/digest', { as: PINE, method: 'POST', localEnv: owner(mailbox()) })).status, 200);
+  assert.equal((await meOf(PINE, owner(mailbox()))).digest.unverified, false);
 });
