@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "click==8.5.0",
+#     "click==8.5.1",
 #     "httpx==0.28.1",
 #     "pillow==13.0.0",
 #     "pillow-heif==1.8.1",
