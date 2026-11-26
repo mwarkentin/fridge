@@ -577,6 +577,10 @@ const summary = async (as = GRAN, localEnv = talkEnv()) => (await call('/api/com
 const sticker = (as, piece, kind, method = 'POST', name) => t(`/api/pieces/${piece}/stickers/${kind}${name ? `?as=${encodeURIComponent(name)}` : ''}`, { as, method });
 // Each test starts with no comments, stickers or reading.
 const clean = () => env.DB.batch(['comments', 'stickers', 'people'].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+// The database's clock, as created_at has it.
+const sqlNow = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+// Moves something back in time by some minutes, so a test can say what came when.
+const at = (table, id, minutes) => env.DB.prepare(`UPDATE ${table} SET created_at = datetime('now', ?) WHERE id = ?`).bind(`-${minutes} minutes`, id).run();
 
 test('everyone signed in comments on any kid’s art, and gives it stickers', async () => {
   await clean();
@@ -927,38 +931,47 @@ test('comments are checked: text, length, and how many', async () => {
   await said(GRAN, tp.Dee, 'Another piece is fine');
 });
 
-test('what’s new: each piece’s newest comment by someone else, and how far someone has read', async () => {
+test('what’s new: each piece’s newest comment by someone else, and how far someone has caught up', async () => {
   await clean();
   const a1 = await said(GRAN, tp.Ada, 'First');
   const a2 = await said(PINE, tp.Ada, 'Second');
   const c1 = await said(PINE, tp.Cy, 'Third');
   await sticker(GRAN, tp.Ada, 'smile');
+  // A minute apart, so the order is plain.
+  await at('comments', a1.id, 30);
+  await at('comments', a2.id, 20);
+  await at('comments', c1.id, 10);
+  const when = async (id) => (await env.DB.prepare('SELECT created_at FROM comments WHERE id = ?').bind(id).first()).created_at;
 
   let s = await summary(GRAN);
-  assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me', 'newest']);
-  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: a2.id });
-  assert.deepEqual(s.counts[tp.Cy], { comments: 1, stickers: 0, newest: c1.id });
-  assert.equal(s.newest, c1.id);
+  assert.deepEqual(Object.keys(s).sort(), ['counts', 'latest', 'me']);
+  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: await when(a2.id) });
+  assert.deepEqual(s.counts[tp.Cy], { comments: 1, stickers: 0, newest: await when(c1.id) });
   assert.equal(s.me.seen, null);
   assert.deepEqual(s.latest.map((c) => c.id), [c1.id, a2.id, a1.id], 'newest first');
   for (const c of s.latest) assert.deepEqual(Object.keys(c).sort(), COMMENT_KEYS);
   assert.deepEqual(s.latest.map((c) => c.can_remove), [false, false, true]);
   s = await summary(PINE);
-  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: a1.id }, 'their own don’t count as new');
-  assert.equal(s.counts[tp.Cy].newest, 0);
+  assert.deepEqual(s.counts[tp.Ada], { comments: 2, stickers: 1, newest: await when(a1.id) }, 'their own don’t count as new');
+  assert.equal(s.counts[tp.Cy].newest, '');
   assert.deepEqual(s.latest.map((c) => c.can_remove), [true, true, true]);
 
+  // How far they've caught up is a time, as the notifications' as_of has it.
   const seen = (as, value) => t('/api/me', { as, method: 'PATCH', json: { seen: value } });
-  let res = await seen(GRAN, a2.id);
+  let res = await seen(GRAN, await when(a2.id));
   assert.equal(res.status, 200);
-  assert.equal((await res.json()).me.seen, a2.id);
-  await seen(GRAN, a1.id);
-  assert.equal((await summary(GRAN)).me.seen, a2.id, 'never goes back');
-  await seen(GRAN, c1.id);
-  assert.equal((await summary(GRAN)).me.seen, c1.id);
-  assert.deepEqual((await summary(GRAN)).me.names, [{ name: 'Gran', home: null }], 'reading changes nothing else');
-  for (const bad of ['5', -1, 1.5, null]) assert.equal((await seen(GRAN, bad)).status, 400, String(bad));
-  assert.equal((await seen(DEE, c1.id)).status, 200);
+  assert.equal((await res.json()).me.seen, await when(a2.id));
+  await seen(GRAN, await when(a1.id));
+  assert.equal((await summary(GRAN)).me.seen, await when(a2.id), 'never goes back');
+  await seen(GRAN, await when(c1.id));
+  assert.equal((await summary(GRAN)).me.seen, await when(c1.id));
+  assert.deepEqual((await summary(GRAN)).me.names, [{ name: 'Gran', home: null }], 'catching up changes nothing else');
+  res = await seen(GRAN, '2999-01-01 00:00:00');
+  assert.equal(res.status, 200);
+  assert.ok((await res.json()).me.seen <= sqlNow(), 'never past now');
+  for (const bad of ['5', 5, -1, null, '', '2026-11-26', '2026-11-26T09:30:00Z', '2026-02-30 10:00:00', '2026-11-26 25:00:00', '2026-11-26 09:30:00 extra']) assert.equal((await seen(NANA, bad)).status, 400, JSON.stringify(bad));
+  assert.equal((await summary(NANA)).me.seen, null);
+  assert.equal((await seen(DEE, await when(c1.id))).status, 200);
   assert.equal((await summary(DEE)).me.kid, 'Dee');
 
   // Only the eight latest.
@@ -980,6 +993,224 @@ test('a kid’s devices in FAMILIES are checked like the rest of it', async (t) 
   // And a parent's address is a parent's.
   const parentToo = { ...familyEnv(TALK_FAMILIES), PARENT_EMAILS: `${familyEnv().PARENT_EMAILS}, ${ADA_IPAD}` };
   assert.deepEqual((await call('/api/comments', { as: ADA_IPAD, localEnv: parentToo }).then((r) => r.json())).me, { names: [], families: [], kid: null, kid_id: null, seen: null });
+});
+
+// ---- Notifications ----
+// Worked out from the art, comments and stickers each time. These tests set
+// when things happened, minutes ago, so what's new is plain. Nothing from the
+// current second is listed (see notifications() in worker.js), so each test
+// moves what it adds back in time first.
+const notes = async (as, localEnv = talkEnv()) => {
+  const res = await call('/api/notifications', { as, localEnv });
+  assert.equal(res.status, 200, as);
+  return res.json();
+};
+const NOTE_KEYS = { art: ['count', 'pieces'], comment: ['body'], reply: ['body'], sticker: ['stickers'] };
+// Each notification as [kind, by, piece, and what's particular to it].
+const brief = (n) => n.items.map((x) => [x.kind, x.by, x.piece_id, x.kind === 'art' ? x.count : x.kind === 'sticker' ? [...x.stickers].sort().join('+') : x.body]);
+const addArt = async (as, kid, title) => {
+  const res = await t('/api/pieces', { as, method: 'POST', form: pieceForm({ kid_id: fk[kid], made: '2025-10-01', title }) });
+  assert.equal(res.status, 201, `${as} adds for ${kid}`);
+  return (await res.json()).id;
+};
+const stickerAt = (piece, author, kind, minutes) => env.DB.prepare("UPDATE stickers SET created_at = datetime('now', ?) WHERE piece_id = ? AND author = ? AND sticker = ?").bind(`-${minutes} minutes`, piece, author, kind).run();
+const minutesAgo = (m) => new Date(Date.now() - m * 6e4).toISOString().slice(0, 19).replace('T', ' ');
+// Only what each test adds is new art.
+const oldArt = () => env.DB.prepare("UPDATE pieces SET created_at = datetime('now', '-100 days')").run();
+
+test('notifications: new art, and stickers and comments on someone’s art or after they commented', async () => {
+  await clean();
+  await oldArt();
+  const bo = await addArt(PINE, 'Bo', 'Boat');
+  const cy1 = await addArt(OAK, 'Cy', 'Kite');
+  const cy2 = await addArt(OAK, 'Cy', 'Cloud');
+  const dee = await addArt(DEE, 'Dee', 'Self portrait');
+  const ada = await addArt(PINE, 'Ada', 'Moon');
+  for (const [id, m] of [[bo, 50], [cy1, 45], [cy2, 45], [dee, 40], [ada, 15]]) await at('pieces', id, m);
+  const g1 = await said(GRAN, tp.Ada, 'Lovely!');
+  const k1 = await said(ADA_IPAD, tp.Ada, 'Thanks Gran');
+  const o1 = await said(OAK, tp.Cy, 'Nice one');
+  const x1 = await said(PINE, tp.Cy, 'Great kite, Cy');
+  const x2 = await said(OAK, tp.Cy, 'Thank you!');
+  for (const [c, m] of [[g1, 35], [k1, 30], [o1, 28], [x1, 26], [x2, 24]]) await at('comments', c.id, m);
+  await sticker(GRAN, tp.Ada, 'star');
+  await sticker(GRAN, tp.Ada, 'heart');
+  await sticker(SHARED, tp.Dee, 'wow', 'POST', 'Grandma');
+  await sticker(DEE, tp.Dee, 'smile');
+  await stickerAt(tp.Ada, GRAN, 'star', 20);
+  await stickerAt(tp.Ada, GRAN, 'heart', 20);
+  await stickerAt(tp.Dee, SHARED, 'wow', 18);
+  await stickerAt(tp.Dee, DEE, 'smile', 17);
+
+  // A parent: both families' new art but their own, and what's said and
+  // stuck on their kids' art, and replies after they commented elsewhere.
+  const pine = await notes(PINE);
+  assert.deepEqual(Object.keys(pine).sort(), ['as_of', 'items', 'seen', 'unread']);
+  assert.deepEqual(brief(pine), [
+    ['sticker', 'Gran', tp.Ada, 'heart+star'],
+    ['reply', 'Oak Dad', tp.Cy, 'Thank you!'],
+    ['comment', 'Ada', tp.Ada, 'Thanks Gran'],
+    ['comment', 'Gran', tp.Ada, 'Lovely!'],
+    ['art', 'Dee', dee, 1],
+    ['art', 'Oak Dad', cy2, 2],
+  ]);
+  for (const n of pine.items) {
+    assert.deepEqual(Object.keys(n).sort(), ['at', 'by', 'by_kid_id', 'key', 'kid_id', 'kind', 'new', 'piece_id', 'title', ...NOTE_KEYS[n.kind]].sort(), n.key);
+    assert.equal(n.new, false, 'someone who has never caught up has nothing new yet');
+  }
+  assert.equal(pine.unread, 0);
+  const cy = pine.items.find((n) => n.kind === 'art' && n.piece_id === cy2);
+  assert.deepEqual([cy.kid_id, cy.title, cy.pieces], [fk.Cy, 'Cloud', [cy2, cy1]], 'a day’s art by one person for one kid is one notification, newest first');
+  assert.equal(pine.items.find((n) => n.by === 'Ada').by_kid_id, fk.Ada, 'a kid is named as the kid, with their magnet');
+  assert.equal(pine.items.find((n) => n.kind === 'art' && n.by === 'Dee').by_kid_id, fk.Dee);
+
+  // The other family's parent, from their side.
+  assert.deepEqual(brief(await notes(OAK)), [
+    ['art', 'Pine Mum', ada, 1],
+    ['sticker', 'Dee', tp.Dee, 'smile'],
+    ['sticker', 'Grandma', tp.Dee, 'wow'],
+    ['comment', 'Pine Mum', tp.Cy, 'Great kite, Cy'],
+    ['art', 'Dee', dee, 1],
+    ['art', 'Pine Mum', bo, 1],
+  ]);
+  // In both families: everything said and stuck on all four kids' art.
+  const both = brief(await notes(BOTH));
+  assert.ok(both.some(([k, by]) => k === 'comment' && by === 'Gran') && both.some(([k, by]) => k === 'comment' && by === 'Pine Mum'));
+  assert.equal(both.filter(([k]) => k === 'sticker').length, 3);
+
+  // A grandparent: new art from everyone, and replies after they commented.
+  assert.deepEqual(brief(await notes(GRAN)), [
+    ['art', 'Pine Mum', ada, 1],
+    ['reply', 'Ada', tp.Ada, 'Thanks Gran'],
+    ['art', 'Dee', dee, 1],
+    ['art', 'Oak Dad', cy2, 2],
+    ['art', 'Pine Mum', bo, 1],
+  ]);
+  // A sign-in two people share, and someone NAMES doesn't list, who haven't said anything.
+  for (const as of [SHARED, NANA]) assert.deepEqual(brief(await notes(as)).map(([k]) => k), ['art', 'art', 'art', 'art'], as);
+
+  // A kid's iPad: only about that kid's art, put up, said or stuck by someone else.
+  const ipad = await notes(ADA_IPAD);
+  assert.deepEqual(brief(ipad), [
+    ['art', 'Pine Mum', ada, 1],
+    ['sticker', 'Gran', tp.Ada, 'heart+star'],
+    ['comment', 'Gran', tp.Ada, 'Lovely!'],
+  ]);
+  // An artist: their own pieces, not what they did themselves.
+  assert.deepEqual(brief(await notes(DEE)), [['sticker', 'Grandma', tp.Dee, 'wow']]);
+  // A kid's addresses are all that kid: what Ada said from her iPad isn't new to her own sign-in.
+  const adaToo = { ...familyEnv([{ ...PINES, kids: [{ ...PINES.kids[0], artist: 'ada@example.com', devices: [ADA_IPAD] }, PINES.kids[1]] }, OAKS]), NAMES: JSON.stringify(NAMES) };
+  assert.deepEqual(brief(await notes('ada@example.com', adaToo)), brief(ipad));
+  // A parent in no family looks after kids in no family; there's nothing on Di's art.
+  assert.deepEqual(brief(await notes(LONER)).map(([k]) => k), ['art', 'art', 'art', 'art']);
+
+  // Names, never addresses.
+  for (const as of [PINE, OAK, GRAN, SHARED, NANA, ADA_IPAD, DEE]) assert.doesNotMatch(JSON.stringify(await notes(as)), /@/, as);
+  // Nothing about a piece or kid someone doesn't see (canSee): every
+  // notification's pieces and kid are in their own gallery.
+  for (const as of [PINE, OAK, BOTH, LONER, GRAN, SHARED, NANA, ADA_IPAD, DEE]) {
+    const g = await (await call('/api/gallery', { as, localEnv: talkEnv() })).json();
+    for (const n of (await notes(as)).items) {
+      for (const id of n.pieces ?? [n.piece_id]) assert.ok(g.pieces.some((p) => p.id === id && p.kid_id === n.kid_id), `${as}: ${n.key}`);
+      assert.ok(g.kids.some((k) => k.id === n.kid_id), `${as}: ${n.key}`);
+    }
+  }
+});
+
+test('notifications: caught up per sign-in, by time, and never past what was listed', async () => {
+  await clean();
+  await oldArt();
+  const a = await said(GRAN, tp.Bo, 'Old news');
+  const b = await said(NANA, tp.Bo, 'Newer');
+  const c = await said(OAK, tp.Bo, 'Newest');
+  for (const [x, m] of [[a, 30], [b, 8], [c, 5]]) await at('comments', x.id, m);
+  const seen = (as, value) => t('/api/me', { as, method: 'PATCH', json: { seen: value } });
+
+  // Caught up ten minutes ago: what came since is new.
+  const tenAgo = minutesAgo(10);
+  assert.equal((await seen(PINE, tenAgo)).status, 200);
+  let n = await notes(PINE);
+  assert.equal(n.seen, tenAgo);
+  assert.deepEqual(n.items.map((x) => [x.body, x.new]), [['Newest', true], ['Newer', true], ['Old news', false]]);
+  assert.equal(n.unread, 2);
+  // Someone else on the same family has their own place.
+  assert.equal((await notes(PINE_TOO)).unread, 0);
+  // Opening the bell: caught up to as_of.
+  assert.equal((await seen(PINE, n.as_of)).status, 200);
+  n = await notes(PINE);
+  assert.equal(n.unread, 0);
+  assert.ok(n.items.every((x) => !x.new));
+  // And the walls' New marks go by the same place.
+  assert.equal((await summary(PINE)).me.seen, n.seen);
+
+  // A sign-in two people share is one reader: either one's comment makes a
+  // reply for both, neither's own is new to them, and either reading reads it.
+  const grandma = (await (await t(`/api/pieces/${tp.Cy}/comments`, { as: SHARED, method: 'POST', json: { body: 'From Grandma', as: 'Grandma' } })).json()).comment;
+  const pop = (await (await t(`/api/pieces/${tp.Cy}/comments`, { as: SHARED, method: 'POST', json: { body: 'From Pop', as: 'Pop' } })).json()).comment;
+  const answer = await said(OAK, tp.Cy, 'Thank you both');
+  for (const [x, m] of [[grandma, 7], [pop, 6], [answer, 4]]) await at('comments', x.id, m);
+  await seen(SHARED, minutesAgo(9));
+  n = await notes(SHARED);
+  assert.deepEqual(n.items.filter((x) => x.kind !== 'art').map((x) => [x.kind, x.by, x.body, x.new]), [['reply', 'Oak Dad', 'Thank you both', true]]);
+  await seen(SHARED, n.as_of);
+  assert.equal((await notes(SHARED)).unread, 0);
+
+  // Something stamped with a second that hasn't finished isn't listed yet,
+  // and catching up to as_of doesn't pass over it.
+  const late = await said(OAK, tp.Ada, 'Just now');
+  await env.DB.prepare("UPDATE comments SET created_at = datetime('now', '+1 second') WHERE id = ?").bind(late.id).run();
+  n = await notes(PINE);
+  assert.ok(!n.items.some((x) => x.body === 'Just now'));
+  await seen(PINE, n.as_of);
+  await new Promise((r) => setTimeout(r, 2100));
+  n = await notes(PINE);
+  assert.deepEqual(n.items.filter((x) => x.new).map((x) => x.body), ['Just now']);
+  assert.equal(n.unread, 1);
+
+  // Only the last 60 days, and at most 40.
+  await env.DB.prepare("UPDATE comments SET created_at = datetime('now', '-61 days') WHERE id = ?").bind(late.id).run();
+  assert.ok(!(await notes(PINE)).items.some((x) => x.body === 'Just now'));
+  await clean();
+  await env.DB.batch(Array.from({ length: 45 }, (_, i) => env.DB.prepare("INSERT INTO comments (piece_id, author, body, created_at) VALUES (?, ?, ?, datetime('now', ?))").bind(tp.Ada, GRAN, `Number ${i}`, `-${i + 1} minutes`)));
+  n = await notes(PINE);
+  assert.equal(n.items.length, 40);
+  assert.equal(n.items[0].body, 'Number 0', 'newest first');
+});
+
+test('notifications go when their piece, comment or sticker does', async () => {
+  await clean();
+  await oldArt();
+  const piece = await addArt(PINE_TOO, 'Bo', 'Going soon');
+  await at('pieces', piece, 9);
+  const c = await said(GRAN, tp.Ada, 'Taking this back');
+  const d = await said(GRAN, piece, 'On a piece that goes');
+  await at('comments', c.id, 8);
+  await at('comments', d.id, 7);
+  await sticker(GRAN, tp.Ada, 'rainbow');
+  await sticker(NANA, piece, 'heart');
+  await stickerAt(tp.Ada, GRAN, 'rainbow', 6);
+  await stickerAt(piece, NANA, 'heart', 5);
+  const kinds = async () => brief(await notes(PINE)).map(([k, by, p]) => `${k} ${by} ${p === piece ? 'piece' : p}`);
+  assert.deepEqual(await kinds(), ['sticker nana piece', `sticker Gran ${tp.Ada}`, 'comment Gran piece', `comment Gran ${tp.Ada}`, 'art pine.too piece']);
+
+  assert.equal((await t(`/api/comments/${c.id}`, { as: GRAN, method: 'DELETE' })).status, 204);
+  assert.deepEqual(await kinds(), ['sticker nana piece', `sticker Gran ${tp.Ada}`, 'comment Gran piece', 'art pine.too piece']);
+  assert.equal((await sticker(GRAN, tp.Ada, 'rainbow', 'DELETE')).status, 200);
+  assert.deepEqual(await kinds(), ['sticker nana piece', 'comment Gran piece', 'art pine.too piece']);
+  assert.equal((await t(`/api/pieces/${piece}`, { as: PINE, method: 'DELETE' })).status, 204);
+  assert.deepEqual(await kinds(), []);
+});
+
+test('notifications need a sign-in, and are off with comments when NAMES can’t be read', async (t2) => {
+  t2.mock.method(console, 'error', () => {});
+  assert.equal((await call('/api/notifications', { as: null, localEnv: talkEnv() })).status, 403);
+  for (const method of ['POST', 'PATCH', 'DELETE']) assert.equal((await t('/api/notifications', { as: GRAN, method, json: {} })).status, 405, method);
+  assert.equal((await t('/api/notifications/1', { as: PINE })).status, 404);
+  assert.equal((await call('/api/notifications', { as: GRAN, localEnv: { ...talkEnv(), NAMES: '{not json' } })).status, 503);
+  // Without NAMES or FAMILIES at all, it still works: everyone's a viewer or a parent of every kid.
+  const plain = await call('/api/notifications', { as: PARENT });
+  assert.equal(plain.status, 200);
+  assert.deepEqual(Object.keys(await plain.json()).sort(), ['as_of', 'items', 'seen', 'unread']);
 });
 
 // ---- Who sees what ----
@@ -1077,6 +1308,10 @@ test('comments and stickers on art someone doesn’t see aren’t there for them
   for (const as of [GRAN, DEE, OAK]) assert.equal((await s(`/api/pieces/${tp.Ada}/stickers/star`, { as, method: 'POST' })).status, 200);
   const onCy = await post(GRAN, tp.Cy, 'The newest of all');
   await s(`/api/pieces/${tp.Cy}/stickers/wow`, { as: GRAN, method: 'POST' });
+  // A minute apart, oldest first, so which is newest is plain.
+  const order = [oldOnCy, fromGran, fromDee, fromOak, fromBoth, fromCyNana, fromIpad, fromNonna, onCy];
+  for (const [i, c] of order.entries()) await at('comments', c.id, order.length - i);
+  const when = async (c) => (await env.DB.prepare('SELECT created_at FROM comments WHERE id = ?').bind(c.id).first()).created_at;
 
   // What she sees on the Pines' art: grown-ups and kids in the Oaks only are
   // Family, and so is anyone whose name says a kid she doesn't see.
@@ -1103,22 +1338,22 @@ test('comments and stickers on art someone doesn’t see aren’t there for them
   // And to Nonna too, without SEES.
   assert.equal((await (await call(`/api/pieces/${tp.Ada}/comments`, { as: NONNA, localEnv: noSees })).json()).comments.find((c) => c.id === fromDee.id).by, 'Dee');
 
-  // The whole page's: counts, Latest comments and the newest comment, only on the Pines' art.
+  // The whole page's: counts and Latest comments, only on the Pines' art.
   const summary = async (as, localEnv = seeEnv()) => (await call('/api/comments', { as, localEnv })).json();
   const hers = await summary(NONNA);
   assert.deepEqual(Object.keys(hers.counts).map(Number).sort((a, b) => a - b), [tp.Ada, tp.Bo]);
-  assert.deepEqual(hers.counts[tp.Ada], { comments: 6, stickers: 3, newest: fromIpad.id });
+  assert.deepEqual(hers.counts[tp.Ada], { comments: 6, stickers: 3, newest: await when(fromIpad) });
   assert.ok(hers.latest.length && hers.latest.every((c) => c.piece_id === tp.Ada || c.piece_id === tp.Bo));
-  assert.equal(hers.newest, fromNonna.id, 'not the newest on art she doesn’t see');
+  assert.equal(hers.latest[0].id, fromNonna.id, 'not the newest on art she doesn’t see');
   assert.deepEqual(hers.me, { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: null });
   for (const as of EVERYONE_ELSE) {
     const theirs = await summary(as);
-    assert.equal(theirs.newest, onCy.id, as);
-    assert.deepEqual([theirs.counts[tp.Cy], theirs.counts[tp.Dee]?.stickers], [{ comments: 2, stickers: 1, newest: as === GRAN ? oldOnCy.id : onCy.id }, 1], as);
+    assert.deepEqual([theirs.counts[tp.Cy], theirs.counts[tp.Dee]?.stickers], [{ comments: 2, stickers: 1, newest: await when(as === GRAN ? oldOnCy : onCy) }, 1], as);
     assert.equal(theirs.latest[0].id, onCy.id, as);
   }
-  assert.equal((await summary(NONNA, noSees)).newest, onCy.id, 'no SEES: everything');
-  assert.equal((await s('/api/me', { as: NONNA, method: 'PATCH', json: { seen: hers.newest } })).status, 200);
+  assert.equal((await summary(NONNA, noSees)).latest[0].id, onCy.id, 'no SEES: everything');
+  const caughtUp = (await (await s('/api/notifications', { as: NONNA })).json()).as_of;
+  assert.equal((await s('/api/me', { as: NONNA, method: 'PATCH', json: { seen: caughtUp } })).status, 200);
 
   // A piece she doesn't see is one that isn't there, whatever's asked of it,
   // her own old comment and sticker included: 404, and the same words.
@@ -1159,6 +1394,48 @@ test('comments and stickers on art someone doesn’t see aren’t there for them
     ...(await Promise.all([tp.Ada, tp.Bo].map(async (id) => (await s(`/api/pieces/${id}/comments`, { as: NONNA })).text()))),
   ];
   for (const body of everything) assert.doesNotMatch(body, HIDDEN);
+});
+
+test('notifications for someone who sees only some families: nothing of the others, nor their names', async () => {
+  await clean();
+  await oldArt();
+  const noSees = unrestricted();
+  // Said before SEES listed Nonna, on art she no longer sees: a reply after
+  // it would have been hers.
+  const oldOnCy = (await (await call(`/api/pieces/${tp.Cy}/comments`, { as: NONNA, method: 'POST', json: { body: 'Old news' }, localEnv: noSees })).json()).comment;
+  const onAda = await said(NONNA, tp.Ada, 'Bellissimo');
+  const ada = await addArt(PINE, 'Ada', 'Moon');
+  const cy = await addArt(OAK, 'Cy', 'Kite');
+  const di = await addArt(PINE, 'Di', 'Cloud');
+  const answers = [
+    await said(GRAN, tp.Cy, 'After Nonna, on art she doesn’t see'),
+    await said(DEE, tp.Ada, 'From a kid in the other family, after Nonna'),
+    await said(OAK, tp.Ada, 'From a parent in the other family'),
+    await (await call(`/api/pieces/${tp.Ada}/comments`, { as: CY_NANA, method: 'POST', json: { body: 'From someone whose name says a kid’s' }, localEnv: seeEnv() })).json().then((r) => r.comment),
+    await said(GRAN, tp.Ada, 'From Gran'),
+  ];
+  for (const [i, c] of [oldOnCy, onAda, ...answers].entries()) await at('comments', c.id, 30 - i);
+  for (const [id, m] of [[ada, 12], [cy, 11], [di, 10]]) await at('pieces', id, m);
+
+  const hers = await (await s('/api/notifications', { as: NONNA })).json();
+  // New art from the Pines, and the replies after she commented there, with
+  // the Oaks' people as Family: nothing of Cy, Dee or Di.
+  assert.deepEqual(brief(hers), [
+    ['art', 'Pine Mum', ada, 1],
+    ['reply', 'Gran', tp.Ada, 'From Gran'],
+    ['reply', 'Family', tp.Ada, 'From someone whose name says a kid’s'],
+    ['reply', 'Family', tp.Ada, 'From a parent in the other family'],
+    ['reply', 'Family', tp.Ada, 'From a kid in the other family, after Nonna'],
+  ]);
+  assert.ok(hers.items.every((n) => n.by_kid_id === null || n.by_kid_id === fk.Ada || n.by_kid_id === fk.Bo), 'no other family’s kid’s magnet');
+  assert.doesNotMatch(JSON.stringify(hers), HIDDEN);
+  // Everyone else sees what she doesn't.
+  const gran = brief(await (await s('/api/notifications', { as: GRAN })).json());
+  assert.ok(gran.some(([k, , p]) => k === 'art' && p === cy) && gran.some(([k, , p]) => k === 'art' && p === di));
+  // And without SEES, so does she.
+  const all = brief(await (await call('/api/notifications', { as: NONNA, localEnv: noSees })).json());
+  assert.ok(all.some(([k, , p]) => k === 'art' && p === cy) && all.some(([k, by]) => k === 'reply' && by === 'Gran' && true));
+  assert.ok(all.some(([k, , p, body]) => k === 'reply' && p === tp.Cy && body === 'After Nonna, on art she doesn’t see'));
 });
 
 test('someone who sees only some families changes nothing, and a piece they don’t see is no different from one that isn’t there', async () => {
@@ -1337,7 +1614,7 @@ test('view as: every change is refused, and nothing about the person viewed is w
       ['DELETE', `/api/comments/${comment.id}`],
       ['POST', `/api/pieces/${tp.Ada}/stickers/smile`],
       ['DELETE', `/api/pieces/${tp.Ada}/stickers/star`],
-      ['PATCH', '/api/me', { json: { seen: 99999 } }],
+      ['PATCH', '/api/me', { json: { seen: minutesAgo(1) } }],
       ['POST', '/api/skipped', { json: { add: ['f'.repeat(64)] } }],
       ['GET', '/api/imported'],
       ['POST', '/api/view-as', { json: { email: GRAN } }],
@@ -1349,14 +1626,65 @@ test('view as: every change is refused, and nothing about the person viewed is w
       assert.deepEqual([res.status, await errorOf(res)], [403, `You’re viewing as ${name}; changes are off.`], `${target}: ${method} ${path}`);
     }
     // A whole visit, as the page makes it: reads only.
-    for (const path of ['/', '/api/session', '/api/gallery', '/api/comments', `/api/pieces/${tp.Ada}/comments`, `/img/${tp.Ada}/thumb`, '/api/view-as']) {
+    for (const path of ['/', '/api/session', '/api/gallery', '/api/comments', '/api/notifications', `/api/pieces/${tp.Ada}/comments`, `/img/${tp.Ada}/thumb`, '/api/view-as']) {
       assert.equal((await v(path, { headers: { Cookie: cookie } })).status, 200, `${target}: ${path}`);
     }
     assert.deepEqual(await tables(), before, `${target}: nothing written`);
   }
   // The same changes go through for them, and for the owner, without it.
   assert.equal((await v(`/api/comments/${comment.id}`, { as: OAK, method: 'PATCH', json: { body: 'Changed' } })).status, 200);
-  assert.equal((await v('/api/me', { method: 'PATCH', json: { seen: 1 } })).status, 200);
+  assert.equal((await v('/api/me', { method: 'PATCH', json: { seen: minutesAgo(1) } })).status, 200);
+});
+
+test('view as: the bell is that person’s, and nothing about them is caught up', async () => {
+  await clean();
+  await oldArt();
+  const moon = await addArt(PINE, 'Ada', 'Moon');
+  const kite = await addArt(OAK, 'Cy', 'Kite');
+  const fromNonna = await said(NONNA, tp.Ada, 'Bellissimo');
+  const fromGran = await said(GRAN, tp.Ada, 'After Nonna');
+  const fromOak = await said(OAK, tp.Ada, 'From a parent in the other family');
+  await sticker(GRAN, tp.Ada, 'star');
+  for (const [id, m] of [[moon, 9], [kite, 8]]) await at('pieces', id, m);
+  for (const [c, m] of [[fromNonna, 7], [fromGran, 6], [fromOak, 5]]) await at('comments', c.id, m);
+  await stickerAt(tp.Ada, GRAN, 'star', 4);
+  // Both caught up twenty minutes ago, so all of that is new to them.
+  const before = minutesAgo(20);
+  for (const as of [ADA_IPAD, NONNA]) assert.equal((await v('/api/me', { as, method: 'PATCH', json: { seen: before } })).status, 200);
+  const bell = async (opts) => {
+    const n = await (await v('/api/notifications', opts)).json();
+    return { ...n, as_of: null };
+  };
+
+  for (const target of [ADA_IPAD, NONNA]) {
+    const cookie = await viewing(target);
+    const written = await tables();
+    // Exactly theirs: the same list, the same count, the same new ones.
+    const shown = await bell({ headers: { Cookie: cookie } });
+    assert.deepEqual(shown, await bell({ as: target }), target);
+    assert.equal(shown.seen, before);
+    assert.ok(shown.unread > 0 && shown.items.every((n) => n.new), target);
+    // Opening the bell would catch them up: refused, as every change is.
+    const res = await v('/api/me', { method: 'PATCH', json: { seen: minutesAgo(0) }, headers: { Cookie: cookie } });
+    assert.equal(res.status, 403, target);
+    assert.deepEqual(await tables(), written, `${target}: nothing written`);
+    assert.equal((await bell({ as: target })).seen, before, `${target}: still where they were`);
+  }
+  // Ada's iPad: what's about Ada's art. Nonna: the Pines only, the other family as Family.
+  assert.deepEqual(brief(await bell({ headers: { Cookie: await viewing(ADA_IPAD) } })), [
+    ['sticker', 'Gran', tp.Ada, 'star'],
+    ['comment', 'Oak Dad', tp.Ada, 'From a parent in the other family'],
+    ['comment', 'Gran', tp.Ada, 'After Nonna'],
+    ['comment', 'Nonna', tp.Ada, 'Bellissimo'],
+    ['art', 'Pine Mum', moon, 1],
+  ]);
+  const nonna = await bell({ headers: { Cookie: await viewing(NONNA) } });
+  assert.deepEqual(brief(nonna), [
+    ['reply', 'Family', tp.Ada, 'From a parent in the other family'],
+    ['reply', 'Gran', tp.Ada, 'After Nonna'],
+    ['art', 'Pine Mum', moon, 1],
+  ]);
+  assert.doesNotMatch(JSON.stringify(nonna), HIDDEN);
 });
 
 test('view as: nobody else can turn it on, by cookie or anything else', async () => {

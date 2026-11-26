@@ -50,6 +50,7 @@
       <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.8 7h14.4M9.8 7V4.8h4.4V7M7 7l.9 12.6h8.2L17 7M10.4 11v5M13.6 11v5"/></symbol>
       <symbol id="i-door" viewBox="0 0 24 24"><path d="M13.6 4.4h4.2a1.6 1.6 0 0 1 1.6 1.6v12a1.6 1.6 0 0 1-1.6 1.6h-4.2M9.6 8 5.6 12l4 4M5.8 12h9"/></symbol>
       <symbol id="i-tag" viewBox="0 0 24 24"><path d="M4 12.4V4.8A.8.8 0 0 1 4.8 4h7.6l8 8-8.4 8.4z"/><circle cx="8.6" cy="8.6" r="1.4"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 3.6a5.6 5.6 0 0 0-5.6 5.6v3.6c0 1.6-.8 2.9-2 3.8h15.2c-1.2-.9-2-2.2-2-3.8V9.2A5.6 5.6 0 0 0 12 3.6zM9.8 19.4a2.4 2.4 0 0 0 4.4 0"/></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.8 12s3.4-6.4 9.2-6.4 9.2 6.4 9.2 6.4-3.4 6.4-9.2 6.4S2.8 12 2.8 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
       <symbol id="i-bubble" viewBox="0 0 24 24"><path d="M5.6 5h12.8a2.4 2.4 0 0 1 2.4 2.4v7.4a2.4 2.4 0 0 1-2.4 2.4h-6.2l-4.6 3.2v-3.2h-2a2.4 2.4 0 0 1-2.4-2.4V7.4A2.4 2.4 0 0 1 5.6 5z"/></symbol>
       <!-- Stickers to give a piece: die-cut, with a white edge, the same in both themes. -->
@@ -80,8 +81,14 @@
       <nav class="tabs" id="tabs" aria-label="Sections"></nav>
       <div class="actions">
         <button class="btn round" id="open-view-as" type="button" aria-label="View as someone else" title="View as…" hidden><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg></button>
+        <!-- What's new for whoever's signed in: app.js draws the count and the list. -->
+        <button class="btn bell" id="open-bell" type="button" aria-expanded="false" aria-controls="bell" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span class="sr" id="bell-label">What’s new</span><b class="bell-n" id="bell-n" aria-hidden="true" hidden></b></button>
+        <section class="bell-panel" id="bell" aria-labelledby="bell-h" hidden>
+          <div class="bell-head"><h2 id="bell-h">What’s new</h2><span class="count" id="bell-count"></span></div>
+          <ul class="bell-list" id="bell-list"></ul>
+        </section>
         <button class="btn" id="open-frame" type="button"><svg class="i" aria-hidden="true"><use href="#i-frame"/></svg><span class="lbl">Frame</span></button>
-        <button class="btn primary edit-only" id="open-add" type="button"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add art</button>
+        <button class="btn primary edit-only" id="open-add" type="button"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg><span class="lbl">Add art</span></button>
       </div>
     </div>
   </header>

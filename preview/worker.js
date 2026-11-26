@@ -27,18 +27,21 @@ export default {
 const json = (data, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 
 async function handle(request, env) {
-  const { pathname } = new URL(request.url);
+  const url = new URL(request.url);
+  const { pathname } = url;
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: NOT_SAVED }, 403);
-  const who = visitor(request);
-  if (pathname === '/api/session') return json(who.session);
-  if (pathname === '/api/view-as') return who.session.owner ? json(viewAsList(who)) : json({ error: 'Only the fridge’s owners can view it as someone else.' }, 403);
-  if (pathname === '/api/gallery') return json(gallery(new Date(), who));
-  if (pathname === '/api/comments') return json(talkSummary(new Date(), who));
+  const who = persona(request);
+  const now = new Date();
+  if (pathname === '/api/session') return json(session(who));
+  if (pathname === '/api/view-as') return owns(who) ? json(viewAsList(who)) : json({ error: 'Only the fridge’s owners can view it as someone else.' }, 403);
+  if (pathname === '/api/gallery') return json(gallery(now, who));
+  if (pathname === '/api/comments') return json(talkSummary(now, who));
+  if (pathname === '/api/notifications') return json(notifications(now, who));
   const talk = pathname.match(/^\/api\/pieces\/(\d+)\/comments$/);
   if (talk) {
     const id = Number(talk[1]);
     if (!seenPieces(who).some((p) => p.id === id)) return json({ error: 'That isn’t on the fridge.' }, 404);
-    return json(pieceTalk(new Date(), id, who));
+    return json(pieceTalk(now, who, id));
   }
   if (pathname.startsWith('/api/')) return json({ error: 'There’s nothing at that address.' }, 404);
   const img = pathname.match(/^\/img\/(\d+)\/(thumb|display|original)$/);
@@ -52,77 +55,15 @@ async function handle(request, env) {
   return res;
 }
 
-// Who's looking. Usually a parent in the first family: Aunt Pine and Uncle
-// Pine, who share a sign-in, and who own the fridge, so they can view it as
-// someone else. With ?as=nonna on the page's address, it's Nonna, a
-// grandparent on their side who sees only the first family (as SEES has it
-// in the real Worker): not the other family, its kids, their art, nor what's
-// said about it. With ?view=, it's the parent viewing it as one of the
-// people in VIEW, with changes off, as the real Worker's view as does with a
-// cookie. The page's own requests carry its address as their Referer, so
-// that's where the API and the pictures look; nothing is remembered, and
-// nothing signs anyone in.
-const PARENT = {
-  name: null,
-  sees: null,
-  session: { email: 'visitor@example.com', canEdit: true, preview: true, families: ['pines'], owner: true },
-  me: { names: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }], families: ['pines'], kid: null, kid_id: null, seen: 9 },
-};
-const NONNA = {
-  name: 'Nonna',
-  sees: ['pines'],
-  session: { email: 'nonna@example.com', canEdit: false, preview: true, families: [], artist: null },
-  me: { names: [{ name: 'Nonna', home: null }], families: [], kid: null, kid_id: null, seen: 10 },
-};
-// Ada's own iPad, which is Ada.
-const ADA_IPAD = {
-  name: 'Ada',
-  sees: null,
-  session: { email: 'ada.ipad@example.com', canEdit: false, preview: true, families: [], artist: null },
-  me: { names: [], families: [], kid: 'Ada', kid_id: 1, seen: 10 },
-};
-// Whom the parent can view it as, in the shape of the real /api/view-as.
-const VIEW = [
-  { key: 'aunt-pine', group: 'pines', who: PARENT, email: 'visitor@example.com', as: 'Aunt Pine', name: 'Aunt Pine', detail: 'Parent, “Mum” at home' },
-  { key: 'uncle-pine', group: 'pines', who: PARENT, email: 'visitor@example.com', as: 'Uncle Pine', name: 'Uncle Pine', detail: 'Parent, “Dad” at home' },
-  { key: 'ada-ipad', group: 'pines', who: ADA_IPAD, email: 'ada.ipad@example.com', as: null, name: 'Ada', detail: 'Their iPad' },
-  { key: 'nonna', group: null, who: NONNA, email: 'nonna@example.com', as: null, name: 'Nonna', detail: 'Sees only The Pines' },
-];
-function visitor(request) {
-  const url = new URL(request.url);
-  let from = url;
-  if (!url.searchParams.has('as') && !url.searchParams.has('view')) {
-    try {
-      const referer = new URL(request.headers.get('Referer'));
-      if (referer.origin === url.origin) from = referer;
-    } catch {}
-  }
-  const view = VIEW.find((v) => v.key === from.searchParams.get('view'));
-  if (view) {
-    const { name, detail, as } = view;
-    return { ...view.who, viewing: view, session: { ...view.who.session, owner: true, viewing: { name, detail, as } } };
-  }
-  return from.searchParams.get('as') === 'nonna' ? NONNA : PARENT;
-}
-const viewAsList = (who) => ({
-  groups: [
-    { id: 'pines', name: 'The Pines', people: VIEW.filter((v) => v.group === 'pines') },
-    { id: null, name: 'Everyone else', people: VIEW.filter((v) => v.group === null) },
-  ].map((g) => ({ ...g, people: g.people.map(({ key, email, as, name, detail }) => ({ key, email, as, name, detail, address: false })) })),
-  viewing: who.viewing ? { email: who.viewing.email, as: who.viewing.as } : null,
-});
-const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
-const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
-
 // The page itself, saying in its title and a strip across the top that it's
-// a preview, with a link to see it as the other visitor. The strip scrolls
+// a preview, with links to see it as each kind of person. The strip scrolls
 // away under the header, so it covers nothing.
 async function markAsPreview(res, who) {
-  const link = (href, words) => `<a href="${href}" style="display:inline-block;padding:4px 2px;color:inherit;text-decoration:underline;text-underline-offset:3px">${words}</a>`;
-  // Seeing it as someone else is View as, with nothing to change, like the
-  // real one. ?as=nonna, Nonna's own page, is still there to try as her.
-  const words = who === NONNA ? `Preview as Nonna, who sees only the Pines. ${link('/', 'See it as their parent')}` : who.viewing ? 'Preview with a made-up family.' : `Preview with a made-up family. ${link('/?view=nonna', 'View it as Nonna, who sees only the Pines')}`;
-  const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">${words}</div>`;
+  const link = (key) => `<a href="/?as=${key}" style="display:inline-block;padding:7px 9px;color:#fff;${PERSONAS[key] === who ? 'text-decoration:none;background:#fff;color:#1c2a30;border-radius:999px' : 'text-decoration:underline'}"${PERSONAS[key] === who ? ' aria-current="page"' : ''}>${PERSONAS[key].label}</a>`;
+  // While the parent views it as someone (View as, ?view=), the page's own
+  // strip says whom, so this one offers no other way to look.
+  const others = who.viewing ? '' : `<nav aria-label="See the preview as" style="font-size:14px">See it as: ${Object.keys(PERSONAS).map(link).join(' ')}</nav>`;
+  const strip = `<div style="padding:3px max(16px,env(safe-area-inset-right,0px)) 3px max(16px,env(safe-area-inset-left,0px));background:#1c2a30;color:#fff;font:700 13px/1.3 system-ui,sans-serif;text-align:center">Preview with a made-up family${others}</div>`;
   const html = (await res.text()).replace(/<title>([^<]*)<\/title>/, '<title>Preview · $1</title>').replace(/<body[^>]*>/, (body) => body + strip);
   const headers = new Headers(res.headers);
   headers.delete('Content-Length');
@@ -176,88 +117,230 @@ function back(today, [years, days]) {
   return d;
 }
 // The same shape as the real /api/gallery, kids oldest first like the real
-// one, with only the families, kids and pieces this visitor sees.
+// one. `mine` is what an artist added, which they can change.
 function gallery(today, who) {
   const kids = KIDS.filter((k) => seesKid(who, k.id)).map(({ id, name, family, born }) => ({ id, name, born: iso(back(today, born)), family })).sort((a, b) => (a.born < b.born ? -1 : a.born > b.born ? 1 : a.id - b.id));
   const pieces = seenPieces(who).map(({ kind, ago, ...p }) => {
     const d = back(today, ago);
     if (p.made_precision === 'month') d.setUTCDate(15);
     if (p.made_precision === 'year') d.setUTCMonth(6, 1);
-    const added = new Date(today.getTime() - (PIECES.length - p.id) * 36e5);
-    return { ...p, made: iso(d > today ? today : d), source_name: null, created_at: added.toISOString().slice(0, 19).replace('T', ' ') };
+    return { ...p, made: iso(d > today ? today : d), source_name: null, created_at: addedAt(today, p.id) };
   }).sort((a, b) => (a.made < b.made ? 1 : a.made > b.made ? -1 : b.id - a.id));
-  return { families: FAMILIES.filter((f) => who.sees === null || who.sees.includes(f.id)), kids, pieces };
+  return { families: FAMILIES.filter((f) => who.sees === null || who.sees.includes(f.id)), kids, pieces, mine: who.artist ? PIECES.filter((p) => addedBy(p.id) === who.signin).map((p) => p.id) : [] };
 }
 
-// ---- Made-up comments and stickers ----
-// In the real Worker's shapes (talk() in src/worker.js). The parents'
-// sign-in is shared by two parents in the first family, Mum and Dad on its
-// kids' art and Aunt Pine and Uncle Pine on the other family's, so the page
-// says which of them is commenting. They've read up to comment 9, so the
-// ones after it are new. As parents in the first family, they could remove
-// comments on its kids' art. Nonna has read up to comment 10, and can remove
-// only her own. The page keeps what a visitor adds to itself: the Worker
-// above refuses every change.
-// [id, piece, who, the kid it is (or none), minutes ago, what they said]
-const COMMENTS = [
-  [1, 4, 'Grandma', null, 4380, 'Look at those flames! Where is it going?'],
-  [2, 4, 'Ada', 1, 4340, 'To the moon and then back for tea'],
-  [3, 4, 'Pop', null, 2900, 'Can I come too? I’ll bring sandwiches.'],
-  [4, 12, 'Auntie Jo', null, 1560, 'Crunchy is my new favourite dinosaur.'],
-  [5, 12, 'Bo', 2, 1500, 'He is very hungry'],
-  [6, 13, 'Nana', null, 1200, 'What a brave sailor! Where’s the island?'],
-  [7, 13, 'Ada', 1, 1150, 'I like the flag'],
-  [8, 18, 'Grandma', null, 300, 'One for everybody! Is there one for me?'],
-  [9, 18, 'Dee', 4, 240, 'Yes the yellow one is yours'],
-  [10, 1, 'Pop', null, 180, 'That hat is very like Grandma’s.'],
-  [11, 8, 'Auntie Jo', null, 50, 'Hot! Hot! Hot! made me laugh out loud.'],
-  [12, 20, 'Cy', 3, 20, 'Blub!'],
-  [13, 2, 'Dee', 4, 15, 'Can you draw my house next?'],
-  [14, 10, 'Aunt Oak', null, 12, 'These would cheer anyone up.'],
-  [15, 4, 'Nonna', null, 8, 'What a rocket! Save me a seat.'],
-].map(([id, piece_id, by, kid_id, ago, body]) => ({ id, piece_id, by, kid_id, ago, body }));
-const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
-// Who gave which stickers to each piece.
-const GIVEN = {
-  1: { heart: ['Grandma', 'Pop', 'Nana', 'Auntie Jo', 'Nonna'] },
-  3: { rainbow: ['Grandma', 'Cy'] },
-  4: { star: ['Grandma', 'Pop', 'Nana', 'Nonna'], heart: ['Grandma'], wow: ['Bo', 'Cy'] },
-  8: { smile: ['Auntie Jo', 'Bo'] },
-  12: { wow: ['Auntie Jo', 'Ada'], smile: ['Pop'] },
-  13: { star: ['Nana'], rainbow: ['Grandma'] },
-  18: { heart: ['Grandma', 'Dee'], rainbow: ['Pop', 'Auntie Jo', 'Ada'] },
-  20: { smile: ['Cy', 'Dee'] },
+// ---- Made-up people, comments and stickers ----
+// In the real Worker's shapes (talk() and notifications() in src/worker.js).
+// The page can be seen as each kind of person (PERSONAS, from the strip's
+// links). By default the visitor is a sign-in shared by two parents in the
+// first family: Mum and Dad on its kids' art, and Aunt Pine and Uncle Pine
+// on the other family's, so the page says which of them is commenting.
+// Nonna, a grandparent on their side, sees only the first family (as SEES
+// has it in the real Worker): not the other family, its kids, their art,
+// what's said about it, nor their names, which are "Family" to her. The page
+// keeps what the visitor adds to itself: the Worker above refuses every change.
+//
+// Everyone's sign-in, by a made-up key: a family's parents, people who only
+// look, and the kids, who are their kid.
+const SIGNINS = {
+  pines: { family: 'pines', people: [{ name: 'Aunt Pine', home: 'Mum' }, { name: 'Uncle Pine', home: 'Dad' }] },
+  oaks: { family: 'oaks', people: [{ name: 'Aunt Oak', home: 'Mama' }] },
+  grandma: { people: [{ name: 'Grandma' }] },
+  pop: { people: [{ name: 'Pop' }] },
+  nana: { people: [{ name: 'Nana' }] },
+  jo: { people: [{ name: 'Auntie Jo' }] },
+  nonna: { people: [{ name: 'Nonna' }] },
+  ada: { kid: 1 },
+  bo: { kid: 2 },
+  cy: { kid: 3 },
+  dee: { kid: 4 },
 };
-// Who's in which family, of the people above. To someone who doesn't see
-// their family, they're "Family", as the real Worker names them, never their
-// name.
-const MEMBERS = { Ada: 'pines', Bo: 'pines', Cy: 'oaks', Dee: 'oaks', 'Aunt Oak': 'oaks' };
-const hiddenFrom = (who, by) => who.sees !== null && MEMBERS[by] && !who.sees.includes(MEMBERS[by]);
+// Who the page is for: what they see (null for everything), and how far
+// they'd caught up, minutes ago.
+const PERSONAS = {
+  parents: { label: 'Mum and Dad', signin: 'pines', canEdit: true, families: ['pines'], artist: null, sees: null, seen: 420 },
+  grandma: { label: 'Grandma', signin: 'grandma', canEdit: false, families: [], artist: null, sees: null, seen: 500 },
+  nonna: { label: 'Nonna, who sees only the Pines', signin: 'nonna', canEdit: false, families: [], artist: null, sees: ['pines'], seen: 1000 },
+  ada: { label: 'Ada’s iPad', signin: 'ada', canEdit: false, families: [], artist: null, sees: null, seen: 1440 },
+  dee: { label: 'Dee, an artist', signin: 'dee', canEdit: false, families: [], artist: 'Dee', sees: null, seen: 1440 },
+};
+// Whom the parents, who own the fridge, can view it as (View as), in the
+// shape of the real /api/view-as, each one of the people above.
+const VIEW = [
+  { key: 'aunt-pine', group: 'pines', persona: 'parents', email: 'visitor@example.com', as: 'Aunt Pine', name: 'Aunt Pine', detail: 'Parent, “Mum” at home' },
+  { key: 'uncle-pine', group: 'pines', persona: 'parents', email: 'visitor@example.com', as: 'Uncle Pine', name: 'Uncle Pine', detail: 'Parent, “Dad” at home' },
+  { key: 'ada-ipad', group: 'pines', persona: 'ada', email: 'ada.ipad@example.com', as: null, name: 'Ada', detail: 'Their iPad' },
+  { key: 'nonna', group: null, persona: 'nonna', email: 'nonna@example.com', as: null, name: 'Nonna', detail: 'Sees only The Pines' },
+];
+// Who's looking: ?as= on the page's address, which its own requests carry as
+// their Referer, or with ?view=, the parents viewing it as one of VIEW, with
+// changes off, as the real Worker's View as does with a cookie. Nothing is
+// remembered, and nothing signs anyone in.
+function persona(request) {
+  const url = new URL(request.url);
+  let from = url;
+  if (!url.searchParams.has('as') && !url.searchParams.has('view')) {
+    try {
+      const referer = new URL(request.headers.get('Referer'));
+      if (referer.origin === url.origin) from = referer;
+    } catch {}
+  }
+  const view = VIEW.find((v) => v.key === from.searchParams.get('view'));
+  if (view) return { ...PERSONAS[view.persona], viewing: view };
+  return PERSONAS[from.searchParams.get('as')] || PERSONAS.parents;
+}
+// The parents own the fridge; while they view it as someone, they still do.
+const owns = (who) => Boolean(who.viewing) || who === PERSONAS.parents;
+function session(who) {
+  const out = { email: 'visitor@example.com', canEdit: who.canEdit, preview: true, families: who.families, artist: who.artist };
+  if (owns(who)) out.owner = true;
+  if (who.viewing) out.viewing = { name: who.viewing.name, detail: who.viewing.detail, as: who.viewing.as };
+  return out;
+}
+const viewAsList = (who) => ({
+  groups: [
+    { id: 'pines', name: 'The Pines', people: VIEW.filter((v) => v.group === 'pines') },
+    { id: null, name: 'Everyone else', people: VIEW.filter((v) => v.group === null) },
+  ].map((g) => ({ ...g, people: g.people.map(({ key, email, as, name, detail }) => ({ key, email, as, name, detail, address: false })) })),
+  viewing: who.viewing ? { email: who.viewing.email, as: who.viewing.as } : null,
+});
+const seesKid = (who, id) => who.sees === null || who.sees.includes(KIDS.find((k) => k.id === id).family);
+const seenPieces = (who) => PIECES.filter((p) => seesKid(who, p.kid_id));
+// Who put each piece up, and when, minutes ago. The rest went up months ago,
+// by their family's parents.
+const ADDED = { 20: [100, 'oaks'], 8: [70, 'pines'], 18: [360, 'dee'], 3: [600, 'pines'], 7: [600, 'pines'], 13: [1300, 'oaks'], 21: [1300, 'oaks'], 12: [1600, 'pines'], 1: [3100, 'pines'], 4: [4400, 'pines'] };
+const kidOf = (pieceId) => KIDS.find((k) => k.id === PIECES.find((p) => p.id === pieceId).kid_id);
+const addedBy = (id) => ADDED[id]?.[1] ?? kidOf(id).family;
 const stamp = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
-function comment(today, c, who) {
-  const kid = KIDS.find((k) => k.id === PIECES.find((p) => p.id === c.piece_id).kid_id);
-  const mine = c.by === who.name;
-  const hidden = hiddenFrom(who, c.by);
-  return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: stamp(new Date(today.getTime() - c.ago * 6e4)), edited: false, by: hidden ? 'Family' : c.by, kid_id: hidden ? null : c.kid_id, mine, can_remove: mine || who.session.families.includes(kid.family) };
+const ago = (today, minutes) => stamp(new Date(today.getTime() - minutes * 6e4));
+const addedAt = (today, id) => ago(today, ADDED[id]?.[0] ?? 60 * 24 * 90 + id * 60);
+// The name everyone sees for someone, on a piece: as the real Worker names
+// them (namesFor), a kid as the kid, and a parent by their family name on
+// their own family's kids' art. On a shared sign-in, the person who spoke.
+// To someone who doesn't see their family, anyone in it is "Family".
+function shown(signin, as, pieceId, who) {
+  const s = SIGNINS[signin];
+  const family = s.family ?? (s.kid && KIDS.find((k) => k.id === s.kid).family);
+  if (who && family && who.sees !== null && !who.sees.includes(family)) return { name: 'Family', kid_id: null };
+  if (s.kid) return { name: KIDS.find((k) => k.id === s.kid).name, kid_id: s.kid };
+  const home = s.family && s.family === kidOf(pieceId).family;
+  const name = (p) => (home && p.home) || p.name;
+  const spoke = as && s.people.find((p) => p.name === as);
+  return { name: spoke ? name(spoke) : s.people.map(name).join(' & '), kid_id: null };
+}
+// [id, piece, who, which of them on a shared sign-in, minutes ago, what they said]
+const COMMENTS = [
+  [1, 4, 'grandma', '', 4380, 'Look at those flames! Where is it going?'],
+  [2, 4, 'ada', '', 4340, 'To the moon and then back for tea'],
+  [3, 4, 'pop', '', 2900, 'Can I come too? I’ll bring sandwiches.'],
+  [4, 12, 'jo', '', 1560, 'Crunchy is my new favourite dinosaur.'],
+  [5, 12, 'bo', '', 1500, 'He is very hungry'],
+  [6, 13, 'nana', '', 1200, 'What a brave sailor! Where’s the island?'],
+  [7, 13, 'pines', 'Aunt Pine', 1170, 'Love the flag. Can we come sailing too?'],
+  [8, 13, 'ada', '', 1150, 'I like the flag'],
+  [9, 13, 'cy', '', 400, 'Yes! Everybody can come'],
+  [10, 18, 'grandma', '', 300, 'One for everybody! Is there one for me?'],
+  [11, 18, 'dee', '', 240, 'Yes the yellow one is yours'],
+  [12, 1, 'pop', '', 180, 'That hat is very like Grandma’s.'],
+  [13, 8, 'jo', '', 50, 'Hot! Hot! Hot! made me laugh out loud.'],
+  [14, 20, 'cy', '', 20, 'Blub!'],
+  [15, 2, 'dee', '', 15, 'Can you draw my house next?'],
+  [16, 10, 'oaks', '', 12, 'These would cheer anyone up.'],
+  [17, 4, 'nonna', '', 8, 'What a rocket! Save me a seat.'],
+].map(([id, piece_id, signin, as, minutes, body]) => ({ id, piece_id, signin, as, minutes, body }));
+const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
+// Who gave which stickers to each piece, and when: [kind, who, which of them, minutes ago].
+const GIVEN = [
+  [1, 'heart', 'grandma', '', 3000], [1, 'heart', 'pop', '', 2950], [1, 'heart', 'nana', '', 2000], [1, 'heart', 'jo', '', 1700], [1, 'heart', 'nonna', '', 150],
+  [3, 'rainbow', 'grandma', '', 590], [3, 'rainbow', 'cy', '', 580],
+  [4, 'star', 'grandma', '', 4300], [4, 'heart', 'grandma', '', 4300], [4, 'star', 'pop', '', 2890], [4, 'wow', 'bo', '', 1400], [4, 'star', 'nana', '', 1190], [4, 'wow', 'cy', '', 600], [4, 'star', 'nonna', '', 140],
+  [8, 'smile', 'jo', '', 50], [8, 'smile', 'bo', '', 30],
+  [12, 'wow', 'jo', '', 1555], [12, 'smile', 'pop', '', 1450], [12, 'wow', 'ada', '', 1000],
+  [13, 'star', 'nana', '', 1200], [13, 'rainbow', 'grandma', '', 310],
+  [16, 'star', 'pines', 'Aunt Pine', 2000],
+  [19, 'heart', 'nana', '', 2900],
+  [18, 'heart', 'grandma', '', 300], [18, 'heart', 'dee', '', 230], [18, 'rainbow', 'pop', '', 170], [18, 'rainbow', 'jo', '', 160], [18, 'rainbow', 'ada', '', 90],
+  [20, 'smile', 'cy', '', 20], [20, 'smile', 'dee', '', 15],
+].map(([piece_id, kind, signin, as, minutes], rid) => ({ rid: rid + 1, piece_id, kind, signin, as, minutes }));
+
+function comment(today, who, c) {
+  const kid = kidOf(c.piece_id);
+  const by = shown(c.signin, c.as, c.piece_id, who);
+  const mine = c.signin === who.signin;
+  return { id: c.id, piece_id: c.piece_id, body: c.body, created_at: ago(today, c.minutes), edited: false, by: by.name, kid_id: by.kid_id, mine, can_remove: mine || (who.canEdit && who.families.includes(kid.family)) };
 }
 const stickersOn = (id, who) =>
   STICKERS.map((kind) => {
-    const by = GIVEN[id]?.[kind] || [];
-    return { kind, count: by.length, mine: by.includes(who.name) ? [''] : [], by: by.map((n) => (hiddenFrom(who, n) ? 'Family' : n)) };
+    const given = GIVEN.filter((g) => g.piece_id === id && g.kind === kind).sort((a, b) => b.minutes - a.minutes);
+    return { kind, count: given.length, mine: given.filter((g) => g.signin === who.signin).map((g) => g.as), by: given.map((g) => shown(g.signin, g.as, id, who).name) };
   });
-// Comments on the pieces this visitor sees.
-const seenComments = (who) => COMMENTS.filter((c) => seenPieces(who).some((p) => p.id === c.piece_id));
+function me(today, who) {
+  const s = SIGNINS[who.signin];
+  const kid = s.kid ? KIDS.find((k) => k.id === s.kid) : null;
+  return { names: kid ? [] : s.people.map((p) => ({ name: p.name, home: p.home ?? null })), families: who.families, kid: kid?.name ?? null, kid_id: kid?.id ?? null, seen: ago(today, who.seen) };
+}
 function talkSummary(today, who) {
   const counts = {};
   for (const p of seenPieces(who)) {
     const on = COMMENTS.filter((c) => c.piece_id === p.id);
-    const stickers = stickersOn(p.id, who).reduce((n, s) => n + s.count, 0);
-    if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: Math.max(0, ...on.filter((c) => c.by !== who.name).map((c) => c.id)) };
+    const stickers = GIVEN.filter((g) => g.piece_id === p.id).length;
+    const others = on.filter((c) => c.signin !== who.signin);
+    if (on.length || stickers) counts[p.id] = { comments: on.length, stickers, newest: others.length ? ago(today, Math.min(...others.map((c) => c.minutes))) : '' };
   }
-  const latest = [...seenComments(who)].sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, c, who));
-  return { me: who.me, newest: Math.max(0, ...seenComments(who).map((c) => c.id)), counts, latest };
+  const latest = COMMENTS.filter((c) => seesKid(who, kidOf(c.piece_id).id)).sort((a, b) => b.id - a.id).slice(0, 8).map((c) => comment(today, who, c));
+  return { me: me(today, who), counts, latest };
 }
-const pieceTalk = (today, id, who) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, c, who)), stickers: stickersOn(id, who) });
+const pieceTalk = (today, who, id) => ({ comments: COMMENTS.filter((c) => c.piece_id === id).map((c) => comment(today, who, c)), stickers: stickersOn(id, who) });
+
+// What's new for whoever's looking, by the real Worker's rules: new art
+// (only their own, for a kid), and stickers and comments on their art or
+// their kids', or after they commented. A day's art by one person for one
+// kid is one notification, and so is a day's stickers from one person on one
+// piece. Only about kids they see, and the people in families they don't
+// see are "Family". Nothing here is from the current second, so as_of is a
+// second ago.
+function notifications(today, who) {
+  const s = SIGNINS[who.signin];
+  const theirs = (s.kid ? [s.kid] : who.canEdit ? KIDS.filter((k) => who.families.includes(k.family)).map((k) => k.id) : []).filter((id) => seesKid(who, id));
+  const groups = new Map();
+  const day = (minutes) => ago(today, minutes).slice(0, 10);
+  const base = (pieceId, minutes, signin, as) => {
+    const by = shown(signin, as, pieceId, who);
+    const p = PIECES.find((x) => x.id === pieceId);
+    return { at: ago(today, minutes), piece_id: pieceId, kid_id: p.kid_id, title: p.title, by: by.name, by_kid_id: by.kid_id };
+  };
+  const recent = (minutes) => minutes < 60 * 24 * 60;
+  for (const p of [...seenPieces(who)].sort((a, b) => (ADDED[a.id]?.[0] ?? 1e9) - (ADDED[b.id]?.[0] ?? 1e9) || b.id - a.id)) {
+    const minutes = ADDED[p.id]?.[0] ?? 60 * 24 * 90 + p.id * 60;
+    if (!recent(minutes) || addedBy(p.id) === who.signin || (s.kid && p.kid_id !== s.kid)) continue;
+    const group = `${p.kid_id}:${addedBy(p.id)}:${day(minutes)}`;
+    const g = groups.get(group);
+    if (g) {
+      g.count++;
+      if (g.pieces.length < 4) g.pieces.push(p.id);
+      g.key = `art:${Math.min(Number(g.key.slice(4)), p.id)}`;
+    } else groups.set(group, { key: `art:${p.id}`, kind: 'art', ...base(p.id, minutes, addedBy(p.id), ''), count: 1, pieces: [p.id] });
+  }
+  for (const c of COMMENTS) {
+    if (c.signin === who.signin || !seesKid(who, kidOf(c.piece_id).id)) continue;
+    const onTheirs = theirs.includes(kidOf(c.piece_id).id);
+    const after = COMMENTS.some((m) => m.piece_id === c.piece_id && m.id < c.id && m.signin === who.signin);
+    if (onTheirs || after) groups.set(`c${c.id}`, { key: `comment:${c.id}`, kind: onTheirs ? 'comment' : 'reply', ...base(c.piece_id, c.minutes, c.signin, c.as), body: c.body });
+  }
+  for (const g of [...GIVEN].sort((a, b) => a.minutes - b.minutes)) {
+    if (g.signin === who.signin || !theirs.includes(kidOf(g.piece_id).id)) continue;
+    const group = `s${g.piece_id}:${g.signin}:${g.as}:${day(g.minutes)}`;
+    const had = groups.get(group);
+    if (had) {
+      if (!had.stickers.includes(g.kind)) had.stickers.push(g.kind);
+      had.key = `sticker:${Math.min(Number(had.key.slice(8)), g.rid)}`;
+    } else groups.set(group, { key: `sticker:${g.rid}`, kind: 'sticker', ...base(g.piece_id, g.minutes, g.signin, g.as), stickers: [g.kind] });
+  }
+  const seen = ago(today, who.seen);
+  const all = [...groups.values()].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.key < b.key ? 1 : -1));
+  for (const n of all) n.new = n.at > seen;
+  return { seen, as_of: ago(today, 1 / 60), unread: all.filter((n) => n.new).length, items: all.slice(0, 40) };
+}
 
 // ---- Crayon drawings, as SVG ----
 const C = { red: '#d63031', orange: '#f08c1e', yellow: '#f5c518', green: '#3ca046', blue: '#286ec8', purple: '#8246aa', brown: '#82552f', pink: '#f078aa', black: '#28282d', sky: '#6eb4eb', grass: '#5ab43c', grey: '#c8c8d2' };

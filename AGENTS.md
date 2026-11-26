@@ -64,13 +64,15 @@ history on `main` is permanent.
 - `public/pdfjs/`: a pinned copy of pdf.js, for PDFs in Add art. See "pdf.js"
   below.
 - `preview/`: a public preview of the page for pull requests. `worker.js`
-  makes up the kids, the art, its drawings, comments and stickers, and
-  refuses every change (the page keeps what's added there to itself);
-  `wrangler.toml` gives it no bindings. It's seen as a parent in the
-  first family, or, from a page opened with `?as=nonna`, as Nonna, who
-  sees only that family (the page's requests carry that address as their
-  Referer). The parent is an owner, and `?view=` is them viewing as one of
-  its people, in place of the real Worker's cookie. `.github/workflows/preview.yml`
+  makes up the kids, the art, its drawings, comments, stickers and
+  notifications, and refuses every change (the page keeps what's added
+  there to itself); `wrangler.toml` gives it no bindings. It's seen as a
+  parent in the first family, or, from a page opened with `?as=` (its
+  strip's links), as another made-up person: a grandparent, Nonna (who sees
+  only that family), a kid's iPad or an artist. The page's requests carry
+  that address as their Referer; nothing is remembered. The parent is an
+  owner, and `?view=` is them viewing as one of its people, in place of the
+  real Worker's cookie. `.github/workflows/preview.yml`
   deploys one per pull request and deletes it when the pull request closes.
 - `scripts/fridge.py`: the import script, a uv script run on a parent's
   computer. It signs in with `cloudflared` as that parent.
@@ -142,6 +144,18 @@ workers.dev only because they're a separate Worker with nothing real on it.
   only from infra (`NAMES`, `FAMILIES`): don't add a route that sets them.
   Comments and stickers are deleted with their piece. Keep the limits (500 characters, 10 comments in 10 minutes, 200 a
   piece) in the Worker.
+- Notifications (`notifications()` in `worker.js`, the bell in `app.js`)
+  are worked out from the art, comments and stickers each time they're
+  asked for, under the same rules as everything else, so they go when
+  their piece, comment or sticker does. Nothing is stored but how far each
+  sign-in has caught up (`people.seen_at`), which the walls' New marks go
+  by too: don't add a second "seen". They're only about kids someone sees
+  (`canSee` in `auth.js`), so no notification, count or link gives away a
+  piece or kid they couldn't open. Names only, never addresses, even in
+  a notification's `key`. Only what's from before the current second is
+  listed, so catching up to `as_of` never passes over something unlisted.
+  While an owner views as someone, the bell is that person's, and nothing
+  catches them up: the page doesn't try, and `readOnly` would refuse it.
 - View as (`viewAs` in `worker.js`) is for the owners only (`isOwner`):
   anyone else's cookie counts for nothing, and the list of people
   (`/api/view-as`) goes to nobody else. The person viewed's `who` is the

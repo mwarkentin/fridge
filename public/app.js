@@ -528,9 +528,12 @@ function buildChrome() {
 
 async function load() {
   // Without comments (a database from before them), the page is as it was.
-  const [session, data, talk] = await Promise.all([api('/api/session'), api('/api/gallery'), api('/api/comments').catch(() => null)]);
+  const [session, data, talk, notes] = await Promise.all([api('/api/session'), api('/api/gallery'), api('/api/comments').catch(() => null), api('/api/notifications').catch(() => null)]);
   TALK = talk;
-  if (TALK && SEEN === null) SEEN = TALK.me.seen ?? Infinity;
+  // New marks are for this whole visit: since how far they'd caught up when
+  // it began. On a first visit nothing is new yet.
+  if (TALK && SEEN === null) SEEN = TALK.me.seen ?? NEVER;
+  if (notes) NOTES = notes;
   OWNER = Boolean(session.owner);
   VIEWING = session.viewing ?? null;
   // Looking as someone, nothing is offered that would change anything.
@@ -546,12 +549,12 @@ async function load() {
   PIECES = data.pieces;
   buildChrome();
   render();
-  // What's on the page now has been seen: next time, only newer comments are new.
-  // Not while viewing as someone: what's new for them stays new.
-  if (TALK && !PREVIEW && !VIEWING && TALK.newest > (TALK.me.seen ?? 0)) {
-    const seen = TALK.newest;
-    api('/api/me', { method: 'PATCH', json: { seen } }).then(() => (TALK.me.seen = seen), () => {});
-  }
+  drawBell();
+  // Opening the fridge catches someone up, so next time only newer things
+  // are new, unless something's waiting for them in the bell: then that
+  // waits, and the walls' New marks with it, until they open it. Not while
+  // viewing as someone: what's new for them stays new.
+  if (NOTES && !NOTES.unread && !VIEWING) caughtUp();
 }
 
 // ---- Piece view ----
@@ -705,7 +708,11 @@ const STICKERS = [
 ];
 const COMMENT_MAX = 500;
 let TALK = null;
-let SEEN = null; // the newest comment seen before this visit: newer ones are new
+// How far someone had caught up when this visit began (a time, like a
+// comment's created_at): newer comments are new. NEVER is later than any
+// time, for a first visit.
+const NEVER = '\uffff';
+let SEEN = null;
 const opened = new Set(); // pieces looked at this visit, so no longer new
 const drafts = new Map(); // what someone was writing, by piece
 let talking = null; // the open piece's { id, comments, stickers }, once loaded
@@ -737,9 +744,9 @@ const myName = () => {
   return TALK.me.kid || (person ? shownOn(person, talkKid()) : 'You');
 };
 
-const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: 0 };
+const countsOf = (id) => TALK?.counts[id] || { comments: 0, stickers: 0, newest: '' };
 const isNew = (p) => countsOf(p.id).newest > SEEN && !opened.has(p.id);
-const commentIsNew = (c) => c.id > SEEN && !c.mine && !opened.has(c.piece_id);
+const commentIsNew = (c) => c.created_at > SEEN && !c.mine && !opened.has(c.piece_id);
 const stamp = (d = new Date()) => d.toISOString().slice(0, 19).replace('T', ' ');
 const when = (s) => new Date(`${s.replace(' ', 'T')}Z`);
 function ago(s) {
@@ -947,7 +954,7 @@ function showLeft() {
 
 // Keep the walls' counts and Home's latest comments up with a change here.
 function counted(id, change) {
-  const c = (TALK.counts[id] ||= { comments: 0, stickers: 0, newest: 0 });
+  const c = (TALK.counts[id] ||= { comments: 0, stickers: 0, newest: '' });
   change(c);
   render();
 }
@@ -1093,6 +1100,181 @@ $('#d-read').addEventListener('click', (e) => {
   else if (choosingAs) $('#t-as-pick [aria-pressed="true"]')?.focus();
 });
 $('#d-read').addEventListener('animationend', (e) => e.target.closest?.('.stk')?.classList.remove('popped'));
+
+// ---- What's new: the bell ----
+// The Worker works out what's new for whoever's signed in (notifications()
+// in worker.js): new art, and stickers and comments on their art or their
+// kids', or after they commented. NOTES is /api/notifications: the list,
+// newest first, `unread`, and `as_of`, how far opening the bell catches
+// them up. It's checked again every minute while the page is in sight.
+// Opening the bell catches them up, here and on the walls next time. A
+// kid's own sign-in gets big stickers and few words.
+let NOTES = null;
+let bellOpen = false;
+let fresh = new Set(); // what was new when the bell opened: it stays marked while it's open
+const bell = $('#bell');
+const bellBtn = $('#open-bell');
+const STICKER_WORDS = { heart: 'a heart', star: 'a gold star', wow: 'a wow', smile: 'a smiley', rainbow: 'a rainbow' };
+// "a heart", "a heart and a gold star", "a heart, a wow and a gold star".
+const andList = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : (list[0] ?? ''));
+const own = (s) => `${s}’s`;
+const forKid = () => TALK?.me.kid_id != null;
+
+// What a notification says, as HTML: everything from the Worker escaped.
+function noteWords(n) {
+  const kid = KIDS.find((k) => k.id === n.kid_id);
+  const by = `<b>${esc(n.by)}</b>`;
+  const t = n.title ? esc(n.title) : '';
+  if (forKid() && n.kid_id === TALK.me.kid_id) {
+    // To a kid, about their own art: few words, and the picture says which.
+    const yours = t ? `your “${t}”` : 'your picture';
+    if (n.kind === 'sticker') return `${by} gave ${yours} ${andList(n.stickers.map((s) => STICKER_WORDS[s]))}`;
+    if (n.kind === 'art') return n.count === 1 ? `${by} put ${yours} on the fridge` : `${by} put ${n.count} of your pictures on the fridge`;
+    return `${by} said`;
+  }
+  if (forKid()) return `${by} said`;
+  // The artist themselves isn't "Ada on Ada’s".
+  const self = n.by_kid_id != null && n.by_kid_id === n.kid_id;
+  const piece = self ? (t ? `“${t}”` : 'an untitled piece') : t ? `${esc(own(kid?.name ?? ''))} “${t}”` : `${esc(own(kid?.name ?? ''))} untitled piece`;
+  if (n.kind === 'sticker') return `${by} gave ${piece} ${andList(n.stickers.map((s) => STICKER_WORDS[s]))}`;
+  if (n.kind === 'art') {
+    if (n.count > 1) return self ? `${by} put up ${n.count} new pieces` : `${by} put up ${n.count} new pieces by ${esc(kid?.name ?? '')}`;
+    return `${by} put up ${piece}`;
+  }
+  if (n.kind === 'reply') return `${by} replied on ${piece}`;
+  return `${by} on ${piece}`;
+}
+// Its picture: the stickers themselves, the commenter's magnet, or the art's.
+function notePic(n) {
+  if (n.kind === 'sticker') return `<span class="n-st">${n.stickers.slice(0, 3).map((s) => `<svg class="stk-art" aria-hidden="true"><use href="#s-${s}"/></svg>`).join('')}</span>`;
+  if (n.kind === 'art') {
+    const kid = KIDS.find((k) => k.id === n.kid_id);
+    return `<i class="av n-av" aria-hidden="true"${kid ? ` style="${kidStyle(kid)}"` : ''}>${icon('pictures')}</i>`;
+  }
+  return `<span class="n-who">${whoMagnet({ by: n.by, kid_id: n.by_kid_id })}<i class="n-bub" aria-hidden="true">${icon('bubble')}</i></span>`;
+}
+function noteItem(n) {
+  const kid = KIDS.find((k) => k.id === n.kid_id);
+  const isFresh = fresh.has(n.key);
+  const said = n.body ? `<span class="n-said${n.by_kid_id != null ? ' by-kid' : ''}">${esc(n.body)}</span>` : '';
+  const more = n.kind === 'art' && n.count > 1 ? `<b class="n-more" aria-hidden="true">+${n.count - 1}</b>` : '';
+  return `<li${kid ? ` style="${kidStyle(kid)}"` : ''}><button class="n-item n-${n.kind}${isFresh ? ' is-new' : ''}" type="button" data-note="${esc(n.key)}">
+    <span class="n-pic">${notePic(n)}</span>
+    <span class="n-thumb"><img src="/img/${Number(n.piece_id)}/thumb" alt="" loading="lazy">${more}</span>
+    <span class="n-copy"><span class="n-what">${noteWords(n)}</span>${said}<span class="n-meta">${timeTag(n.at)}${isFresh ? '<b class="new">New</b>' : ''}</span></span>
+  </button></li>`;
+}
+
+function drawBell() {
+  bellBtn.hidden = !NOTES;
+  if (!NOTES) return;
+  const n = NOTES.unread;
+  const badge = $('#bell-n');
+  const was = badge.hidden ? 0 : Number(badge.dataset.n || 0);
+  badge.hidden = !n;
+  badge.dataset.n = String(n);
+  badge.textContent = n > 9 ? '9+' : String(n);
+  if (n > was) badge.classList.add('popped');
+  $('#bell-label').textContent = n ? `What’s new: ${plural(n, 'new thing')}` : 'What’s new';
+  bellBtn.setAttribute('aria-expanded', String(bellOpen));
+  bell.classList.toggle('for-kid', forKid());
+  if (!bellOpen) return;
+  const count = NOTES.items.filter((x) => fresh.has(x.key)).length;
+  $('#bell-count').textContent = count ? `${count} new` : '';
+  $('#bell-list').innerHTML = NOTES.items.length
+    ? NOTES.items.map(noteItem).join('')
+    : `<li class="n-empty">${doodle('heart')}<span>${forKid() ? 'Nothing new yet. When someone gives your art a sticker, it shows up here.' : 'Nothing new yet. New art, and stickers and comments for you, show up here.'}</span></li>`;
+}
+$('#bell-n').addEventListener('animationend', (e) => e.target.classList.remove('popped'));
+
+// Caught up to the notifications' as_of: here, the bell's count, and on the
+// Worker, for the bell next time and the walls' New marks next visit. The
+// preview saves nothing, so there it's only here, and so is viewing as
+// someone: nothing about them moves, and the Worker would refuse it anyway.
+function caughtUp() {
+  if (!NOTES) return;
+  const seen = NOTES.as_of;
+  for (const n of NOTES.items) n.new = false;
+  NOTES.unread = 0;
+  if (PREVIEW || VIEWING || (NOTES.seen && NOTES.seen >= seen)) return;
+  NOTES.seen = seen;
+  api('/api/me', { method: 'PATCH', json: { seen } }).catch(() => {});
+}
+
+function setBell(open) {
+  if (open === bellOpen || !NOTES) return;
+  bellOpen = open;
+  bell.hidden = !open;
+  if (open) {
+    fresh = new Set(NOTES.items.filter((n) => n.new).map((n) => n.key));
+    caughtUp();
+    placeBell();
+    bell.scrollTop = 0;
+  }
+  drawBell();
+}
+// Under the bell, as far as the screen allows.
+function placeBell() {
+  const b = bellBtn.getBoundingClientRect();
+  const r = topBar.getBoundingClientRect();
+  const gutter = Math.max(16, parseFloat(getComputedStyle($('.bar-inner')).paddingRight) || 0);
+  const right = r.right - b.right - 4;
+  bell.style.setProperty('--bell-right', `${Math.round(Math.max(gutter, Math.min(right, r.width - bell.offsetWidth - gutter)))}px`);
+}
+
+async function refreshNotes() {
+  if (PREVIEW || !NOTES || document.hidden) return;
+  let next;
+  try {
+    next = await api('/api/notifications');
+  } catch {
+    return;
+  }
+  // Nothing new: leave the list as it is, so nobody loses their place in it.
+  const sig = (x) => JSON.stringify([x.unread, x.items.map((n) => [n.key, n.at, n.count, n.stickers])]);
+  if (sig(next) === sig(NOTES)) return;
+  NOTES = next;
+  // Whatever comes in while the list is open is being looked at.
+  if (bellOpen) {
+    for (const n of NOTES.items) if (n.new) fresh.add(n.key);
+    caughtUp();
+  }
+  drawBell();
+}
+setInterval(refreshNotes, 60_000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshNotes();
+});
+
+bellBtn.addEventListener('click', () => setBell(!bellOpen));
+bell.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-note]');
+  if (!b) return;
+  const n = NOTES.items.find((x) => x.key === b.dataset.note);
+  if (!n) return;
+  setBell(false);
+  // Art added since the page loaded: fetch the gallery again first.
+  if (!PIECES.some((p) => p.id === n.piece_id)) {
+    try {
+      await load();
+    } catch {}
+  }
+  if (!PIECES.some((p) => p.id === n.piece_id)) return toast('That isn’t on the fridge any more.');
+  const has = (id) => PIECES.some((p) => p.id === id);
+  // Through a day's new art, or else through everything in the list.
+  const list = n.kind === 'art' && n.pieces.length > 1 ? n.pieces.filter(has) : [...new Set(NOTES.items.map((x) => x.piece_id))].filter(has);
+  // The bell is where focus goes back to.
+  bellBtn.focus();
+  openDetail(n.piece_id, list, { toTalk: n.kind !== 'art' });
+});
+document.addEventListener('click', (e) => {
+  if (bellOpen && !e.target.closest('#bell, #open-bell')) setBell(false);
+});
+topBar.addEventListener('focusout', (e) => {
+  if (bellOpen && e.relatedTarget instanceof Element && !e.relatedTarget.closest('#bell, #open-bell')) setBell(false);
+});
+window.addEventListener('hashchange', () => setBell(false));
+window.addEventListener('resize', () => bellOpen && placeBell());
 
 // ---- Frame mode ----
 const frame = $('#frame');
@@ -1331,7 +1513,12 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
-  if (!frame.hidden) {
+  if (bellOpen) {
+    if (e.key === 'Escape') {
+      setBell(false);
+      bellBtn.focus();
+    }
+  } else if (!frame.hidden) {
     if (e.key === 'Escape') closeFrame();
     else if (e.key === 'ArrowRight' || e.key === ' ') {
       e.preventDefault();

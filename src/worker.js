@@ -534,7 +534,7 @@ const FAMILY = 'Family'; // who someone is, to a person who doesn't see their fa
 async function talk(request, env, who, url) {
   const { method } = request;
   const path = url.pathname;
-  if (!/^\/api\/(comments|me|pieces\/\d+\/(comments|stickers\/[a-z]+))(\/\d+)?$/.test(path)) return null;
+  if (!/^\/api\/(comments|me|notifications|pieces\/\d+\/(comments|stickers\/[a-z]+))(\/\d+)?$/.test(path)) return null;
   try {
     readNames(env);
   } catch (e) {
@@ -544,6 +544,8 @@ async function talk(request, env, who, url) {
   let m;
   if (path === '/api/comments') {
     if (method === 'GET') return json(await talkSummary(env, who));
+  } else if (path === '/api/notifications') {
+    if (method === 'GET') return json(await notifications(env, who));
   } else if (path === '/api/me') {
     if (method === 'PATCH') return json(await changeMe(env, who, await body(request)));
   } else if ((m = path.match(/^\/api\/pieces\/(\d+)\/comments$/))) {
@@ -660,31 +662,30 @@ async function stickersOut(env, who, pieceId, kid) {
 // The signed-in person: the people on their sign-in, each with the name
 // everyone sees (`name`, what to send as `as`) and, for a parent, the one
 // shown on their own families' kids' art (`home`, or null), with those
-// families' ids; a kid has their kid instead. And the newest comment the
-// page has shown them.
+// families' ids; a kid has their kid instead. And how far they've caught up
+// (`seen`, a time like created_at, or null for someone who never has).
 async function me(env, who) {
-  const row = await env.DB.prepare('SELECT seen FROM people WHERE email = ?').bind(who.email).first();
+  const row = await env.DB.prepare('SELECT seen_at FROM people WHERE email = ?').bind(who.email).first();
   const by = (await namesFor(env, who))({ author: who.email, name: '' });
   const people = who.kid ? [] : readNames(env).get(who.email) || [];
-  return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen ?? null };
+  return { names: people.map((p) => ({ name: p.name, home: p.family ?? null })), families: who.families, kid: who.kid ? by.name : null, kid_id: by.kid_id, seen: row?.seen_at ?? null };
 }
 
-// For the whole page: comments and stickers on each piece (`newest` is the
-// id of its newest comment from another sign-in, for marking it new), the
-// latest comments anywhere, and the newest comment's id: all of them only on
+// For the whole page: comments and stickers on each piece (`newest` is when
+// its newest comment from another sign-in came, or '', for marking it new
+// against me.seen), and the latest comments anywhere: all of them only on
 // the pieces this person sees.
 async function talkSummary(env, who) {
   const { kids, only } = await seenKids(env, who);
-  const [counts, stickers, latest, newest] = await env.DB.batch([
-    env.DB.prepare(`SELECT c.piece_id, COUNT(*) AS n, MAX(CASE WHEN c.author != ?1 THEN c.id END) AS other FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(2)} GROUP BY c.piece_id`).bind(who.email, only),
+  const [counts, stickers, latest] = await env.DB.batch([
+    env.DB.prepare(`SELECT c.piece_id, COUNT(*) AS n, MAX(CASE WHEN c.author != ?1 THEN c.created_at END) AS other FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(2)} GROUP BY c.piece_id`).bind(who.email, only),
     env.DB.prepare(`SELECT s.piece_id, COUNT(*) AS n FROM stickers s JOIN pieces p ON p.id = s.piece_id WHERE ${seenSql(1)} GROUP BY s.piece_id`).bind(only),
     env.DB.prepare(`SELECT ${COMMENT_COLS.split(', ').map((c) => `c.${c}`).join(', ')}, p.kid_id FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(1)} ORDER BY c.id DESC LIMIT 8`).bind(only),
-    env.DB.prepare(`SELECT MAX(c.id) AS id FROM comments c JOIN pieces p ON p.id = c.piece_id WHERE ${seenSql(1)}`).bind(only),
   ]);
   const byPiece = {};
-  for (const r of counts.results) byPiece[r.piece_id] = { comments: r.n, stickers: 0, newest: r.other ?? 0 };
-  for (const r of stickers.results) (byPiece[r.piece_id] ||= { comments: 0, stickers: 0, newest: 0 }).stickers = r.n;
-  return { me: await me(env, who), newest: newest.results[0]?.id ?? 0, counts: byPiece, latest: await commentsOut(env, who, latest.results, (r) => kids.get(r.kid_id)) };
+  for (const r of counts.results) byPiece[r.piece_id] = { comments: r.n, stickers: 0, newest: r.other ?? '' };
+  for (const r of stickers.results) (byPiece[r.piece_id] ||= { comments: 0, stickers: 0, newest: '' }).stickers = r.n;
+  return { me: await me(env, who), counts: byPiece, latest: await commentsOut(env, who, latest.results, (r) => kids.get(r.kid_id)) };
 }
 
 async function pieceTalk(env, who, pieceId) {
@@ -766,15 +767,132 @@ async function setSticker(env, who, pieceId, kind, on, as) {
   return stickersOut(env, who, pieceId, kid);
 }
 
-// { seen }: the newest comment the page has shown this sign-in. Names are
-// infra's (NAMES), so there's nothing else to change here.
+// { seen }: how far this sign-in has caught up, as the `as_of` of the
+// notifications the page showed. It only goes forward, and never past now.
+// Names are infra's (NAMES), so there's nothing else to change here.
+const TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const validTime = (s) => typeof s === 'string' && TIME.test(s) && !Number.isNaN(Date.parse(`${s.replace(' ', 'T')}Z`)) && new Date(`${s.replace(' ', 'T')}Z`).toISOString().startsWith(s.replace(' ', 'T'));
 async function changeMe(env, who, b) {
   if (!('seen' in b)) bad('Nothing to change. Names come from the fridge’s settings in infra.');
-  const seen = Number(b.seen);
-  if (!Number.isInteger(seen) || seen < 0 || typeof b.seen !== 'number') bad('seen must be a comment’s id.');
-  await env.DB.prepare("INSERT INTO people (email, seen) VALUES (?1, ?2) ON CONFLICT (email) DO UPDATE SET seen = max(coalesce(seen, 0), ?2), updated_at = datetime('now')").bind(who.email, seen).run();
+  if (!validTime(b.seen)) bad('seen must be a time like 2026-11-26 09:30:00, as the notifications’ as_of gives it.');
+  await env.DB.prepare(
+    "INSERT INTO people (email, seen_at) VALUES (?1, min(?2, datetime('now'))) ON CONFLICT (email) DO UPDATE SET seen_at = max(coalesce(seen_at, ''), min(?2, datetime('now'))), updated_at = datetime('now')",
+  )
+    .bind(who.email, b.seen)
+    .run();
   return { me: await me(env, who) };
 }
+
+// ---- Notifications ----
+// What's new for someone, worked out each time from the art, the comments
+// and the stickers themselves, so a notification goes when its piece,
+// comment or sticker does, and follows FAMILIES and NAMES as they are now.
+// Nothing is stored but how far each sign-in has caught up (people.seen_at),
+// which the walls' New marks go by too.
+//
+// Whose art is someone's: a kid's own art is theirs, from any of their
+// addresses (their artist address and devices); a parent's is their kids',
+// the ones they could change (canChangeKid). Someone who only looks, like a
+// grandparent, has none. Then everyone gets
+//   - new art, from either family, unless they added it themselves. A kid
+//     gets only their own, put up by someone else.
+//   - comments and stickers from anyone else on their art.
+//   - comments from anyone else on a piece after they commented on it.
+// A sign-in two people share is one reader: what's new for either of them
+// is new for both, and read when either reads it. Only kids someone sees
+// (canSee in auth.js, through seenKids) are in it at all, so no
+// notification, count, link or name is about a piece or kid they couldn't
+// open themselves; names only, never addresses.
+//
+// Only what's from before the current second is listed, with `as_of` the
+// second before this ran. The database does one thing at a time, so by then
+// everything stamped as_of or earlier is in, and marking read up to as_of
+// can't pass over something that wasn't listed.
+const NOTE_DAYS = 60; // how far back the list goes
+const NOTE_MAX = 40; // how many it lists
+
+async function notifications(env, who) {
+  const { kids, only } = await seenKids(env, who);
+  const visible = only ?? JSON.stringify([...kids.keys()]);
+  const theirs = [...kids.values()].filter((k) => (who.kid ? sameName(k.name, who.kid) : canChangeKid(who, k))).map((k) => k.id);
+  const addresses = who.kid ? [...kidAddresses(env)].filter(([, name]) => sameName(name, who.kid)).map(([a]) => a) : [];
+  const me = JSON.stringify([...new Set([who.email, ...addresses])]);
+  const mine = JSON.stringify(theirs);
+  const recent = `created_at > datetime('now', '-${NOTE_DAYS} days') AND created_at < datetime('now')`;
+  const [[{ as_of }], art, comments, stickers, [seenRow]] = (
+    await env.DB.batch([
+      env.DB.prepare("SELECT datetime('now', '-1 second') AS as_of"),
+      env.DB.prepare(
+        `SELECT id, kid_id, title, added_by, created_at FROM pieces
+         WHERE ${recent} AND (added_by IS NULL OR added_by NOT IN (SELECT value FROM json_each(?1)))
+           AND (?3 = 0 OR kid_id IN (SELECT value FROM json_each(?2)))
+           AND kid_id IN (SELECT value FROM json_each(?4))
+         ORDER BY created_at DESC, id DESC LIMIT 1000`,
+      ).bind(me, mine, who.kid ? 1 : 0, visible),
+      env.DB.prepare(
+        `SELECT c.id, c.piece_id, c.author, c.name, c.body, c.created_at, p.kid_id, p.title,
+                p.kid_id IN (SELECT value FROM json_each(?2)) AS on_theirs
+         FROM comments c JOIN pieces p ON p.id = c.piece_id
+         WHERE ${recent.replace(/created_at/g, 'c.created_at')} AND c.author NOT IN (SELECT value FROM json_each(?1))
+           AND p.kid_id IN (SELECT value FROM json_each(?3))
+           AND (p.kid_id IN (SELECT value FROM json_each(?2))
+             OR EXISTS (SELECT 1 FROM comments m WHERE m.piece_id = c.piece_id AND m.id < c.id AND m.author IN (SELECT value FROM json_each(?1))))
+         ORDER BY c.created_at DESC, c.id DESC LIMIT ${NOTE_MAX}`,
+      ).bind(me, mine, visible),
+      env.DB.prepare(
+        `SELECT s.rowid AS rid, s.piece_id, s.author, s.name, s.sticker, s.created_at, p.kid_id, p.title
+         FROM stickers s JOIN pieces p ON p.id = s.piece_id
+         WHERE ${recent.replace(/created_at/g, 's.created_at')} AND s.author NOT IN (SELECT value FROM json_each(?1))
+           AND p.kid_id IN (SELECT value FROM json_each(?2))
+         ORDER BY s.created_at DESC, s.rowid DESC LIMIT 500`,
+      ).bind(me, mine),
+      env.DB.prepare('SELECT seen_at FROM people WHERE email = ?').bind(who.email),
+    ])
+  ).map((r) => r.results);
+  const seen = seenRow?.seen_at ?? null;
+  const label = await namesFor(env, who);
+  const nameOf = (author, name, kidId) => (author == null ? { name: 'Someone', kid_id: null } : label({ author, name }, kids.get(kidId)?.family));
+  // Grouped by who and when inside here; each one's `key`, for the page,
+  // is made of ids only, so it never carries an address.
+  const groups = new Map();
+  const day = (at) => at.slice(0, 10);
+
+  // A day's new art by one person for one kid is one notification: an
+  // import of forty is one line.
+  for (const p of art) {
+    const group = `art:${p.kid_id}:${p.added_by ?? ''}:${day(p.created_at)}`;
+    const g = groups.get(group);
+    if (g) {
+      g.count++;
+      if (g.pieces.length < 4) g.pieces.push(p.id);
+      g.key = `art:${Math.min(Number(g.key.slice(4)), p.id)}`;
+      continue;
+    }
+    const by = nameOf(p.added_by, '', p.kid_id);
+    groups.set(group, { key: `art:${p.id}`, kind: 'art', at: p.created_at, piece_id: p.id, kid_id: p.kid_id, title: p.title, by: by.name, by_kid_id: by.kid_id, count: 1, pieces: [p.id] });
+  }
+  for (const c of comments) {
+    const by = nameOf(c.author, c.name, c.kid_id);
+    groups.set(`comment:${c.id}`, { key: `comment:${c.id}`, kind: c.on_theirs ? 'comment' : 'reply', at: c.created_at, piece_id: c.piece_id, kid_id: c.kid_id, title: c.title, by: by.name, by_kid_id: by.kid_id, body: c.body });
+  }
+  // A day's stickers from one person on one piece are one notification.
+  for (const s of stickers) {
+    const group = `sticker:${s.piece_id}:${s.author}:${s.name}:${day(s.created_at)}`;
+    const g = groups.get(group);
+    if (g) {
+      if (!g.stickers.includes(s.sticker)) g.stickers.push(s.sticker);
+      g.key = `sticker:${Math.min(Number(g.key.slice(8)), s.rid)}`;
+      continue;
+    }
+    const by = nameOf(s.author, s.name, s.kid_id);
+    groups.set(group, { key: `sticker:${s.rid}`, kind: 'sticker', at: s.created_at, piece_id: s.piece_id, kid_id: s.kid_id, title: s.title, by: by.name, by_kid_id: by.kid_id, stickers: [s.sticker] });
+  }
+  const all = [...groups.values()].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.key < b.key ? 1 : -1));
+  for (const n of all) n.new = seen !== null && n.at > seen;
+  // Someone who has never caught up has nothing new yet, as on the walls.
+  return { seen, as_of, unread: all.filter((n) => n.new).length, items: all.slice(0, NOTE_MAX) };
+}
+
 
 // Someone who sees only some families gets none of the others' pictures, at
 // any size or by any address: the same 404 as for a piece that isn't there.
