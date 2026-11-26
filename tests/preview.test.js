@@ -164,40 +164,59 @@ test('can be seen as each kind of person, from links in its strip', async () => 
   assert.deepEqual((await (await call('/api/gallery')).json()).mine, []);
 });
 
-test('serves made-up notifications for each kind of person, in the real Worker’s shape', async () => {
+// Runs fn with the clock at each half hour of a day (UTC), since a day's art
+// or stickers are one notification and where the day ends moves them.
+async function allDay(fn) {
+  const RealDate = Date;
+  try {
+    for (let m = 0; m < 24 * 60; m += 30) {
+      const now = RealDate.UTC(2026, 0, 15, 0, m);
+      globalThis.Date = class extends RealDate {
+        constructor(...a) { if (a.length) super(...a); else super(now); }
+        static now() { return now; }
+      };
+      await fn(new RealDate(now).toISOString().slice(11, 16));
+    }
+  } finally {
+    globalThis.Date = RealDate;
+  }
+}
+
+test('serves made-up notifications for each kind of person, in the real Worker’s shape, at any time of day', async () => {
   const KEYS = { art: ['count', 'pieces'], comment: ['body'], reply: ['body'], sticker: ['stickers'] };
   const { kids, pieces } = await (await call('/api/gallery')).json();
   const kidOf = (id) => kids.find((k) => k.id === pieces.find((p) => p.id === id).kid_id);
-  for (const key of ['parents', 'grandma', 'nonna', 'ada', 'dee']) {
-    const n = await (await as(key, '/api/notifications')).json();
+  await allDay(async (time) => { for (const persona of ['parents', 'grandma', 'nonna', 'ada', 'dee']) {
+    const key = `${persona} at ${time}`;
+    const n = await (await as(persona, '/api/notifications')).json();
     assert.deepEqual(Object.keys(n).sort(), ['as_of', 'items', 'seen', 'unread'], key);
     assert.match(n.as_of, TIME);
     assert.ok(n.unread >= 3, `${key} has something new`);
     assert.equal(n.unread, n.items.filter((x) => x.new).length);
     assert.ok(n.items.some((x) => !x.new), `${key} has something seen before`);
-    assert.deepEqual(n.items.map((x) => x.at), n.items.map((x) => x.at).sort().reverse(), 'newest first');
+    assert.deepEqual(n.items.map((x) => x.at), n.items.map((x) => x.at).sort().reverse(), `${key}: newest first`);
     for (const x of n.items) {
       assert.deepEqual(Object.keys(x).sort(), ['at', 'by', 'by_kid_id', 'key', 'kid_id', 'kind', 'new', 'piece_id', 'title', ...KEYS[x.kind]].sort(), `${key} ${x.key}`);
       assert.equal(x.kid_id, kidOf(x.piece_id).id);
-      assert.equal(x.new, x.at > n.seen);
+      assert.equal(x.new, x.at > n.seen, `${key} ${x.key}`);
     }
     assert.doesNotMatch(JSON.stringify(n), /@/);
     const kinds = new Set(n.items.map((x) => x.kind));
-    if (key === 'ada' || key === 'dee') {
+    if (persona === 'ada' || persona === 'dee') {
       // A kid's own art only.
-      const kid = key === 'ada' ? 1 : 4;
+      const kid = persona === 'ada' ? 1 : 4;
       assert.ok(n.items.filter((x) => x.kind !== 'reply').every((x) => x.kid_id === kid), key);
       for (const kind of ['art', 'comment', 'sticker']) assert.ok(kinds.has(kind), `${key} gets ${kind}`);
-    } else if (key === 'grandma') {
-      assert.deepEqual([...kinds].sort(), ['art', 'reply'], 'someone who only looks: new art, and replies');
-    } else if (key === 'nonna') {
-      assert.ok(n.items.every((x) => kidOf(x.piece_id).family === 'pines'), 'only the family she sees');
+    } else if (persona === 'grandma') {
+      assert.deepEqual([...kinds].sort(), ['art', 'reply'], `${key}: someone who only looks gets new art, and replies`);
+    } else if (persona === 'nonna') {
+      assert.ok(n.items.every((x) => kidOf(x.piece_id).family === 'pines'), `${key}: only the family she sees`);
       assert.doesNotMatch(JSON.stringify(n), OAKS);
     } else {
-      for (const kind of ['art', 'comment', 'reply', 'sticker']) assert.ok(kinds.has(kind), `parents get ${kind}`);
-      assert.ok(n.items.filter((x) => x.kind === 'sticker' || x.kind === 'comment').every((x) => kidOf(x.piece_id).family === 'pines'), 'on their own kids’ art');
+      for (const kind of ['art', 'comment', 'reply', 'sticker']) assert.ok(kinds.has(kind), `${key} gets ${kind}`);
+      assert.ok(n.items.filter((x) => x.kind === 'sticker' || x.kind === 'comment').every((x) => kidOf(x.piece_id).family === 'pines'), `${key}: on their own kids’ art`);
     }
-  }
+  } });
   // Ada's iPad: a sticker group, and a reply after she commented elsewhere.
   const ada = await (await as('ada', '/api/notifications')).json();
   assert.ok(ada.items.some((x) => x.kind === 'sticker' && x.stickers.length > 1 || x.kind === 'sticker'));

@@ -247,6 +247,7 @@ const COMMENTS = [
   [15, 2, 'dee', '', 15, 'Can you draw my house next?'],
   [16, 10, 'oaks', '', 12, 'These would cheer anyone up.'],
   [17, 4, 'nonna', '', 8, 'What a rocket! Save me a seat.'],
+  [18, 4, 'ada', '', 5, 'You can have the window'],
 ].map(([id, piece_id, signin, as, minutes, body]) => ({ id, piece_id, signin, as, minutes, body }));
 const STICKERS = ['heart', 'star', 'wow', 'smile', 'rainbow'];
 // Who gave which stickers to each piece, and when: [kind, who, which of them, minutes ago].
